@@ -104,12 +104,18 @@ func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 
 // bin picks the shell to run scripts with.
 //
-// PATH comes first, deliberately: macOS still ships bash 3.2 (2007) at
-// /bin/bash, whose parser mishandles a `case` pattern inside `$( … )` — it ends
-// the command substitution at the pattern's closing paren and then reports a
-// syntax error at the `;;`. Real Taskfiles contain exactly that construct. A
-// developer who has installed a current bash has it on PATH, so honour that
-// before the system copy.
+// $SHELL is deliberately ignored. On macOS it is zsh, and zsh does not word-split
+// unquoted expansions: `x="a b c"; for i in $x` iterates ONCE there and three
+// times in bash. Taskfile scripts are written against POSIX/bash semantics — one
+// in this project's own corpus builds a list of project prefixes and loops over
+// it unquoted — so running them in the user's interactive shell would change
+// their meaning without any error to show for it.
+//
+// PATH comes first among the bash candidates: macOS still ships bash 3.2 (2007)
+// at /bin/bash, whose parser mishandles a `case` pattern inside `$( … )` — it
+// ends the command substitution at the pattern's closing paren and then reports a
+// syntax error at the `;;`. Real Taskfiles contain exactly that construct, so a
+// developer's newer bash on PATH is preferred over the system copy.
 func (s Shell) bin() string {
 	if s.Bin != "" {
 		return s.Bin

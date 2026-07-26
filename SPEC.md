@@ -133,6 +133,12 @@ its gaps disqualify it here:
 Dropping Windows makes the real shell available, with the semantics a developer
 gets at their own prompt, and removes four dependencies.
 
+`$SHELL` is ignored. On macOS it is zsh, which does not word-split unquoted
+expansions — `x="a b c"; for i in $x` iterates once there and three times in bash
+— so running a Taskfile's scripts in the user's interactive shell would silently
+change their meaning. rest-mail's own `status` task loops over an unquoted list of
+project prefixes and would stop detecting orphans.
+
 `bash` is resolved from **PATH first**: macOS still ships bash 3.2 (2007) at
 /bin/bash, whose parser mishandles a `case` pattern inside `$( … )` and reports a
 syntax error at the `;;`. Real Taskfiles contain that construct.
