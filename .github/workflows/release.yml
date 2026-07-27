@@ -127,17 +127,13 @@ jobs:
           fi
           gh release upload "v${VER}" dist/*.tar.gz dist/checksums.txt --clobber
 
-      # The tap holds the formula, so it does the bump. A repository_dispatch
-      # keeps the credential one-way: this repo can ask, and cannot write there.
-      - name: Ask the tap to update the formula
-        if: ${{ env.TAP_TOKEN != '' }}
-        env:
-          TAP_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
-          VER: ${{ steps.v.outputs.version }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer ${TAP_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/antimatter-studios/homebrew-tap/dispatches \
-            -d "{\"event_type\":\"formula-release\",\"client_payload\":{\"formula\":\"chore\",\"version\":\"${VER}\"}}"
+      # No step here notifies the Homebrew tap, deliberately.
+      #
+      # The tap is a PULL consumer: its tap-sync workflow is triggered by a human,
+      # reads this repository's public releases, computes the checksums from the
+      # assets it downloaded, and opens an unmerged PR for review. Nothing that
+      # reaches `brew install` is published without someone looking at it, and no
+      # project — including this one — holds a credential that can write there.
+      #
+      # To publish this release to brew: run "Sync formulae from releases" in
+      # antimatter-studios/homebrew-tap, then merge the PR it opens.
