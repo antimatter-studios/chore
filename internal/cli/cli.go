@@ -16,9 +16,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/loader"
 	"github.com/antimatter-studios/chore/internal/run"
-	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // Version is the build's version string, set by main. Exported rather than
@@ -128,9 +128,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 }
 
 type options struct {
-	dir, file                       string
+	dir, file                                string
 	list, dry, force, verbose, help, version bool
-	cliArgs                         []string
+	cliArgs                                  []string
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.

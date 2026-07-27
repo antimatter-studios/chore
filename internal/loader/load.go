@@ -81,11 +81,11 @@ type entry struct {
 
 // request is one file to read, as described by the file that includes it.
 type request struct {
-	path   string                  // absolute path of the file to read
-	prefix string                  // namespace for its tasks
+	path   string                   // absolute path of the file to read
+	prefix string                   // namespace for its tasks
 	vars   map[string]chorefile.Var // the include's `vars:`, merged onto the file
-	dir    string                  // the include's `dir:`, absolute, or ""
-	chain  []string                // absolute paths of the ancestors, for cycle detection
+	dir    string                   // the include's `dir:`, absolute, or ""
+	chain  []string                 // absolute paths of the ancestors, for cycle detection
 }
 
 func load(req request) ([]entry, error) {
