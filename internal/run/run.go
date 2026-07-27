@@ -40,9 +40,8 @@ type Runner struct {
 
 	// once tracks `run: once` tasks by name plus rendered variables, so the same
 	// task invoked with different arguments still runs twice.
-	onceMu   sync.Mutex
-	onceDone map[string]error
-	onceRun  map[string]bool
+	onceMu sync.Mutex
+	once   map[string]*onceEntry
 
 	// warned tracks dotenv files already reported missing, so a run of 20 tasks
 	// that share a config does not print the same line 20 times.
@@ -53,12 +52,11 @@ type Runner struct {
 // New returns a Runner writing to out and errOut.
 func New(p *taskfile.Project, out, errOut io.Writer) *Runner {
 	return &Runner{
-		Project:  p,
-		Out:      out,
-		Err:      errOut,
-		onceDone: map[string]error{},
-		onceRun:  map[string]bool{},
-		warned:   map[string]bool{},
+		Project: p,
+		Out:     out,
+		Err:     errOut,
+		once:    map[string]*onceEntry{},
+		warned:  map[string]bool{},
 	}
 }
 
@@ -81,25 +79,21 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 		}
 		return nil
 	}
+	if err := checkArgs(t, len(args), scope); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
 	if err := checkRequires(t, scope); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 
 	// `run: once` is keyed on the rendered variables, not just the name: two
 	// invocations with different arguments are different work.
-	key := ""
 	if t.RunOnce() {
-		key = onceKey(name, scope)
-		if done, ran := r.onceStatus(key); ran {
-			return done
-		}
+		e := r.onceEntry(onceKey(name, scope))
+		e.once.Do(func() { e.err = r.execute(ctx, t, scope) })
+		return e.err
 	}
-
-	err = r.execute(ctx, t, scope)
-	if t.RunOnce() {
-		r.recordOnce(key, err)
-	}
-	return err
+	return r.execute(ctx, t, scope)
 }
 
 func (r *Runner) execute(ctx context.Context, t *taskfile.Task, scope *tmpl.Scope) error {
@@ -266,7 +260,13 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 		}
 	}
 
-	dotenvVars, err := r.dotenv(t, early.Push(fileVars))
+	// File vars are resolved with arguments visible, so the self-defaulting idiom
+	// CONFIG: '{{.CONFIG | default "x"}}' picks up a caller's value. But when the
+	// dotenv PATH is rendered the caller must outrank the file outright:
+	// otherwise a literal `vars: {CONFIG: a}` loads config a's environment while
+	// the task runs with CONFIG=b — the silent wrong-stack failure this program
+	// exists to remove, reintroduced one layer down.
+	dotenvVars, err := r.dotenv(t, base.Push(fileVars).Push(callVars).Push(argVars))
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +276,30 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	if err != nil {
 		return nil, fmt.Errorf("task vars: %w", err)
 	}
-	return scope.Push(taskVars).Push(callVars).Push(argVars), nil
+	final := scope.Push(taskVars).Push(callVars).Push(argVars)
+
+	// A parameter's DEFAULT comes from vars, which the author writes in one case
+	// only. Mirror it to the other so `args: [config]` with `vars: {config: x}`
+	// still answers to {{.CONFIG}}, exactly as a supplied argument does — the
+	// alternative is a value that works when passed and vanishes when defaulted.
+	for _, name := range t.Args {
+		other := strings.ToUpper(name)
+		if other == name {
+			other = strings.ToLower(name)
+		}
+		if other == name {
+			continue
+		}
+		have, ok := final.Get(name)
+		mirror, mirrorSet := final.Get(other)
+		switch {
+		case ok && have != "" && mirror == "":
+			final.Set(other, have)
+		case mirrorSet && mirror != "" && have == "":
+			final.Set(name, mirror)
+		}
+	}
+	return final, nil
 }
 
 // bindArgs maps positional arguments onto the names the task declares. Fewer
@@ -294,9 +317,40 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 			t.Name, len(t.Args), strings.Join(t.Args, ", "), len(args))
 	}
 	for i, a := range args {
-		out[t.Args[i]] = a
+		name := t.Args[i]
+		out[name] = a
+		// Go templates are case-sensitive and Taskfile convention is uppercase, so
+		// `args: [config]` must also answer to {{.CONFIG}}. Binding only the name
+		// as written means a Taskfile copied from this program's own usage text
+		// interpolates an empty string — the exact silent default it exists to
+		// prevent.
+		if upper := strings.ToUpper(name); upper != name {
+			out[upper] = a
+		}
 	}
 	return out, nil
+}
+
+// checkArgs fails when a declared parameter was neither supplied nor defaulted.
+// Running with an empty value is how a command ends up addressing nothing at
+// all, so an unsupplied parameter with no default is an error, not a blank.
+func checkArgs(t *taskfile.Task, supplied int, scope *tmpl.Scope) error {
+	var missing []string
+	for i := supplied; i < len(t.Args); i++ {
+		name := t.Args[i]
+		if v, _ := scope.Get(name); v != "" {
+			continue
+		}
+		if v, _ := scope.Get(strings.ToUpper(name)); v != "" {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("needs argument(s) %s — pass positionally (tsk %s <%s>), as %s=value, or give it a default in vars",
+			strings.Join(missing, ", "), t.Name, missing[0], strings.ToUpper(missing[0]))
+	}
+	return nil
 }
 
 // dotenv loads the env files declared by the root file and, if different, the
@@ -327,7 +381,9 @@ func (r *Runner) dotenv(t *taskfile.Task, scope *tmpl.Scope) (map[string]string,
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(dir, path)
 			}
-			declared++
+			if !optional {
+				declared++
+			}
 			vars, err := parseDotenv(path)
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -418,17 +474,28 @@ func (r *Runner) silent(t *taskfile.Task) bool {
 
 func (r *Runner) cacheDir() string { return filepath.Join(r.Project.RootDir, ".tsk") }
 
-func (r *Runner) onceStatus(key string) (error, bool) {
-	r.onceMu.Lock()
-	defer r.onceMu.Unlock()
-	return r.onceDone[key], r.onceRun[key]
+// onceEntry is one `run: once` task's single execution, shared by every caller
+// that asks for it.
+//
+// sync.Once, rather than a "have I run this?" flag, is what makes the guarantee
+// hold: deps run concurrently, so two of them reach the same task before either
+// has finished it, and a flag recorded only after execution would let both
+// start. The second caller waits for the first and takes its result.
+type onceEntry struct {
+	once sync.Once
+	err  error
 }
 
-func (r *Runner) recordOnce(key string, err error) {
+// onceEntry returns the shared record for key, creating it on first ask.
+func (r *Runner) onceEntry(key string) *onceEntry {
 	r.onceMu.Lock()
 	defer r.onceMu.Unlock()
-	r.onceRun[key] = true
-	r.onceDone[key] = err
+	e := r.once[key]
+	if e == nil {
+		e = &onceEntry{}
+		r.once[key] = e
+	}
+	return e
 }
 
 func onceKey(name string, scope *tmpl.Scope) string {
