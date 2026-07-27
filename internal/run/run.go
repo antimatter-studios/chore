@@ -23,9 +23,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/fingerprint"
 	"github.com/antimatter-studios/chore/internal/shell"
-	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/tmpl"
 )
 

@@ -497,7 +497,7 @@ func TestSplitArgsBooleanFlags(t *testing.T) {
 func TestFilenamePrecedenceAndMigrationNotice(t *testing.T) {
 	t.Run("chores.yml wins over Taskfile.yml", func(t *testing.T) {
 		root := writeTree(t, map[string]string{
-			"chores.yml":  "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
+			"chores.yml":   "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
 			"Taskfile.yml": "version: '3'\ntasks:\n  which:\n    cmds: ['echo taskfile']\n",
 		})
 		got := runMain(t, root, "which")
