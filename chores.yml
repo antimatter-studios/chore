@@ -1,0 +1,78 @@
+version: "3"
+
+# chore's own chores. Yes, it drives itself.
+
+vars:
+  # The exact compiler the release is built with. A different patch release of
+  # Go emits a different binary, so reproducing a release means matching this.
+  GOTOOLCHAIN_PIN: go1.25.0
+
+tasks:
+  build:
+    desc: Build the binary into bin/
+    sources: ['**/*.go', go.mod, go.sum]
+    generates: [bin/chore]
+    cmds:
+      - go build -o bin/chore .
+
+  test:
+    desc: Run the tests with the race detector
+    cmds:
+      - go test -race -count=1 ./...
+
+  lint:
+    desc: gofmt and vet
+    cmds:
+      - |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "gofmt would change:" >&2
+          echo "$unformatted" >&2
+          exit 1
+        fi
+      - go vet ./...
+
+  verify-release:
+    desc: 'Rebuild a published release and compare hashes: chore verify-release 0.1.0'
+    args:
+      - name: version
+        desc: released version, without the leading v
+      - name: os
+        desc: darwin or linux
+      - name: arch
+        desc: arm64 or x86_64
+    vars:
+      os: darwin
+      arch: arm64
+    cmds:
+      - |
+        set -euo pipefail
+        # Trusting the pipeline is optional if you can rebuild what it published
+        # and get the same bytes. This does exactly that, from the tag.
+        case "{{.ARCH}}" in x86_64) goarch=amd64 ;; *) goarch="{{.ARCH}}" ;; esac
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+
+        echo "  fetching the published binary hash"
+        curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v{{.VERSION}}/binaries.txt" \
+          -o "$work/binaries.txt"
+        want=$(grep " chore-{{.VERSION}}-{{.OS}}-{{.ARCH}}$" "$work/binaries.txt" | cut -d' ' -f1)
+        [ -n "$want" ] || { echo "  no entry for {{.OS}}-{{.ARCH}} in that release" >&2; exit 1; }
+
+        echo "  rebuilding v{{.VERSION}} with {{.GOTOOLCHAIN_PIN}}"
+        git worktree add -q --detach "$work/src" "v{{.VERSION}}"
+        ( cd "$work/src" && GOOS={{.OS}} GOARCH="$goarch" CGO_ENABLED=0 \
+            GOTOOLCHAIN={{.GOTOOLCHAIN_PIN}} \
+            go build -buildvcs=false -trimpath \
+              -ldflags "-s -w -X main.version={{.VERSION}}" -o "$work/rebuilt" . )
+        git worktree remove --force "$work/src"
+
+        got=$(shasum -a 256 "$work/rebuilt" | cut -d' ' -f1)
+        echo "  published: $want"
+        echo "  rebuilt:   $got"
+        if [ "$want" = "$got" ]; then
+          echo "  ✓ reproduced — the release matches its source"
+        else
+          echo "  ✗ MISMATCH — the published binary is not what this source builds" >&2
+          exit 1
+        fi

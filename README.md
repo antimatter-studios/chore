@@ -135,6 +135,48 @@ real shell — with real `pipefail` — possible.
   `tsk a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
 
+## Verifying a release
+
+Every release is **reproducible**: the same source, compiler and flags produce
+byte-identical binaries, so you do not have to trust the pipeline that built them
+— you can rebuild and compare.
+
+```bash
+chore verify-release 0.1.0 darwin arm64
+```
+
+```
+  published: 9bc094c15e4286137a146e9e21501d9a2b2d28c4f241e785d53622a640dcd005
+  rebuilt:   9bc094c15e4286137a146e9e21501d9a2b2d28c4f241e785d53622a640dcd005
+  ✓ reproduced — the release matches its source
+```
+
+Or by hand, if you would rather not run the thing you are checking:
+
+```bash
+git checkout v0.1.0
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 GOTOOLCHAIN=go1.25.0 \
+  go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=0.1.0" -o chore .
+shasum -a 256 chore
+# compare with binaries.txt from the release
+```
+
+Three details make this work, and all three are load-bearing:
+
+- **`GOTOOLCHAIN` is pinned to a patch release.** go1.25.0 and go1.25.6 emit
+  different binaries; pinning only the minor version is not enough.
+- **`-buildvcs=false`.** Go otherwise embeds `vcs.revision` and `vcs.time`, which
+  differ for every build and are the sole reason an otherwise identical rebuild
+  produces a different hash. The commit is recorded in the release itself, where
+  it can be verified rather than merely read out of a binary.
+- **`binaries.txt` alongside `checksums.txt`.** `tar` records mtimes and
+  ownership, so tarball hashes are not stable across builders; the comparison has
+  to be against the binary inside.
+
+The release workflow proves this on every release rather than claiming it: after
+publishing, it rebuilds all four targets from the same commit and fails if any
+byte differs.
+
 ## Supported subset
 
 The feature set was measured against a real 3,131-line Taskfile rather than
