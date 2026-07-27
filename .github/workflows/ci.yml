@@ -26,6 +26,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Lint the workflows themselves. actionlint is fetched as a release binary
+      # and checked against the sha256 the project publishes — the same
+      # verification the Homebrew tap performs on the artifacts it installs, and
+      # the reason this needs no third-party action.
+      - name: Lint workflows
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          set -euo pipefail
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$asset" "${base}/${asset}"
+          # Verify against the checksums file the release publishes, rather than a
+          # hash pasted here that nobody re-checks when the version moves.
+          curl -fsSL -o checksums.txt "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " ${asset}\$" checksums.txt | sha256sum -c -
+          tar xzf "$asset" actionlint
+          ./actionlint .github/workflows/*.yml
+
       - name: Formatting
         run: |
           set -euo pipefail
