@@ -1,0 +1,78 @@
+# uninstall-chore-dev — stop running the locally-built chore.
+#
+# Removes the dev bin directory from PATH, so `chore` resolves to whatever it did
+# before (the Homebrew build, usually) without opening a new shell. The binary in
+# ./bin is left alone — this only changes what your shell finds first.
+#
+# SOURCE it (don't execute):
+#
+#     source scripts/uninstall-chore-dev
+#
+# Idempotent, and safe to source in a shell that never installed the dev build.
+
+# --- must be sourced, or the PATH change goes nowhere ---------------------
+_chore_sourced=0
+if [ -n "${ZSH_VERSION:-}" ]; then
+  case "${ZSH_EVAL_CONTEXT:-}" in *:file | *:file:*) _chore_sourced=1 ;; esac
+elif [ -n "${BASH_VERSION:-}" ]; then
+  [ "${BASH_SOURCE[0]}" != "$0" ] && _chore_sourced=1
+fi
+if [ "$_chore_sourced" != 1 ]; then
+  echo "uninstall-chore-dev: source this script, don't run it:" >&2
+  echo "    source ${0:-scripts/uninstall-chore-dev}" >&2
+  exit 1
+fi
+
+# --- which directory to remove -------------------------------------------
+# $CHORE_DEV is what install exported, so `source uninstall-chore-dev` works from
+# any directory. Falling back to this script's own repo covers the case where the
+# marker was lost (a nested shell, or PATH inherited by an editor).
+if [ -n "${ZSH_VERSION:-}" ]; then
+  # shellcheck disable=SC2296  # zsh-only expansion, and only zsh reaches it
+  _chore_self="${(%):-%N}"
+else
+  _chore_self="${BASH_SOURCE[0]}"
+fi
+_chore_root="$(cd "$(dirname "$_chore_self")/.." && pwd)"
+_chore_bin="${CHORE_DEV:-$_chore_root/bin}"
+
+case ":$PATH:" in
+  *":$_chore_bin:"*)
+    # String surgery rather than a `for` loop over $PATH: with IFS=: an unquoted
+    # $PATH does NOT split into words in zsh (SH_WORD_SPLIT is off by default),
+    # so the loop would run once with the whole PATH as one element and quietly
+    # do nothing. ${var//pat/repl} behaves the same in bash and zsh.
+    #
+    # Sentinel colons so the first and last entries match like any other, then
+    # every occurrence is removed — the same directory can be on PATH twice.
+    _chore_new=":$PATH:"
+    _chore_new="${_chore_new//:$_chore_bin:/:}"
+    _chore_new="${_chore_new#:}"
+    _chore_new="${_chore_new%:}"
+    PATH="$_chore_new"
+    export PATH
+    unset CHORE_DEV
+
+    # Clear the shell's command cache. Both shells remember where a name
+    # resolved, and that memory outlives a PATH change: with `chore` hashed to
+    # the dev build, the next call would still run it after the dir left PATH.
+    # bash calls this `hash -r`, zsh `rehash`.
+    if [ -n "${ZSH_VERSION:-}" ]; then
+      rehash 2>/dev/null || true
+    elif [ -n "${BASH_VERSION:-}" ]; then
+      hash -r 2>/dev/null || true
+    fi
+
+    if _chore_now="$(command -v chore 2>/dev/null)"; then
+      echo "uninstall-chore-dev: chore    → $_chore_now" >&2
+      echo "uninstall-chore-dev: version  → $(chore --version 2>/dev/null || echo '?')" >&2
+    else
+      echo "uninstall-chore-dev: removed $_chore_bin from PATH; no chore on PATH now" >&2
+    fi
+    ;;
+  *)
+    echo "uninstall-chore-dev: $_chore_bin is not on PATH — nothing to do" >&2
+    ;;
+esac
+
+unset _chore_sourced _chore_self _chore_root _chore_bin _chore_new _chore_now

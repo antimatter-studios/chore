@@ -29,6 +29,25 @@ chore config:check CONFIG=mail4.test # or a variable, bound before dotenv resolv
 
 Binary: `tsk`. macOS and Linux.
 
+### Running a local build
+
+To try a change without installing it, source the dev script. It builds
+`./bin/chore`, puts that directory first on PATH **for the current shell**, and
+stamps the binary `dev+<sha>` (`-dirty` with uncommitted changes) so
+`chore --version` always says which binary just ran:
+
+```bash
+source scripts/install-chore-dev              # build, then shadow the installed chore
+source scripts/install-chore-dev --no-build   # shadow what is already built
+source scripts/uninstall-chore-dev            # back to the installed one
+```
+
+Source them, don't run them — a child process cannot change its parent's PATH,
+so executing them would export into a shell that immediately exits (they say so
+and refuse). Nothing is written outside the repo, no symlink lands in a shared
+prefix, and the installed build is left alone: undo is the uninstall script, or
+just a new shell.
+
 ## Why it exists
 
 **go-task is a good tool.** Its file format is good enough that `chore` reads it
