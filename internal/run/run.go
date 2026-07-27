@@ -310,8 +310,7 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	// only. Mirror it to the other so `args: [config]` with `vars: {config: x}`
 	// still answers to {{.CONFIG}}, exactly as a supplied argument does — the
 	// alternative is a value that works when passed and vanishes when defaulted.
-	for _, p := range t.Params() {
-		name := p.Name
+	for _, name := range t.Args {
 		other := strings.ToUpper(name)
 		if other == name {
 			other = strings.ToLower(name)
@@ -352,8 +351,7 @@ func declaresDefault(t *taskfile.Task, name string) bool {
 // ignored, and picking a winner silently is how you act on a config you did not
 // mean to name.
 func checkArgConflicts(t *taskfile.Task, argVars, callVars map[string]string) error {
-	for _, p := range t.Params() {
-		name := p.Name
+	for _, name := range t.Args {
 		positional, given := argVars[name]
 		if !given {
 			continue
@@ -385,9 +383,8 @@ func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]t
 		return false
 	}
 	out := map[string]taskfile.Var{}
-	for _, p := range t.Params() {
-		name := p.Name
-		if given(name) || p.Required {
+	for _, name := range t.Args {
+		if given(name) {
 			continue
 		}
 		for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
@@ -405,21 +402,16 @@ func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]t
 // the caller expected something the task will not do.
 func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 	out := map[string]string{}
-	params := t.Params()
-	if len(args) > len(params) {
-		if len(params) == 0 {
+	if len(args) > len(t.Args) {
+		if len(t.Args) == 0 {
 			return nil, fmt.Errorf("task %s takes no arguments, got %d (%s)",
 				t.Name, len(args), strings.Join(args, " "))
 		}
-		names := make([]string, len(params))
-		for i, p := range params {
-			names[i] = p.Name
-		}
 		return nil, fmt.Errorf("task %s takes %d argument(s) (%s), got %d",
-			t.Name, len(params), strings.Join(names, ", "), len(args))
+			t.Name, len(t.Args), strings.Join(t.Args, ", "), len(args))
 	}
 	for i, a := range args {
-		name := params[i].Name
+		name := t.Args[i]
 		out[name] = a
 		// Go templates are case-sensitive and Taskfile convention is uppercase, so
 		// `args: [config]` must also answer to {{.CONFIG}}. Binding only the name
@@ -437,36 +429,26 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 // Running with an empty value is how a command ends up addressing nothing at
 // all, so an unsupplied parameter with no default is an error, not a blank.
 func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scope *tmpl.Scope) error {
-	var missing, insisted []string
+	var missing []string
 
-	for i, p := range t.Params() {
-		if i < len(args) || suppliedByName(p.Name, callVars) {
+	for i, name := range t.Args {
+		if i < len(args) || suppliedByName(name, callVars) {
 			continue
 		}
-		if p.Required {
-			// `config!` — the author is insisting on an explicit value, so a
-			// default must NOT satisfy it. That is the whole difference between
-			// the marker and simply omitting a default.
-			insisted = append(insisted, p.Name)
+		if v, _ := scope.Get(name); v != "" {
 			continue
 		}
-		if v, _ := scope.Get(p.Name); v != "" {
-			continue
-		}
-		if v, _ := scope.Get(strings.ToUpper(p.Name)); v != "" {
+		if v, _ := scope.Get(strings.ToUpper(name)); v != "" {
 			continue
 		}
 		// A DECLARED default satisfies the parameter even when it is empty:
-		// `vars: {filter: ""}` is the author saying this one is optional.
-		if declaresDefault(t, p.Name) {
+		// `vars: {filter: ""}` is the author saying this one is optional. That is
+		// also why there is no required/optional marker in `args:` — the presence
+		// of a default already says which it is.
+		if declaresDefault(t, name) {
 			continue
 		}
-		missing = append(missing, p.Name)
-	}
-
-	if len(insisted) > 0 {
-		return fmt.Errorf("%s must be given explicitly (declared %s!) — tsk %s --%s <value>",
-			strings.Join(insisted, ", "), insisted[0], t.Name, insisted[0])
+		missing = append(missing, name)
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("needs argument(s) %s — pass positionally (tsk %s <%s>), as %s=value, or give it a default in vars",

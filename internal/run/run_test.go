@@ -177,43 +177,6 @@ func mustContain(t *testing.T, got, want, what string) {
 // `args: [config]` populates `.config` and leaves `.CONFIG` empty — a Taskfile
 // copied from the usage text would run with no config at all, which is exactly
 // the silent-default failure this program exists to remove.
-// `args: [config!]` insists on an explicit value: a default no longer satisfies
-// the parameter. That is the one thing omitting a default cannot express — "there
-// IS a sensible default, but you must still say which one you mean."
-func TestRequiredMarkerIgnoresTheDefault(t *testing.T) {
-	newTask := func() map[string]*taskfile.Task {
-		return map[string]*taskfile.Task{
-			"up": {
-				Args: []string{"config!"},
-				Vars: map[string]taskfile.Var{"config": {Value: "restmail.test"}},
-				Cmds: cmds(`printf '%s' '{{.CONFIG}}' > out.txt`),
-			},
-		}
-	}
-
-	// A default exists, but the marker means it cannot stand in for a choice.
-	f := newFixture(t, nil, newTask())
-	err := f.mustFail("up", nil, nil)
-	mustContain(t, err.Error(), "must be given explicitly", "error")
-	if f.exists("out.txt") {
-		t.Error("the task ran without the value it insists on")
-	}
-
-	// Supplied positionally — the marker is not part of the name.
-	f2 := newFixture(t, nil, newTask())
-	f2.mustRun("up", []string{"mail4.test"}, nil)
-	if got := f2.read("out.txt"); got != "mail4.test" {
-		t.Errorf("out.txt = %q, want mail4.test", got)
-	}
-
-	// Supplied by name.
-	f3 := newFixture(t, nil, newTask())
-	f3.mustRun("up", nil, map[string]string{"CONFIG": "mail4.test"})
-	if got := f3.read("out.txt"); got != "mail4.test" {
-		t.Errorf("out.txt = %q, want mail4.test", got)
-	}
-}
-
 // An explicitly empty default marks a parameter optional. Without this, there is
 // no way to say "may be omitted, and empty is meaningful" — and it is why
 // `args:` needs no required/optional marker: a default's presence is the marker.

@@ -81,10 +81,14 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    | `args: [config]` | required — nothing defines it |
    | `args: [config]` + `vars: {config: x}` | optional, defaults to `x` |
    | `args: [filter]` + `vars: {filter: ""}` | optional, and empty is meaningful |
-   | `args: [config!]` | must be supplied explicitly; a default will not stand in |
 
-   The `!` is a SUFFIX: a leading `!` is YAML tag syntax, so `args: [!config]`
-   fails to parse and `- !config` silently yields a parameter named "". A
+   There is deliberately no required/optional marker: the presence of a default
+   already says which a parameter is, and a marker was tried and dropped rather
+   than carried on speculation. (A `!` would have to be a suffix in any case — a
+   leading `!` is YAML tag syntax, so `args: [!config]` fails to parse and
+   `- !config` decodes to a parameter named "". A parameter name that cannot be
+   referenced as {{.Name}} is now rejected at decode time, which closes that trap
+   whatever syntax anyone reaches for later.) A
    parameter's default reaches the dotenv path, since that path is usually keyed
    on the parameter itself; task vars as a whole cannot, because they are allowed
    to read dotenv values.
