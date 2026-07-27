@@ -54,12 +54,28 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          # Pin the exact toolchain patch, not just the minor: go1.25.0 and
+          # go1.25.6 emit different binaries, so without this nobody can
+          # reproduce the artifact even with the right source and flags.
+          GOTOOLCHAIN: go1.25.0
         run: |
           set -euo pipefail
           VER="${{ steps.v.outputs.version }}"
-          # -s -w strips the symbol table and DWARF: nothing here needs a
-          # debugger attached to a released binary, and it halves the download.
-          go build -trimpath -ldflags "-s -w -X main.version=${VER}" -o chore .
+
+          # Every flag here exists so that a third party can rebuild this exact
+          # binary and compare hashes — which is what makes trusting this pipeline
+          # OPTIONAL rather than mandatory:
+          #
+          #   -s -w          strip symbols and DWARF (smaller, and deterministic)
+          #   -trimpath      remove the builder's absolute paths
+          #   -buildvcs=false  omit vcs.revision/vcs.time, which are the ONLY
+          #                  reason an otherwise identical rebuild differs; the
+          #                  commit is recorded in the release and its attestation
+          #                  instead, where it can be verified rather than merely
+          #                  read out of the binary
+          #   CGO_ENABLED=0  no host C toolchain in the output
+          #   GOTOOLCHAIN    the exact compiler
+          go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=${VER}" -o chore .
 
           # Verify the stamp on the ONE target this runner can execute. The others
           # are cross-builds — a linux host cannot run a darwin binary — and they
@@ -114,6 +130,12 @@ jobs:
           ls -1 *.tar.gz
           sha256sum *.tar.gz | tee checksums.txt
 
+          # Hash the binaries too, not only the tarballs: tar embeds mtimes and
+          # ownership, so a reproduction check has to compare the binary inside.
+          mkdir -p unpacked
+          for t in *.tar.gz; do tar xzf "$t" -O chore > "unpacked/${t%.tar.gz}"; done
+          (cd unpacked && sha256sum * | sed 's|  | |') | tee binaries.txt
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,7 +147,41 @@ jobs:
           if ! gh release view "v${VER}" >/dev/null 2>&1; then
             gh release create "v${VER}" --title "v${VER}" --generate-notes
           fi
-          gh release upload "v${VER}" dist/*.tar.gz dist/checksums.txt --clobber
+          gh release upload "v${VER}" dist/*.tar.gz dist/checksums.txt dist/binaries.txt --clobber
+
+      # Prove the claim rather than asserting it: rebuild every target from this
+      # same commit and require the binaries to be byte-identical to the ones just
+      # published. If a future change makes the build non-reproducible — a
+      # timestamp, an absolute path, an unpinned toolchain — this fails here,
+      # instead of a user discovering it while trying to verify a release.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Reproduce the release independently
+        env:
+          GOTOOLCHAIN: go1.25.0
+          CGO_ENABLED: "0"
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          fail=0
+          while read -r want name; do
+            os=$(echo "$name" | sed -E "s/^chore-${VER}-([a-z]+)-.*/\1/")
+            arch=$(echo "$name" | sed -E "s/^chore-${VER}-[a-z]+-(.*)/\1/")
+            case "$arch" in x86_64) goarch=amd64 ;; *) goarch="$arch" ;; esac
+            GOOS="$os" GOARCH="$goarch" go build -buildvcs=false -trimpath \
+              -ldflags "-s -w -X main.version=${VER}" -o "rebuilt-${os}-${arch}"
+            got=$(sha256sum "rebuilt-${os}-${arch}" | cut -d" " -f1)
+            if [ "$got" = "$want" ]; then
+              echo "  ${os}/${arch}: reproduced"
+            else
+              echo "  ${os}/${arch}: MISMATCH published=${want} rebuilt=${got}" >&2
+              fail=1
+            fi
+          done < dist/binaries.txt
+          [ "$fail" = 0 ]
 
       # No step here notifies the Homebrew tap, deliberately.
       #
