@@ -27,7 +27,7 @@ chore up mail4.test                 # positional argument
 chore config:check CONFIG=mail4.test # or a variable, bound before dotenv resolves
 ```
 
-Binary: `tsk`. macOS and Linux.
+Binary: `chore`. macOS and Linux.
 
 ### Running a local build
 
@@ -137,7 +137,7 @@ real shell — with real `pipefail` — possible.
 - **`args:` on a task** declares its parameters — `- config` for a plain one, or
   `{name: follow, type: bool, desc: …}` when it is a flag, takes an int, or wants
   a description. One declaration, four call forms:
-  `tsk up`, `tsk up mail4.test`, `tsk up --config mail4.test`, `tsk up CONFIG=mail4.test`.
+  `chore up`, `chore up mail4.test`, `chore up --config mail4.test`, `chore up CONFIG=mail4.test`.
   Required-ness follows from the declaration — no default means required, a default
   in `vars:` means optional, and `vars: {x: ""}` means optional with empty being
   meaningful. No marker syntax: the default says it.
@@ -150,8 +150,8 @@ real shell — with real `pipefail` — possible.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
-- **No multi-target invocation.** `tsk a b` does not mean "run a then b"; that is
-  `tsk a && chore b`, which is what people type anyway. Giving up the make grammar is
+- **No multi-target invocation.** `chore a b` does not mean "run a then b"; that is
+  `chore a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
 
 ## Verifying a release
@@ -212,13 +212,13 @@ Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,
 ## Build
 
 ```bash
-go build -o bin/tsk ./cmd/tsk
+go build -o bin/chore .
 go test ./...
 ```
 
 ## Status
 
-Early. It runs a real 153-task Taskfile unmodified — `tsk --list` matches
+Early. It runs a real 153-task Taskfile unmodified — `chore --list` matches
 `task --list` exactly — including a 193-line shell body with nested template
 escaping, dependency fan-out, and `sources:`-gated builds. Two behaviour
 differences are documented in [SPEC.md](SPEC.md#deviations-found-while-running-rest-mails-taskfile);

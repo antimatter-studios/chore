@@ -497,12 +497,12 @@ func TestSplitArgsBooleanFlags(t *testing.T) {
 func TestFilenamePrecedenceAndMigrationNotice(t *testing.T) {
 	t.Run("chores.yml wins over Taskfile.yml", func(t *testing.T) {
 		root := writeTree(t, map[string]string{
-			"chores.yml":   "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
+			"chores.yml":   "version: '3'\ntasks:\n  which:\n    cmds: ['echo choresfile']\n",
 			"Taskfile.yml": "version: '3'\ntasks:\n  which:\n    cmds: ['echo taskfile']\n",
 		})
 		got := runMain(t, root, "which")
 		checkCode(t, got, 0)
-		checkContains(t, got, "stdout", got.stdout, "tskfile")
+		checkContains(t, got, "stdout", got.stdout, "choresfile")
 		if strings.Contains(got.stderr, "rename it") {
 			t.Errorf("stderr = %q, want no migration notice when chores.yml exists", got.stderr)
 		}
@@ -739,13 +739,13 @@ tasks:
 	})
 
 	t.Run("--list gives exactly the same answer", func(t *testing.T) {
-		// `tsk` on its own is never a mystery: it is --list, byte for byte, so
+		// `chore` on its own is never a mystery: it is --list, byte for byte, so
 		// nobody has to learn which of the two tells the truth.
 		root := writeTree(t, files)
 		bare := runMain(t, root)
 		listed := runMain(t, root, "--list")
 		if bare.stdout != listed.stdout {
-			t.Errorf("`tsk` and `chore --list` disagree\n--- chore ---\n%s--- chore --list ---\n%s", bare.stdout, listed.stdout)
+			t.Errorf("`chore` and `chore --list` disagree\n--- chore ---\n%s--- chore --list ---\n%s", bare.stdout, listed.stdout)
 		}
 		checkCode(t, listed, 0)
 	})

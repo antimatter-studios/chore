@@ -579,9 +579,9 @@ tasks:
     desc: build the binary
     aliases: [b]
     sources: ['cmd/**/*.go']
-    generates: [bin/tsk]
+    generates: [bin/chore]
     cmds:
-      - go build -o bin/tsk ./cmd/tsk
+      - go build -o bin/chore .
 
   up:
     desc: bring the stack up
@@ -640,8 +640,8 @@ tasks:
 				Desc:      "build the binary",
 				Aliases:   []string{"b"},
 				Sources:   []string{"cmd/**/*.go"},
-				Generates: []string{"bin/tsk"},
-				Cmds:      []Cmd{{Cmd: "go build -o bin/tsk ./cmd/tsk"}},
+				Generates: []string{"bin/chore"},
+				Cmds:      []Cmd{{Cmd: "go build -o bin/chore ."}},
 			},
 			"up": {
 				Desc: "bring the stack up",

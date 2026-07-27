@@ -3,7 +3,7 @@
 A task runner that reads `chores.yml` — go-task's format under a name of its\nown — supports the features one real project
 uses, and fixes the semantics that make Task unusable as a control plane.
 
-Binary: `tsk`. Platforms: macOS and Linux. No Windows, which is why this can stay
+Binary: `chore`. Platforms: macOS and Linux. No Windows, which is why this can stay
 small — the only reason Task embeds a shell interpreter is Windows support.
 
 ## Why
@@ -12,7 +12,7 @@ Measured against rest-mail's `Taskfile.yml` + `tasks/*.yml` (3,131 lines, 153
 tasks), three Task behaviours are not quirks but defects:
 
 1. **A task cannot take an argument.** Bare words after a task name are more task
-   names, so `tsk up mail4.test` is impossible; the value must arrive as an
+   names, so `chore up mail4.test` is impossible; the value must arrive as an
    environment variable set *before* the command.
 2. **`dotenv:` resolves at parse time, before CLI variables are merged.** So
    `task up CONFIG=mail4.test` — valid Task syntax, shown in its own docs —
@@ -116,11 +116,11 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
 
    A value binds under the declared name AND its uppercase form, because Taskfile
    convention is uppercase and a case mismatch would silently interpolate nothing.
-   A flag is consumed only if it names a declared parameter, so `tsk logs -f api`
+   A flag is consumed only if it names a declared parameter, so `chore logs -f api`
    still passes `-f` to the task. Too many arguments is an error; a parameter with
    neither argument nor default is an error, not a blank. Bare words are never
    additional task names — multi-target invocation does not exist. Running several
-   tasks is `tsk a && chore b`, which is what everyone types anyway.
+   tasks is `chore a && chore b`, which is what everyone types anyway.
 2. **One resolution order, applied once, at invocation:**
    `positional args` → `call vars` (from a `- task:`/`deps` reference) →
    `task vars` → `include vars` → `file vars` → `dotenv` → process environment.
@@ -146,17 +146,17 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
 Each package owns its files and depends only on those listed.
 
 ```
-cmd/tsk/main.go            → internal/cli
-internal/taskfile/         (no deps)          schema + strict YAML decoding
-internal/shell/            (mvdan.cc/sh)      run and capture shell
-internal/tmpl/             (taskfile, shell)  scope, precedence, rendering
-internal/loader/           (taskfile, tmpl)   read files, resolve includes
-internal/fingerprint/      (taskfile, tmpl, shell)  status/sources/generates
+main.go                    → internal/cli
+internal/chorefile/        (no deps)          schema + strict YAML decoding
+internal/shell/            (os/exec)          run and capture shell
+internal/tmpl/             (chorefile, shell) scope, precedence, rendering
+internal/loader/           (chorefile, tmpl)  read files, resolve includes
+internal/fingerprint/      (chorefile, tmpl, shell)  status/sources/generates
 internal/run/              (all of the above) graph, scheduling, execution
 internal/cli/              (all of the above) flags, arg binding, --list
 ```
 
-### internal/taskfile
+### internal/chorefile
 
 Types are already written (`schema.go`) and are the contract — do not change
 them. Needs: `UnmarshalYAML` for `Var` (scalar or `{sh: …}`), `Cmd` (scalar
@@ -275,11 +275,11 @@ matches. No task → `--list`.
 
 The binary must run rest-mail's Taskfile **unmodified**:
 
-1. `tsk --list` lists all 153 tasks, matching `task --list` modulo ordering.
-2. `tsk status`, `tsk ps`, `tsk config:check` behave as their Task equivalents.
-3. `tsk config:check CONFIG=mail4.test` — the invocation Task silently got wrong —
+1. `chore --list` lists all 153 tasks, matching `task --list` modulo ordering.
+2. `chore status`, `chore ps`, `chore config:check` behave as their Task equivalents.
+3. `chore config:check CONFIG=mail4.test` — the invocation Task silently got wrong —
    either acts on mail4.test or fails; it never silently uses the default.
-4. `tsk build` and `tsk test:unit` run.
+4. `chore build` and `chore test:unit` run.
 5. Deleting `_guard:selector` from rest-mail's Taskfile changes nothing.
 
 Diffing both binaries over the same file is the test harness, and it is the
@@ -318,7 +318,7 @@ alone was not evidence:
    whatever the task creates. Now a `sync.Once` per key; the second caller blocks
    and takes the first's result.
 2. **The dotenv path ignored the caller.** File vars outranked call vars when
-   rendering `dotenv:`, so `vars: {CONFIG: a}` beat `tsk show CONFIG=b`: the task
+   rendering `dotenv:`, so `vars: {CONFIG: a}` beat `chore show CONFIG=b`: the task
    ran with CONFIG=b and config **a**'s environment. rest-mail hid it by using the
    self-defaulting idiom everywhere.
 3. **Strictness stopped at the first custom unmarshaler.** `KnownFields(true)` is
@@ -332,9 +332,9 @@ alone was not evidence:
 
 | check | result |
 |---|---|
-| `tsk --list` vs `task --list` | **153 tasks each, zero difference** |
-| `tsk status` (193-line shell body, nested `{{\`{{.Names}}\`}}` escaping) | runs to completion |
-| `tsk ps`, `tsk config:check` | correct output, exit 0 |
-| `tsk config:check CONFIG=mail4.test` | acts on **mail4.test** — the invocation Task silently got wrong |
-| `tsk build` (sources/generates) | builds, then skips as up to date on re-run |
+| `chore --list` vs `task --list` | **153 tasks each, zero difference** |
+| `chore status` (193-line shell body, nested `{{\`{{.Names}}\`}}` escaping) | runs to completion |
+| `chore ps`, `chore config:check` | correct output, exit 0 |
+| `chore config:check CONFIG=mail4.test` | acts on **mail4.test** — the invocation Task silently got wrong |
+| `chore build` (sources/generates) | builds, then skips as up to date on re-run |
 | `_guard:selector` | no longer needed |
