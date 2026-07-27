@@ -1,0 +1,104 @@
+# install-chore-dev — run the locally-built chore instead of the installed one.
+#
+# Builds ./bin/chore from the current checkout and puts that directory FIRST on
+# PATH, so `chore` means this working tree until you say otherwise. Nothing is
+# installed, nothing is symlinked into a shared prefix, and the Homebrew build
+# is left exactly where it is — undo is `source scripts/uninstall-chore-dev`, or
+# a new shell.
+#
+# SOURCE it (don't execute). A child process cannot change its parent's PATH, so
+# running this as a program would export into a shell that exits immediately:
+#
+#     source scripts/install-chore-dev              # build, then shadow
+#     source scripts/install-chore-dev --no-build   # shadow what is already built
+#
+# Idempotent — re-source after any edit to rebuild and stay pointed at the tree.
+#
+# The dev build is stamped `dev+<sha>` (plus `-dirty` for uncommitted changes),
+# so `chore --version` always answers which binary you are actually running. A
+# release stamps its real version, so the two can never be confused.
+
+# --- must be sourced, or the PATH change goes nowhere ---------------------
+_chore_sourced=0
+if [ -n "${ZSH_VERSION:-}" ]; then
+  case "${ZSH_EVAL_CONTEXT:-}" in *:file | *:file:*) _chore_sourced=1 ;; esac
+elif [ -n "${BASH_VERSION:-}" ]; then
+  [ "${BASH_SOURCE[0]}" != "$0" ] && _chore_sourced=1
+fi
+if [ "$_chore_sourced" != 1 ]; then
+  echo "install-chore-dev: source this script, don't run it:" >&2
+  echo "    source ${0:-scripts/install-chore-dev}" >&2
+  exit 1
+fi
+
+# --- locate the repo from this script's own path, not the cwd -------------
+# So it works from anywhere: `source ~/projects/chore/scripts/install-chore-dev`
+# shadows that checkout even while you sit in another project.
+if [ -n "${ZSH_VERSION:-}" ]; then
+  # shellcheck disable=SC2296  # zsh-only expansion, and only zsh reaches it
+  _chore_self="${(%):-%N}"
+else
+  _chore_self="${BASH_SOURCE[0]}"
+fi
+_chore_root="$(cd "$(dirname "$_chore_self")/.." && pwd)"
+_chore_bin="$_chore_root/bin"
+
+# --- build, unless told not to -------------------------------------------
+if [ "${1:-}" != "--no-build" ]; then
+  _chore_sha="$(git -C "$_chore_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  if [ -n "$(git -C "$_chore_root" status --porcelain 2>/dev/null)" ]; then
+    _chore_sha="$_chore_sha-dirty"
+  fi
+  echo "install-chore-dev: building dev+$_chore_sha" >&2
+  # Built here rather than via `chore build`, because the chore that would run
+  # that task is the one being replaced — and if the tree does not compile, this
+  # must fail before anything touches PATH.
+  if ! ( cd "$_chore_root" && go build -ldflags "-X main.version=dev+$_chore_sha" -o bin/chore . ); then
+    echo "install-chore-dev: build failed — PATH unchanged" >&2
+    unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha
+    return 1
+  fi
+fi
+
+if [ ! -x "$_chore_bin/chore" ]; then
+  echo "install-chore-dev: $_chore_bin/chore not found — build it first:" >&2
+  echo "    source scripts/install-chore-dev        # builds for you" >&2
+  unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha
+  return 1
+fi
+
+# --- what this is shadowing, recorded before PATH changes -----------------
+# Worth printing: with a Homebrew chore installed there are two binaries on the
+# machine, and the whole point of this script is knowing which one just ran.
+_chore_was="$(command -v chore 2>/dev/null || true)"
+
+case ":$PATH:" in
+  *":$_chore_bin:"*) ;; # already on PATH; leave its position alone
+  *)
+    PATH="$_chore_bin:$PATH"
+    export PATH
+    ;;
+esac
+
+# Marker for uninstall, and for anything else that wants to show it in a prompt.
+CHORE_DEV="$_chore_bin"
+export CHORE_DEV
+
+# Clear the shell's command cache. Both shells remember where a name resolved,
+# and that memory outlives a PATH change: with `chore` already hashed to the
+# Homebrew path, the next call would still run it despite the dev dir now being
+# first. bash calls this `hash -r`, zsh `rehash`.
+if [ -n "${ZSH_VERSION:-}" ]; then
+  rehash 2>/dev/null || true
+elif [ -n "${BASH_VERSION:-}" ]; then
+  hash -r 2>/dev/null || true
+fi
+
+echo "install-chore-dev: chore    → $(command -v chore)" >&2
+echo "install-chore-dev: version  → $(chore --version 2>/dev/null || echo '?')" >&2
+if [ -n "$_chore_was" ] && [ "$_chore_was" != "$_chore_bin/chore" ]; then
+  echo "install-chore-dev: shadows   $_chore_was" >&2
+fi
+echo "install-chore-dev: undo     → source $_chore_root/scripts/uninstall-chore-dev" >&2
+
+unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha _chore_was

@@ -39,6 +39,21 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # scripts/ manipulates PATH in the developer's own shell, where a mistake
+      # is annoying to diagnose and easy to ship — nothing else exercises them.
+      # ubuntu only: shellcheck is preinstalled there, not on the macOS runners.
+      - name: ShellCheck scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          # -s bash because they are sourced by bash OR zsh and carry one guarded
+          # zsh-only expansion, silenced in place.
+          shellcheck -s bash -S warning scripts/*
+          # They must also PARSE under bash even though the zsh branch never runs
+          # there — a sourced file is parsed whole before any of it executes.
+          for f in scripts/*; do bash -n "$f"; done
+          echo "scripts ok"
+
       - name: Test
         run: go test -race -count=1 ./...
 
