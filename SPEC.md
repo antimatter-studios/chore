@@ -1,6 +1,6 @@
-# go-tsk — spec
+# chore — spec
 
-A task runner that reads `tskfile.yml` — go-task's format under a name of its\nown — supports the features one real project
+A task runner that reads `chores.yml` — go-task's format under a name of its\nown — supports the features one real project
 uses, and fixes the semantics that make Task unusable as a control plane.
 
 Binary: `tsk`. Platforms: macOS and Linux. No Windows, which is why this can stay
@@ -86,10 +86,10 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    One declaration, four call forms, all equivalent and all bound before dotenv
    resolves:
 
-       tsk up                       # default from vars
-       tsk up mail4.test            # positional, in declared order
-       tsk up --config mail4.test   # named, for a declared parameter
-       tsk up CONFIG=mail4.test     # Task's spelling, still accepted
+       chore up                       # default from vars
+       chore up mail4.test            # positional, in declared order
+       chore up --config mail4.test   # named, for a declared parameter
+       chore up CONFIG=mail4.test     # Task's spelling, still accepted
 
    Whether a parameter is required follows from the declaration, with no marker
    needed in the common cases:
@@ -120,7 +120,7 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    still passes `-f` to the task. Too many arguments is an error; a parameter with
    neither argument nor default is an error, not a blank. Bare words are never
    additional task names — multi-target invocation does not exist. Running several
-   tasks is `tsk a && tsk b`, which is what everyone types anyway.
+   tasks is `tsk a && chore b`, which is what everyone types anyway.
 2. **One resolution order, applied once, at invocation:**
    `positional args` → `call vars` (from a `- task:`/`deps` reference) →
    `task vars` → `include vars` → `file vars` → `dotenv` → process environment.
@@ -232,7 +232,7 @@ func UpToDate(ctx context.Context, t *taskfile.Task, sc *tmpl.Scope, sh shell.Sh
 
 `status:` — every command exits zero → up to date. `sources:`/`generates:` —
 SHA-256 over matched files (globs relative to the task's directory), compared
-with the previous fingerprint stored under `cacheDir` (default `.tsk/`). Any
+with the previous fingerprint stored under `cacheDir` (default `.chore/`). Any
 missing generated file means not up to date.
 
 ### internal/run
@@ -259,7 +259,7 @@ func Main(args []string, stdout, stderr io.Writer) int
 ```
 
 ```
-tsk [flags] <task> [args...] [-- extra]
+chore [flags] <task> [args...] [-- extra]
   -C, --dir DIR     change to DIR before reading Taskfile.yml
   -f, --file FILE   Taskfile to read (default Taskfile.yml, searched upward)
   -l, --list        list tasks with descriptions, grouped by namespace
@@ -287,8 +287,8 @@ reason for keeping the format.
 
 ## Filename
 
-`tskfile.yml`, not `Taskfile.yml`. The format is go-task's, but the two runners
-are not interchangeable: tsk reads `args:` and go-task ignores it, and go-task
+`chores.yml`, not `Taskfile.yml`. The format is go-task's, but the two runners
+are not interchangeable: chore reads `args:` and go-task ignores it, and go-task
 silently mishandles `task <task> VAR=value`, so a file both might claim invites
 exactly the mistake this program exists to prevent. `Taskfile.yml` is still read
 last, with a notice, so a repository can migrate without a flag day.

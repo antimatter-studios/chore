@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 func TestRender(t *testing.T) {
@@ -391,7 +391,7 @@ func TestResolve(t *testing.T) {
 	tests := []struct {
 		name      string
 		base      map[string]string // variables already in scope
-		vars      map[string]taskfile.Var
+		vars      map[string]chorefile.Var
 		canned    map[string]string // script → stdout
 		want      map[string]string
 		wantCalls []string // scripts the shell should have been given
@@ -403,23 +403,23 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "literal",
-			vars: map[string]taskfile.Var{"CONFIG": {Value: "mail4.test"}},
+			vars: map[string]chorefile.Var{"CONFIG": {Value: "mail4.test"}},
 			want: map[string]string{"CONFIG": "mail4.test"},
 		},
 		{
 			name: "literal reads the enclosing scope",
 			base: map[string]string{"ROOT_DIR": "/srv/rest-mail"},
-			vars: map[string]taskfile.Var{"BIN": {Value: "{{.ROOT_DIR}}/bin"}},
+			vars: map[string]chorefile.Var{"BIN": {Value: "{{.ROOT_DIR}}/bin"}},
 			want: map[string]string{"BIN": "/srv/rest-mail/bin"},
 		},
 		{
 			name: "literal with default",
-			vars: map[string]taskfile.Var{"CONFIG": {Value: `{{.CONFIG | default "restmail.test"}}`}},
+			vars: map[string]chorefile.Var{"CONFIG": {Value: `{{.CONFIG | default "restmail.test"}}`}},
 			want: map[string]string{"CONFIG": "restmail.test"},
 		},
 		{
 			name:      "sh var is captured and trimmed",
-			vars:      map[string]taskfile.Var{"REV": {Sh: "git rev-parse HEAD"}},
+			vars:      map[string]chorefile.Var{"REV": {Sh: "git rev-parse HEAD"}},
 			canned:    map[string]string{"git rev-parse HEAD": "  4f1c2ab\n\n"},
 			want:      map[string]string{"REV": "4f1c2ab"},
 			wantCalls: []string{"git rev-parse HEAD"},
@@ -427,14 +427,14 @@ func TestResolve(t *testing.T) {
 		{
 			name:      "sh script is itself rendered",
 			base:      map[string]string{"DOMAIN": "mail4.test"},
-			vars:      map[string]taskfile.Var{"IP": {Sh: "dig +short {{.DOMAIN}}"}},
+			vars:      map[string]chorefile.Var{"IP": {Sh: "dig +short {{.DOMAIN}}"}},
 			canned:    map[string]string{"dig +short mail4.test": "10.99.0.5\n"},
 			want:      map[string]string{"IP": "10.99.0.5"},
 			wantCalls: []string{"dig +short mail4.test"},
 		},
 		{
 			name: "sh script rendered from a sibling var",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"CONFIG": {Value: "mail4.test"},
 				"IP":     {Sh: "dig +short {{.CONFIG}}"},
 			},
@@ -444,7 +444,7 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "sh wins when both forms are set",
-			vars: map[string]taskfile.Var{"V": {Value: "literal", Sh: "echo shell"}},
+			vars: map[string]chorefile.Var{"V": {Value: "literal", Sh: "echo shell"}},
 			canned: map[string]string{
 				"echo shell": "shell\n",
 			},
@@ -453,14 +453,14 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name:      "sh producing nothing yields empty",
-			vars:      map[string]taskfile.Var{"V": {Sh: "true"}},
+			vars:      map[string]chorefile.Var{"V": {Sh: "true"}},
 			canned:    map[string]string{},
 			want:      map[string]string{"V": ""},
 			wantCalls: []string{"true"},
 		},
 		{
 			name: "var references an earlier var",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"BASE": {Value: "restmail"},
 				"FULL": {Value: "{{.BASE}}-smtp"},
 			},
@@ -470,7 +470,7 @@ func TestResolve(t *testing.T) {
 			// Sorted-first name depends on a sorted-last one, so this only works
 			// if resolution really is iterative rather than one ordered pass.
 			name: "var references a var that sorts after it",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Value: "{{.Z}}!"},
 				"Z": {Value: "z"},
 			},
@@ -478,7 +478,7 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "three deep chain resolved backwards",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Value: "{{.B}}1"},
 				"B": {Value: "{{.C}}2"},
 				"C": {Value: "3"},
@@ -487,7 +487,7 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "sh var depends on a literal that sorts after it",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A_IMAGE": {Sh: "echo {{.Z_TAG}}"},
 				"Z_TAG":   {Value: "2026.07.26"},
 			},
@@ -500,19 +500,19 @@ func TestResolve(t *testing.T) {
 			// below, which is already resolved.
 			name: "self reference reads the enclosing scope",
 			base: map[string]string{"PATH": "/usr/bin"},
-			vars: map[string]taskfile.Var{"PATH": {Value: "{{.PATH}}:/opt/bin"}},
+			vars: map[string]chorefile.Var{"PATH": {Value: "{{.PATH}}:/opt/bin"}},
 			want: map[string]string{"PATH": "/usr/bin:/opt/bin"},
 		},
 		{
 			name: "self reference with no inherited value",
-			vars: map[string]taskfile.Var{"EXTRA": {Value: "{{.EXTRA}}-suffix"}},
+			vars: map[string]chorefile.Var{"EXTRA": {Value: "{{.EXTRA}}-suffix"}},
 			want: map[string]string{"EXTRA": "-suffix"},
 		},
 		{
 			// A regex-based dependency scan would call this a cycle. Both are
 			// just literals bound for another program.
 			name: "raw strings never create a dependency",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Value: "{{`{{.B}}`}}"},
 				"B": {Value: "{{`{{.A}}`}}"},
 			},
@@ -520,14 +520,14 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "docker format var",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"FORMAT": {Value: "table {{`{{.Names}}\t{{.Status}}`}}"},
 			},
 			want: map[string]string{"FORMAT": "table {{.Names}}\t{{.Status}}"},
 		},
 		{
 			name: "unknown reference resolves empty",
-			vars: map[string]taskfile.Var{"V": {Value: "[{{.NOPE}}]"}},
+			vars: map[string]chorefile.Var{"V": {Value: "[{{.NOPE}}]"}},
 			want: map[string]string{"V": "[]"},
 		},
 	}
@@ -566,14 +566,14 @@ func TestResolveErrors(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		vars      map[string]taskfile.Var
+		vars      map[string]chorefile.Var
 		cap       Capturer
 		noShell   bool // pass a nil Capturer, as the runner would with no shell
 		wantWords []string
 	}{
 		{
 			name: "two var cycle names both",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Value: "{{.B}}"},
 				"B": {Value: "{{.A}}"},
 			},
@@ -581,7 +581,7 @@ func TestResolveErrors(t *testing.T) {
 		},
 		{
 			name: "three var cycle names all three",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Value: "{{.B}}"},
 				"B": {Value: "{{.C}}"},
 				"C": {Value: "{{.A}}"},
@@ -590,7 +590,7 @@ func TestResolveErrors(t *testing.T) {
 		},
 		{
 			name: "cycle through an sh script",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"A": {Sh: "echo {{.B}}"},
 				"B": {Value: "{{.A}}"},
 			},
@@ -598,7 +598,7 @@ func TestResolveErrors(t *testing.T) {
 		},
 		{
 			name: "cycle reported alongside resolvable vars",
-			vars: map[string]taskfile.Var{
+			vars: map[string]chorefile.Var{
 				"OK": {Value: "fine"},
 				"A":  {Value: "{{.B}}"},
 				"B":  {Value: "{{.A}}"},
@@ -607,29 +607,29 @@ func TestResolveErrors(t *testing.T) {
 		},
 		{
 			name:      "capturer error names the var",
-			vars:      map[string]taskfile.Var{"IP": {Sh: "dig +short mail4.test"}},
+			vars:      map[string]chorefile.Var{"IP": {Sh: "dig +short mail4.test"}},
 			cap:       &fakeCapturer{err: boom},
 			wantWords: []string{"var IP", "dig +short mail4.test", "command not found"},
 		},
 		{
 			name:      "missing shell names the var",
-			vars:      map[string]taskfile.Var{"REV": {Sh: "git rev-parse HEAD"}},
+			vars:      map[string]chorefile.Var{"REV": {Sh: "git rev-parse HEAD"}},
 			noShell:   true,
 			wantWords: []string{"var REV", "git rev-parse HEAD", "shell"},
 		},
 		{
 			name:      "unparseable value names the var",
-			vars:      map[string]taskfile.Var{"BAD": {Value: "{{.A"}},
+			vars:      map[string]chorefile.Var{"BAD": {Value: "{{.A"}},
 			wantWords: []string{"var BAD", "parsing template"},
 		},
 		{
 			name:      "unparseable sh script names the var",
-			vars:      map[string]taskfile.Var{"BAD": {Sh: "echo {{ nosuchfunc }}"}},
+			vars:      map[string]chorefile.Var{"BAD": {Sh: "echo {{ nosuchfunc }}"}},
 			wantWords: []string{"var BAD", "not defined"},
 		},
 		{
 			name:      "unrenderable value names the var",
-			vars:      map[string]taskfile.Var{"BAD": {Value: "{{.A.B}}"}},
+			vars:      map[string]chorefile.Var{"BAD": {Value: "{{.A.B}}"}},
 			wantWords: []string{"var BAD", "rendering template"},
 		},
 	}
@@ -666,7 +666,7 @@ func TestResolvePassesContextToTheShell(t *testing.T) {
 	ctx := context.WithValue(t.Context(), key{}, "carried")
 	cap := &fakeCapturer{out: map[string]string{"whoami": "root"}}
 
-	if _, err := New(nil).Resolve(ctx, map[string]taskfile.Var{"U": {Sh: "whoami"}}, cap); err != nil {
+	if _, err := New(nil).Resolve(ctx, map[string]chorefile.Var{"U": {Sh: "whoami"}}, cap); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got := cap.ctx.Value(key{}); got != "carried" {
@@ -678,7 +678,7 @@ func TestResolveIsDeterministic(t *testing.T) {
 	t.Parallel()
 
 	// Map iteration order changes run to run; the result must not.
-	vars := map[string]taskfile.Var{
+	vars := map[string]chorefile.Var{
 		"A": {Value: "{{.B}}-{{.C}}"},
 		"B": {Value: "{{.D}}b"},
 		"C": {Value: "{{.D}}c"},

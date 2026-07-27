@@ -10,7 +10,7 @@ import (
 	"text/template"
 	"text/template/parse"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // funcs is the whole function set: Go's builtins plus `default`.
@@ -83,7 +83,7 @@ func (s *Scope) Render(text string) (string, error) {
 // parseTemplate parses with the one function set and the one missing-key policy,
 // so parsing for dependency analysis cannot disagree with parsing for output.
 func parseTemplate(text string) (*template.Template, error) {
-	t, err := template.New("tsk").Funcs(funcs).Option("missingkey=zero").Parse(text)
+	t, err := template.New("chore").Funcs(funcs).Option("missingkey=zero").Parse(text)
 	if err != nil {
 		return nil, fmt.Errorf("parsing template %q: %w", text, err)
 	}
@@ -120,7 +120,7 @@ type Capturer interface {
 //
 // The receiver is not modified: values land in a child scope and are returned as
 // a map for the caller to Push as its own layer.
-func (s *Scope) Resolve(ctx context.Context, vars map[string]taskfile.Var, cap Capturer) (map[string]string, error) {
+func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap Capturer) (map[string]string, error) {
 	out := make(map[string]string, len(vars))
 	if len(vars) == 0 {
 		return out, nil
@@ -178,7 +178,7 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]taskfile.Var, cap C
 }
 
 // source returns the template to render for a var, and whether it is a script.
-func source(v taskfile.Var) (text string, isSh bool) {
+func source(v chorefile.Var) (text string, isSh bool) {
 	if v.Sh != "" {
 		return v.Sh, true
 	}
@@ -278,7 +278,7 @@ func walkBranch(b *parse.BranchNode, fn func(parse.Node)) {
 
 // cycleError names every variable still pending and what it is waiting for, so
 // the message points at the edit that fixes it.
-func cycleError(vars map[string]taskfile.Var, pending map[string]bool) error {
+func cycleError(vars map[string]chorefile.Var, pending map[string]bool) error {
 	parts := make([]string, 0, len(pending))
 	for _, name := range slices.Sorted(maps.Keys(pending)) {
 		text, _ := source(vars[name])

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // writeDotenv puts body in a file of its own so parseDotenv is exercised the
@@ -192,9 +192,9 @@ func TestParseDotenvMissingFile(t *testing.T) {
 // silently becomes a default, container names resolve to "-suffix", and commands
 // match nothing while reporting success.
 func TestDotenvNoneLoadedIsFatal(t *testing.T) {
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{"config.env", "secrets.env"},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"up": {Cmds: cmds("printf ran > ran.txt")},
 	})
 
@@ -212,9 +212,9 @@ func TestDotenvNoneLoadedIsFatal(t *testing.T) {
 // TestDotenvPartialMissWarnsAndContinues: an absent secrets.env is normal, so a
 // partial miss must not stop the run — but it must not be invisible either.
 func TestDotenvPartialMissWarnsAndContinues(t *testing.T) {
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{"config.env", "secrets.env"},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"up": {Cmds: cmds(`printf '%s' '{{.STACK}}' > stack.txt`)},
 	})
 	f.write("config.env", "STACK=alpha\n")
@@ -235,9 +235,9 @@ func TestDotenvPartialMissWarnsAndContinues(t *testing.T) {
 // same warning 20 times is how a real diagnostic gets ignored. Deps run
 // concurrently, so this also exercises the lock around the warned set.
 func TestDotenvWarnsOncePerRun(t *testing.T) {
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{"config.env", "secrets.env"},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"top": {Deps: depsOn("a", "b"), Cmds: cmds("printf top > top.txt")},
 		"a":   {Cmds: cmds("printf a > a.txt")},
 		"b":   {Cmds: cmds("printf b > b.txt")},
@@ -259,9 +259,9 @@ func TestDotenvWarnsOncePerRun(t *testing.T) {
 // load when the file does appear.
 func TestDotenvOptionalPrefixIsSilent(t *testing.T) {
 	t.Run("absent optional file is not reported", func(t *testing.T) {
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"config.env", "?secrets.env"},
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			"up": {Cmds: cmds(`printf '%s' '{{.STACK}}' > stack.txt`)},
 		})
 		f.write("config.env", "STACK=alpha\n")
@@ -277,9 +277,9 @@ func TestDotenvOptionalPrefixIsSilent(t *testing.T) {
 	})
 
 	t.Run("present optional file still loads and outranks the earlier one", func(t *testing.T) {
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"config.env", "?secrets.env"},
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			"up": {Cmds: cmds(`printf '%s/%s' '{{.STACK}}' '{{.TOKEN}}' > out.txt`)},
 		})
 		f.write("config.env", "STACK=alpha\nTOKEN=placeholder\n")
@@ -298,9 +298,9 @@ func TestDotenvOptionalPrefixIsSilent(t *testing.T) {
 		// declared path is optional, the task has been told it needs none of them
 		// — treating that as fatal would contradict the annotation, and produced
 		// an error message that named no files at all.
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"?config.env"},
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			"up": {Cmds: cmds("printf ran > ran.txt")},
 		})
 
@@ -314,9 +314,9 @@ func TestDotenvOptionalPrefixIsSilent(t *testing.T) {
 	t.Run("a required path missing alongside an optional one is still fatal", func(t *testing.T) {
 		// The rule still bites where it matters: one unmarked path that does not
 		// exist means the environment the author DID require is absent.
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"config.env", "?secrets.env"},
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			"up": {Cmds: cmds("printf ran > ran.txt")},
 		})
 
@@ -337,9 +337,9 @@ func TestDotenvAbsolutePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{filepath.Join(shared, "shared.env")},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"up": {Cmds: cmds(`printf '%s' '{{.STACK}}' > stack.txt`)},
 	})
 
@@ -354,9 +354,9 @@ func TestDotenvAbsolutePath(t *testing.T) {
 // different failure from one that is absent, and it must not be treated as a
 // silent miss — the values the author wrote are the ones the task needs.
 func TestDotenvMalformedFileIsFatal(t *testing.T) {
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{"config.env"},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"up": {Cmds: cmds("printf ran > ran.txt")},
 	})
 	f.write("config.env", "STACK=alpha\nthis line has no equals sign\n")

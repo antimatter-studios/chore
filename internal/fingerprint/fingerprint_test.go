@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // ---------- fakes ----------
@@ -102,13 +102,13 @@ func removeFile(t *testing.T, dir, rel string) {
 	}
 }
 
-func newTask(name string) *taskfile.Task {
-	return &taskfile.Task{Name: name}
+func newTask(name string) *chorefile.Task {
+	return &chorefile.Task{Name: name}
 }
 
 // check runs UpToDate and fails on an unexpected error, so the table cases can
 // talk about booleans only.
-func check(t *testing.T, task *taskfile.Task, r Renderer, sh Runner, dir, cache string) bool {
+func check(t *testing.T, task *chorefile.Task, r Renderer, sh Runner, dir, cache string) bool {
 	t.Helper()
 	ok, err := UpToDate(context.Background(), task, r, sh, dir, cache)
 	if err != nil {
@@ -117,7 +117,7 @@ func check(t *testing.T, task *taskfile.Task, r Renderer, sh Runner, dir, cache 
 	return ok
 }
 
-func mustSave(t *testing.T, task *taskfile.Task, dir, cache string) {
+func mustSave(t *testing.T, task *chorefile.Task, dir, cache string) {
 	t.Helper()
 	if err := Save(task, dir, cache); err != nil {
 		t.Fatalf("Save(%s): %v", task.Name, err)
@@ -304,7 +304,7 @@ func TestStatusWinsOverSources(t *testing.T) {
 // ---------- sources / generates ----------
 
 // fixture is a saved-and-up-to-date task: two sources, one generated file.
-func fixture(t *testing.T) (dir string, task *taskfile.Task) {
+func fixture(t *testing.T) (dir string, task *chorefile.Task) {
 	t.Helper()
 	dir = t.TempDir()
 	writeFile(t, dir, "src/a.go", "package a")
@@ -487,13 +487,13 @@ func TestGeneratesNeverProduced(t *testing.T) {
 func TestNoChecksConfigured(t *testing.T) {
 	cases := []struct {
 		name string
-		task *taskfile.Task
+		task *chorefile.Task
 	}{
 		{name: "nil task", task: nil},
 		{name: "bare task", task: newTask("run")},
-		{name: "task with cmds only", task: &taskfile.Task{
+		{name: "task with cmds only", task: &chorefile.Task{
 			Name: "run",
-			Cmds: []taskfile.Cmd{{Cmd: "echo hi"}},
+			Cmds: []chorefile.Cmd{{Cmd: "echo hi"}},
 		}},
 	}
 	for _, tc := range cases {
@@ -532,8 +532,8 @@ func globFixture(t *testing.T) string {
 		".git/HEAD",
 		"node_modules/pkg/f.txt",
 		"vendor/node_modules/g.txt",
-		".tsk/h.txt",
-		".tsk/fingerprints/i.json",
+		".chore/h.txt",
+		".chore/fingerprints/i.json",
 	} {
 		writeFile(t, dir, rel, "content of "+rel)
 	}
@@ -822,7 +822,7 @@ func TestBadPatternIsAnError(t *testing.T) {
 // ---------- the cache ----------
 
 func TestCacheDirCreatedOnDemand(t *testing.T) {
-	cases := []string{"", ".tsk", "nested/does/not/exist"}
+	cases := []string{"", ".chore", "nested/does/not/exist"}
 	for _, cache := range cases {
 		t.Run("cacheDir="+cache, func(t *testing.T) {
 			dir := t.TempDir()

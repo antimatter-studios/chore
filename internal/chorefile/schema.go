@@ -6,7 +6,7 @@
 // ones that cost almost nothing to support. Everything else Task grew —
 // remote includes, watch mode, v2 compatibility, matrix/for expansion,
 // interactive tasks, output styles — is deliberately absent.
-package taskfile
+package chorefile
 
 import "strings"
 
@@ -69,7 +69,7 @@ type Task struct {
 	Silent   bool     `yaml:"silent"`
 	Internal bool     `yaml:"internal"`
 	// Run is "always" (default) or "once": a task marked once executes one time
-	// per invocation of tsk, keyed on its rendered variables.
+	// per invocation of chore, keyed on its rendered variables.
 	Run         string   `yaml:"run"`
 	IgnoreError bool     `yaml:"ignore_error"`
 	Platforms   []string `yaml:"platforms"`
@@ -87,7 +87,7 @@ type Task struct {
 	//	      type: bool
 	//	      desc: keep streaming
 	//
-	// invoked as `tsk up mail4.test --follow`. This is the whole point of the
+	// invoked as `chore up mail4.test --follow`. This is the whole point of the
 	// program: Task has no equivalent, so a config could only be selected by an
 	// environment variable set before the command, and `task up CONFIG=x`
 	// silently acted on something else.
