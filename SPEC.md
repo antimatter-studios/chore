@@ -73,6 +73,25 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
        tsk up --config mail4.test   # named, for a declared parameter
        tsk up CONFIG=mail4.test     # Task's spelling, still accepted
 
+   Whether a parameter is required follows from the declaration, with no marker
+   needed in the common cases:
+
+   | declaration | meaning |
+   |---|---|
+   | `args: [config]` | required — nothing defines it |
+   | `args: [config]` + `vars: {config: x}` | optional, defaults to `x` |
+   | `args: [filter]` + `vars: {filter: ""}` | optional, and empty is meaningful |
+   | `args: [config!]` | must be supplied explicitly; a default will not stand in |
+
+   The `!` is a SUFFIX: a leading `!` is YAML tag syntax, so `args: [!config]`
+   fails to parse and `- !config` silently yields a parameter named "". A
+   parameter's default reaches the dotenv path, since that path is usually keyed
+   on the parameter itself; task vars as a whole cannot, because they are allowed
+   to read dotenv values.
+
+   Supplying the same parameter twice (positionally and by name) is refused
+   rather than ranked — the caller named two values and would silently get one.
+
    A value binds under the declared name AND its uppercase form, because Taskfile
    convention is uppercase and a case mismatch would silently interpolate nothing.
    A flag is consumed only if it names a declared parameter, so `tsk logs -f api`

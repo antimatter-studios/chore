@@ -177,6 +177,119 @@ func mustContain(t *testing.T, got, want, what string) {
 // `args: [config]` populates `.config` and leaves `.CONFIG` empty — a Taskfile
 // copied from the usage text would run with no config at all, which is exactly
 // the silent-default failure this program exists to remove.
+// `args: [config!]` insists on an explicit value: a default no longer satisfies
+// the parameter. That is the one thing omitting a default cannot express — "there
+// IS a sensible default, but you must still say which one you mean."
+func TestRequiredMarkerIgnoresTheDefault(t *testing.T) {
+	newTask := func() map[string]*taskfile.Task {
+		return map[string]*taskfile.Task{
+			"up": {
+				Args: []string{"config!"},
+				Vars: map[string]taskfile.Var{"config": {Value: "restmail.test"}},
+				Cmds: cmds(`printf '%s' '{{.CONFIG}}' > out.txt`),
+			},
+		}
+	}
+
+	// A default exists, but the marker means it cannot stand in for a choice.
+	f := newFixture(t, nil, newTask())
+	err := f.mustFail("up", nil, nil)
+	mustContain(t, err.Error(), "must be given explicitly", "error")
+	if f.exists("out.txt") {
+		t.Error("the task ran without the value it insists on")
+	}
+
+	// Supplied positionally — the marker is not part of the name.
+	f2 := newFixture(t, nil, newTask())
+	f2.mustRun("up", []string{"mail4.test"}, nil)
+	if got := f2.read("out.txt"); got != "mail4.test" {
+		t.Errorf("out.txt = %q, want mail4.test", got)
+	}
+
+	// Supplied by name.
+	f3 := newFixture(t, nil, newTask())
+	f3.mustRun("up", nil, map[string]string{"CONFIG": "mail4.test"})
+	if got := f3.read("out.txt"); got != "mail4.test" {
+		t.Errorf("out.txt = %q, want mail4.test", got)
+	}
+}
+
+// An explicitly empty default marks a parameter optional. Without this, there is
+// no way to say "may be omitted, and empty is meaningful" — and it is why
+// `args:` needs no required/optional marker: a default's presence is the marker.
+func TestEmptyDefaultMakesAParameterOptional(t *testing.T) {
+	f := newFixture(t, nil, map[string]*taskfile.Task{
+		"list": {
+			Args: []string{"filter"},
+			Vars: map[string]taskfile.Var{"filter": {Value: ""}},
+			Cmds: cmds(`printf 'filter=[%s]' '{{.FILTER}}' > out.txt`),
+		},
+		"needed": {
+			Args: []string{"config"},
+			Cmds: cmds(`printf ran > ran.txt`),
+		},
+	})
+
+	f.mustRun("list", nil, nil)
+	if got := f.read("out.txt"); got != "filter=[]" {
+		t.Errorf("out.txt = %q, want an empty filter to be allowed", got)
+	}
+
+	// A parameter with no declared default is still required.
+	err := f.mustFail("needed", nil, nil)
+	mustContain(t, err.Error(), "needs argument(s) config", "error")
+}
+
+// The same parameter supplied positionally AND by name is a contradiction, so it
+// is refused rather than resolved by precedence — silently preferring one is how
+// a command acts on a config the caller did not mean.
+func TestConflictingArgumentAndNamedValue(t *testing.T) {
+	f := newFixture(t, nil, map[string]*taskfile.Task{
+		"up": {Args: []string{"config"}, Cmds: cmds(`printf ran > ran.txt`)},
+	})
+
+	err := f.mustFail("up", []string{"mail4.test"}, map[string]string{"CONFIG": "restmail.test"})
+	mustContain(t, err.Error(), "given twice", "error")
+	if f.exists("ran.txt") {
+		t.Error("the task ran despite contradictory arguments")
+	}
+
+	// The same value twice is not a contradiction.
+	f2 := newFixture(t, nil, map[string]*taskfile.Task{
+		"up": {Args: []string{"config"}, Cmds: cmds(`printf ran > ran.txt`)},
+	})
+	f2.mustRun("up", []string{"mail4.test"}, map[string]string{"CONFIG": "mail4.test"})
+}
+
+// A parameter's DEFAULT must reach the dotenv path, which is the thing usually
+// keyed on it. Task vars as a whole are resolved after dotenv (they may read its
+// values), so parameter defaults specifically are resolved earlier — otherwise
+// `tsk up` with no argument renders `config//config.env` and fails, while
+// `tsk up mail4.test` works, which is a baffling way to greet a new user.
+func TestParameterDefaultReachesTheDotenvPath(t *testing.T) {
+	f := newFixture(t, &taskfile.File{
+		Dotenv: []string{"config/{{.CONFIG}}/config.env"},
+	}, map[string]*taskfile.Task{
+		"up": {
+			Args: []string{"config"},
+			Vars: map[string]taskfile.Var{"config": {Value: "alpha"}},
+			Cmds: cmds(`printf '%s' "$STACK" > out.txt`),
+		},
+	})
+	f.write("config/alpha/config.env", "STACK=alpha-stack\n")
+	f.write("config/bravo/config.env", "STACK=bravo-stack\n")
+
+	f.mustRun("up", nil, nil)
+	if got := f.read("out.txt"); got != "alpha-stack" {
+		t.Errorf("with no argument: STACK = %q, want the default config's value", got)
+	}
+
+	f.mustRun("up", []string{"bravo"}, nil)
+	if got := f.read("out.txt"); got != "bravo-stack" {
+		t.Errorf("with an argument: STACK = %q, want the named config's value", got)
+	}
+}
+
 // An argument answers to the name as written AND its uppercase form. Taskfile
 // convention is uppercase variables, so `args: [config]` used as {{.CONFIG}} —
 // the form this program's own usage text shows — must work rather than silently
@@ -252,14 +365,17 @@ func TestArgsFewerThanParametersFallThrough(t *testing.T) {
 func TestVariablePrecedence(t *testing.T) {
 	const probe = `printf '%s' '{{.V}}' > out.txt`
 
-	t.Run("positional arg beats call var", func(t *testing.T) {
+	t.Run("a declared parameter given twice is refused, not ranked", func(t *testing.T) {
+		// SPEC lists positional args above call vars, and that ordering still holds
+		// for everything else. But for a DECLARED parameter the two forms are the
+		// same knob, so supplying both is a contradiction from the command line
+		// (`tsk up mail4.test CONFIG=other`) and is rejected rather than silently
+		// resolved — the caller named two configs and would get one.
 		f := newFixture(t, nil, map[string]*taskfile.Task{
 			"probe": {Args: []string{"V"}, Cmds: cmds(probe)},
 		})
-		f.mustRun("probe", []string{"from-arg"}, map[string]string{"V": "from-call"})
-		if got := f.read("out.txt"); got != "from-arg" {
-			t.Errorf("V = %q, want from-arg", got)
-		}
+		err := f.mustFail("probe", []string{"from-arg"}, map[string]string{"V": "from-call"})
+		mustContain(t, err.Error(), "given twice", "error")
 	})
 
 	t.Run("call var beats task var", func(t *testing.T) {

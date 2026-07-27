@@ -37,8 +37,11 @@ two includes can quietly overwrite each other's values.
 
 ## What it does differently
 
-- **`args:` on a task** binds positional parameters: `tsk up mail4.test`. `NAME=value`
-  still works, for compatibility with existing invocations.
+- **`args:` on a task** declares its parameters. One declaration, four call forms:
+  `tsk up`, `tsk up mail4.test`, `tsk up --config mail4.test`, `tsk up CONFIG=mail4.test`.
+  Required-ness follows from the declaration — no default means required, a default
+  in `vars:` means optional, `vars: {x: ""}` means optional-and-empty-is-fine, and
+  `args: [config!]` means the caller must choose even though a default exists.
 - **One resolution order, evaluated once at invocation** — arguments, call vars,
   task vars, file vars, dotenv, environment — with arguments bound *before* dotenv
   paths are rendered, so `dotenv: ['config/{{.CONFIG}}/config.env']` works from

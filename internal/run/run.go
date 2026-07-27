@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -79,7 +80,7 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 		}
 		return nil
 	}
-	if err := checkArgs(t, len(args), scope); err != nil {
+	if err := checkArgs(t, args, callVars, scope); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	if err := checkRequires(t, scope); err != nil {
@@ -248,6 +249,9 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	if err != nil {
 		return nil, err
 	}
+	if err := checkArgConflicts(t, argVars, callVars); err != nil {
+		return nil, err
+	}
 	early := base.Push(argVars).Push(callVars)
 
 	sh := r.shell(r.Project.RootDir, early)
@@ -260,18 +264,42 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 		}
 	}
 
+	// A declared parameter's DEFAULT has to be available before the dotenv path is
+	// rendered, because the path is usually keyed on that very parameter
+	// (dotenv: ['config/{{.CONFIG}}/config.env']). Task vars as a whole cannot be
+	// resolved this early — they are allowed to read dotenv values — so resolve
+	// just the parameter defaults, and only those the caller did not supply.
+	paramDefaults, err := early.Push(fileVars).Resolve(ctx, parameterVars(t, argVars, callVars), sh)
+	if err != nil {
+		return nil, fmt.Errorf("parameter defaults: %w", err)
+	}
+	// A default is written in one case; the path that consumes it may use the
+	// other. `vars: {config: x}` must satisfy dotenv: ['config/{{.CONFIG}}/…'].
+	for k, v := range maps.Clone(paramDefaults) {
+		if upper := strings.ToUpper(k); upper != k {
+			if _, ok := paramDefaults[upper]; !ok {
+				paramDefaults[upper] = v
+			}
+		}
+		if lower := strings.ToLower(k); lower != k {
+			if _, ok := paramDefaults[lower]; !ok {
+				paramDefaults[lower] = v
+			}
+		}
+	}
+
 	// File vars are resolved with arguments visible, so the self-defaulting idiom
 	// CONFIG: '{{.CONFIG | default "x"}}' picks up a caller's value. But when the
 	// dotenv PATH is rendered the caller must outrank the file outright:
 	// otherwise a literal `vars: {CONFIG: a}` loads config a's environment while
 	// the task runs with CONFIG=b — the silent wrong-stack failure this program
 	// exists to remove, reintroduced one layer down.
-	dotenvVars, err := r.dotenv(t, base.Push(fileVars).Push(callVars).Push(argVars))
+	dotenvVars, err := r.dotenv(t, base.Push(fileVars).Push(paramDefaults).Push(callVars).Push(argVars))
 	if err != nil {
 		return nil, err
 	}
 
-	scope := base.Push(dotenvVars).Push(fileVars)
+	scope := base.Push(dotenvVars).Push(fileVars).Push(paramDefaults)
 	taskVars, err := scope.Push(argVars).Push(callVars).Resolve(ctx, t.Vars, sh)
 	if err != nil {
 		return nil, fmt.Errorf("task vars: %w", err)
@@ -282,7 +310,8 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	// only. Mirror it to the other so `args: [config]` with `vars: {config: x}`
 	// still answers to {{.CONFIG}}, exactly as a supplied argument does — the
 	// alternative is a value that works when passed and vanishes when defaulted.
-	for _, name := range t.Args {
+	for _, p := range t.Params() {
+		name := p.Name
 		other := strings.ToUpper(name)
 		if other == name {
 			other = strings.ToLower(name)
@@ -302,22 +331,95 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	return final, nil
 }
 
+// declaresDefault reports whether the task or its file defines a variable for
+// the parameter, in any spelling — presence, not emptiness.
+func declaresDefault(t *taskfile.Task, name string) bool {
+	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+		if _, ok := t.Vars[spelling]; ok {
+			return true
+		}
+		if t.File != nil {
+			if _, ok := t.File.Vars[spelling]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkArgConflicts rejects a parameter given twice with different values, e.g.
+// `tsk up mail4.test --config restmail.test`. One of the two was going to be
+// ignored, and picking a winner silently is how you act on a config you did not
+// mean to name.
+func checkArgConflicts(t *taskfile.Task, argVars, callVars map[string]string) error {
+	for _, p := range t.Params() {
+		name := p.Name
+		positional, given := argVars[name]
+		if !given {
+			continue
+		}
+		for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+			named, ok := callVars[spelling]
+			if ok && named != positional {
+				return fmt.Errorf("%s given twice: %q positionally and %q as %s",
+					name, positional, named, spelling)
+			}
+		}
+	}
+	return nil
+}
+
+// parameterVars picks out the task vars that define defaults for declared
+// parameters the caller did not supply. Under both spellings, since a parameter
+// answers to either.
+func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]taskfile.Var {
+	given := func(name string) bool {
+		for _, m := range supplied {
+			if _, ok := m[name]; ok {
+				return true
+			}
+			if _, ok := m[strings.ToUpper(name)]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	out := map[string]taskfile.Var{}
+	for _, p := range t.Params() {
+		name := p.Name
+		if given(name) || p.Required {
+			continue
+		}
+		for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+			if v, ok := t.Vars[spelling]; ok {
+				out[spelling] = v
+			}
+		}
+	}
+	return out
+}
+
 // bindArgs maps positional arguments onto the names the task declares. Fewer
 // arguments than parameters is allowed — the remaining names fall through to
 // vars, which is how a default value works. More is an error, because it means
 // the caller expected something the task will not do.
 func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 	out := map[string]string{}
-	if len(args) > len(t.Args) {
-		if len(t.Args) == 0 {
+	params := t.Params()
+	if len(args) > len(params) {
+		if len(params) == 0 {
 			return nil, fmt.Errorf("task %s takes no arguments, got %d (%s)",
 				t.Name, len(args), strings.Join(args, " "))
 		}
+		names := make([]string, len(params))
+		for i, p := range params {
+			names[i] = p.Name
+		}
 		return nil, fmt.Errorf("task %s takes %d argument(s) (%s), got %d",
-			t.Name, len(t.Args), strings.Join(t.Args, ", "), len(args))
+			t.Name, len(params), strings.Join(names, ", "), len(args))
 	}
 	for i, a := range args {
-		name := t.Args[i]
+		name := params[i].Name
 		out[name] = a
 		// Go templates are case-sensitive and Taskfile convention is uppercase, so
 		// `args: [config]` must also answer to {{.CONFIG}}. Binding only the name
@@ -334,23 +436,53 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 // checkArgs fails when a declared parameter was neither supplied nor defaulted.
 // Running with an empty value is how a command ends up addressing nothing at
 // all, so an unsupplied parameter with no default is an error, not a blank.
-func checkArgs(t *taskfile.Task, supplied int, scope *tmpl.Scope) error {
-	var missing []string
-	for i := supplied; i < len(t.Args); i++ {
-		name := t.Args[i]
-		if v, _ := scope.Get(name); v != "" {
+func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scope *tmpl.Scope) error {
+	var missing, insisted []string
+
+	for i, p := range t.Params() {
+		if i < len(args) || suppliedByName(p.Name, callVars) {
 			continue
 		}
-		if v, _ := scope.Get(strings.ToUpper(name)); v != "" {
+		if p.Required {
+			// `config!` — the author is insisting on an explicit value, so a
+			// default must NOT satisfy it. That is the whole difference between
+			// the marker and simply omitting a default.
+			insisted = append(insisted, p.Name)
 			continue
 		}
-		missing = append(missing, name)
+		if v, _ := scope.Get(p.Name); v != "" {
+			continue
+		}
+		if v, _ := scope.Get(strings.ToUpper(p.Name)); v != "" {
+			continue
+		}
+		// A DECLARED default satisfies the parameter even when it is empty:
+		// `vars: {filter: ""}` is the author saying this one is optional.
+		if declaresDefault(t, p.Name) {
+			continue
+		}
+		missing = append(missing, p.Name)
+	}
+
+	if len(insisted) > 0 {
+		return fmt.Errorf("%s must be given explicitly (declared %s!) — tsk %s --%s <value>",
+			strings.Join(insisted, ", "), insisted[0], t.Name, insisted[0])
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("needs argument(s) %s — pass positionally (tsk %s <%s>), as %s=value, or give it a default in vars",
 			strings.Join(missing, ", "), t.Name, missing[0], strings.ToUpper(missing[0]))
 	}
 	return nil
+}
+
+// suppliedByName reports whether the caller named the parameter, in any spelling.
+func suppliedByName(name string, callVars map[string]string) bool {
+	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+		if _, ok := callVars[spelling]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // dotenv loads the env files declared by the root file and, if different, the
