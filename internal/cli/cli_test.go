@@ -367,7 +367,7 @@ func TestSplitArgs(t *testing.T) {
 // else stays a positional word so it still reaches the task. Without that rule,
 // adding named parameters would break `tsk logs -f api`.
 func TestSplitArgsNamedParameters(t *testing.T) {
-	params := map[string]string{"config": "config"}
+	params := map[string]param{"config": {name: "config"}}
 
 	for _, c := range []struct {
 		name      string
@@ -420,6 +420,64 @@ func TestSplitArgsNamedParameters(t *testing.T) {
 				}
 				return
 			}
+			if err != nil {
+				t.Fatalf("splitArgs: %v", err)
+			}
+			if !reflect.DeepEqual(args, c.wantArgs) {
+				t.Errorf("args = %q, want %q", args, c.wantArgs)
+			}
+			if !reflect.DeepEqual(vars, c.wantVars) {
+				t.Errorf("vars = %v, want %v", vars, c.wantVars)
+			}
+		})
+	}
+}
+
+// A boolean parameter — one whose default is true/false — is complete on its
+// own, so `--follow` must not swallow the word after it. Getting this wrong
+// turns `tsk logs --follow api` into a request to follow a service called "api"
+// with no filter, or an error, depending on which way it guesses.
+func TestSplitArgsBooleanFlags(t *testing.T) {
+	params := map[string]param{
+		"follow": {name: "follow", boolean: true},
+		"filter": {name: "filter"},
+	}
+
+	for _, c := range []struct {
+		name     string
+		words    []string
+		wantArgs []string
+		wantVars map[string]string
+	}{
+		{
+			name:     "presence alone is the value, and the next word survives",
+			words:    []string{"--follow", "api"},
+			wantArgs: []string{"api"},
+			wantVars: map[string]string{"follow": "true", "FOLLOW": "true"},
+		},
+		{
+			name:     "explicit false becomes empty, so {{if}} and [ -n ] agree",
+			words:    []string{"--follow=false"},
+			wantVars: map[string]string{"follow": "", "FOLLOW": ""},
+		},
+		{
+			name:     "explicit true",
+			words:    []string{"--follow=yes"},
+			wantVars: map[string]string{"follow": "true", "FOLLOW": "true"},
+		},
+		{
+			name:     "a value parameter still takes the next word",
+			words:    []string{"--filter", "api"},
+			wantVars: map[string]string{"filter": "api", "FILTER": "api"},
+		},
+		{
+			name:     "NAME=value normalises for a boolean too",
+			words:    []string{"FOLLOW=0"},
+			wantVars: map[string]string{"FOLLOW": "", "follow": ""},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args, vars, err := splitArgs(c.words, params)
 			if err != nil {
 				t.Fatalf("splitArgs: %v", err)
 			}

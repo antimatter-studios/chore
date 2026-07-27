@@ -28,10 +28,16 @@ func Decode(data []byte) (*File, error) {
 			continue
 		}
 		for i, arg := range t.Args {
-			if !validParamName(arg) {
+			if !validParamName(arg.Name) {
 				return nil, fmt.Errorf("taskfile: task %q: args entry %d is %s, which cannot be used as a variable —"+
 					" a parameter name must start with a letter or underscore and contain only letters, digits and underscores",
-					name, i+1, describeParam(arg))
+					name, i+1, describeParam(arg.Name))
+			}
+			switch arg.Type {
+			case "", TypeString, TypeBool, TypeInt:
+			default:
+				return nil, fmt.Errorf("taskfile: task %q: parameter %q has type %q; expected %s, %s or %s",
+					name, arg.Name, arg.Type, TypeString, TypeBool, TypeInt)
 			}
 		}
 	}
@@ -191,6 +197,56 @@ func (d *Dep) UnmarshalYAML(n *yaml.Node) error {
 	default:
 		return fmt.Errorf("line %d: a dependency must be a string or a mapping", n.Line)
 	}
+}
+
+// UnmarshalYAML accepts a parameter as a bare name or as a declaration:
+//
+//	args:
+//	  - config
+//	  - {name: follow, type: bool, desc: keep streaming}
+func (a *Arg) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		s, err := scalarString(n)
+		if err != nil {
+			return err
+		}
+		a.Name = s
+		return nil
+	case yaml.MappingNode:
+		if err := knownFields(n, "a parameter", "name", "type", "desc"); err != nil {
+			return err
+		}
+		type raw struct {
+			Name string `yaml:"name"`
+			Type string `yaml:"type"`
+			Desc string `yaml:"desc"`
+		}
+		var r raw
+		if err := n.Decode(&r); err != nil {
+			return fmt.Errorf("line %d: %w", n.Line, err)
+		}
+		if r.Name == "" {
+			return fmt.Errorf("line %d: a parameter needs `name`", n.Line)
+		}
+		a.Name, a.Type, a.Desc = r.Name, r.Type, r.Desc
+		return nil
+	default:
+		return fmt.Errorf("line %d: a parameter must be a name or a mapping", n.Line)
+	}
+}
+
+// UnmarshalYAML rejects an empty list entry, like Cmds and Deps.
+func (as *Args) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkNoNullElements(n, "args"); err != nil {
+		return err
+	}
+	var out []Arg
+	if err := n.Decode(&out); err != nil {
+		return err
+	}
+	*as = out
+	return nil
 }
 
 // UnmarshalYAML rejects an empty list entry. See the Cmds type comment.

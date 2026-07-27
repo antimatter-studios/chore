@@ -65,8 +65,26 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
 
 ## Fixed semantics
 
-1. **Arguments.** `args: [config]` declares a task's parameters. One declaration,
-   four call forms, all equivalent and all bound before dotenv resolves:
+1. **Arguments.** `args:` declares a task's parameters — a bare name, or an
+   object when it needs a type or a description:
+
+       args:
+         - config                    # shorthand for {name: config}
+         - name: follow
+           type: bool                # a flag: --follow takes no value
+           desc: keep streaming
+         - name: lines
+           type: int                 # rejects a value it cannot mean
+
+   Types are declared, not inferred. Inferring "boolean" from a true/false
+   default was tried first and is subtly wrong: a string parameter whose default
+   happens to be "false" silently becomes a flag, and then stops consuming its
+   value. A flag is never required — absence is its value — and reads as EMPTY
+   rather than "false", because a Go template treats any non-empty string as true
+   and the shell idiom is `[ -n "$FLAG" ]`.
+
+   One declaration, four call forms, all equivalent and all bound before dotenv
+   resolves:
 
        tsk up                       # default from vars
        tsk up mail4.test            # positional, in declared order

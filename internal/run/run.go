@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -252,6 +253,11 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	if err := checkArgConflicts(t, argVars, callVars); err != nil {
 		return nil, err
 	}
+	// Positional values are checked as they bind; named ones arrive by another
+	// route and would otherwise skip the check entirely.
+	if err := checkNamedTypes(t, callVars); err != nil {
+		return nil, err
+	}
 	early := base.Push(argVars).Push(callVars)
 
 	sh := r.shell(r.Project.RootDir, early)
@@ -272,6 +278,14 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	paramDefaults, err := early.Push(fileVars).Resolve(ctx, parameterVars(t, argVars, callVars), sh)
 	if err != nil {
 		return nil, fmt.Errorf("parameter defaults: %w", err)
+	}
+	// A boolean default becomes "" rather than "false", so {{if .VERBOSE}} and
+	// [ -n "$VERBOSE" ] both read it correctly — a template treats the string
+	// "false" as true.
+	for k, v := range paramDefaults {
+		if t.ParamIsBool(k) {
+			paramDefaults[k] = taskfile.NormalizeBool(v)
+		}
 	}
 	// A default is written in one case; the path that consumes it may use the
 	// other. `vars: {config: x}` must satisfy dotenv: ['config/{{.CONFIG}}/…'].
@@ -306,11 +320,28 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	}
 	final := scope.Push(taskVars).Push(callVars).Push(argVars)
 
+	// Boolean parameters are normalised HERE, not only where their default is
+	// resolved: the task's own vars are pushed on top afterwards and would
+	// otherwise put the raw "false" back, making {{if .FOLLOW}} fire on a flag
+	// nobody passed.
+	for _, spec := range t.Args {
+		name := spec.Name
+		if !spec.IsBool() {
+			continue
+		}
+		for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+			if v, ok := final.Get(spelling); ok {
+				final.Set(spelling, taskfile.NormalizeBool(v))
+			}
+		}
+	}
+
 	// A parameter's DEFAULT comes from vars, which the author writes in one case
 	// only. Mirror it to the other so `args: [config]` with `vars: {config: x}`
 	// still answers to {{.CONFIG}}, exactly as a supplied argument does — the
 	// alternative is a value that works when passed and vanishes when defaulted.
-	for _, name := range t.Args {
+	for _, spec := range t.Args {
+		name := spec.Name
 		other := strings.ToUpper(name)
 		if other == name {
 			other = strings.ToLower(name)
@@ -351,7 +382,8 @@ func declaresDefault(t *taskfile.Task, name string) bool {
 // ignored, and picking a winner silently is how you act on a config you did not
 // mean to name.
 func checkArgConflicts(t *taskfile.Task, argVars, callVars map[string]string) error {
-	for _, name := range t.Args {
+	for _, spec := range t.Args {
+		name := spec.Name
 		positional, given := argVars[name]
 		if !given {
 			continue
@@ -383,7 +415,8 @@ func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]t
 		return false
 	}
 	out := map[string]taskfile.Var{}
-	for _, name := range t.Args {
+	for _, spec := range t.Args {
+		name := spec.Name
 		if given(name) {
 			continue
 		}
@@ -408,10 +441,15 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 				t.Name, len(args), strings.Join(args, " "))
 		}
 		return nil, fmt.Errorf("task %s takes %d argument(s) (%s), got %d",
-			t.Name, len(t.Args), strings.Join(t.Args, ", "), len(args))
+			t.Name, len(t.Args), strings.Join(t.Args.Names(), ", "), len(args))
 	}
-	for i, a := range args {
-		name := t.Args[i]
+	for i, value := range args {
+		spec := t.Args[i]
+		name := spec.Name
+		if err := checkArgType(t, spec, value); err != nil {
+			return nil, err
+		}
+		a := value
 		out[name] = a
 		// Go templates are case-sensitive and Taskfile convention is uppercase, so
 		// `args: [config]` must also answer to {{.CONFIG}}. Binding only the name
@@ -431,8 +469,14 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scope *tmpl.Scope) error {
 	var missing []string
 
-	for i, name := range t.Args {
+	for i, a := range t.Args {
+		name := a.Name
 		if i < len(args) || suppliedByName(name, callVars) {
+			continue
+		}
+		// A flag is never required: its absence IS its value. Demanding one would
+		// mean writing `tsk logs --follow=false` to say nothing at all.
+		if a.IsBool() {
 			continue
 		}
 		if v, _ := scope.Get(name); v != "" {
@@ -453,6 +497,36 @@ func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scop
 	if len(missing) > 0 {
 		return fmt.Errorf("needs argument(s) %s — pass positionally (tsk %s <%s>), as %s=value, or give it a default in vars",
 			strings.Join(missing, ", "), t.Name, missing[0], strings.ToUpper(missing[0]))
+	}
+	return nil
+}
+
+// checkArgType rejects a value the parameter cannot mean. Only int is checked:
+// a string takes anything, and a bool is set by presence rather than by a value
+// the caller types.
+func checkArgType(t *taskfile.Task, spec taskfile.Arg, value string) error {
+	if spec.Type != taskfile.TypeInt {
+		return nil
+	}
+	if _, err := strconv.Atoi(strings.TrimSpace(value)); err != nil {
+		return fmt.Errorf("task %s: %s must be a whole number, got %q", t.Name, spec.Name, value)
+	}
+	return nil
+}
+
+// checkNamedTypes validates values supplied as --name or NAME=value.
+func checkNamedTypes(t *taskfile.Task, callVars map[string]string) error {
+	for _, spec := range t.Args {
+		for _, spelling := range []string{spec.Name, strings.ToUpper(spec.Name), strings.ToLower(spec.Name)} {
+			v, ok := callVars[spelling]
+			if !ok {
+				continue
+			}
+			if err := checkArgType(t, spec, v); err != nil {
+				return err
+			}
+			break
+		}
 	}
 	return nil
 }
