@@ -205,6 +205,18 @@ func TestBooleanParameterNormalisation(t *testing.T) {
 	}
 }
 
+// tsk identifies itself in the environment so a Taskfile can distinguish the two
+// runners — needed where a guard exists to catch a Task-specific trap.
+func TestRunnerIdentifiesItself(t *testing.T) {
+	f := newFixture(t, nil, map[string]*taskfile.Task{
+		"probe": {Cmds: cmds(`printf '%s' "${TSK}" > out.txt`)},
+	})
+	f.mustRun("probe", nil, nil)
+	if got := f.read("out.txt"); got != "1" {
+		t.Errorf("TSK = %q, want 1", got)
+	}
+}
+
 // A flag needs no default to be optional — absence is its value. Requiring one
 // would mean typing `--follow=false` to say nothing.
 func TestBooleanParameterIsNeverRequired(t *testing.T) {

@@ -21,14 +21,14 @@ import (
 	"github.com/rest-mail/go-tsk/internal/taskfile"
 )
 
-const usage = `tsk — run tasks from a Taskfile.yml
+const usage = `tsk — run tasks from a tskfile.yml
 
 usage:
   tsk [flags] <task> [args...] [-- extra]
 
 flags:
   -C, --dir DIR     change to DIR before looking for the Taskfile
-  -f, --file FILE   Taskfile to read (default: Taskfile.yml, searched upward)
+  -f, --file FILE   file to read (default: tskfile.yml, searched upward)
   -l, --list        list tasks with their descriptions
       --dry         print the commands a task would run, without running them
       --force       run even if up-to-date checks say the work is done
@@ -70,6 +70,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "tsk: %v\n", err)
 		return 1
+	}
+	if base := filepath.Base(path); strings.EqualFold(base, "Taskfile.yml") || strings.EqualFold(base, "Taskfile.yaml") {
+		fmt.Fprintf(stderr, "tsk: reading %s — rename it to %s; go-task ignores `args:` and mishandles `task <task> VAR=value`, so one file for both runners is a trap\n",
+			base, Filenames[0])
 	}
 
 	project, err := loader.Load(path)
@@ -292,7 +296,17 @@ func isVarName(s string) bool {
 	return true
 }
 
-// findTaskfile resolves the Taskfile to read, searching upward from the working
+// Filenames are the names looked for, in order.
+//
+// tskfile.yml rather than Taskfile.yml because the two runners are no longer
+// interchangeable: tsk reads `args:` and go-task ignores it, and go-task's
+// silent mishandling of `task <t> CONFIG=x` is a trap a shared filename invites
+// people to walk into. Taskfile.yml is still accepted last, so a repository can
+// migrate without a flag day — with a notice, because a file that two programs
+// might claim should not be ambiguous for long.
+var Filenames = []string{"tskfile.yml", "tskfile.yaml", "Taskfile.yml", "Taskfile.yaml"}
+
+// findTaskfile resolves the file to read, searching upward from the working
 // directory so `tsk` works from a subdirectory.
 func findTaskfile(explicit string) (string, error) {
 	if explicit != "" {
@@ -310,7 +324,7 @@ func findTaskfile(explicit string) (string, error) {
 		return "", err
 	}
 	for {
-		for _, name := range []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml"} {
+		for _, name := range Filenames {
 			candidate := filepath.Join(dir, name)
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
@@ -318,7 +332,7 @@ func findTaskfile(explicit string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no Taskfile.yml here or in any parent directory")
+			return "", fmt.Errorf("no %s here or in any parent directory", Filenames[0])
 		}
 		dir = parent
 	}

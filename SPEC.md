@@ -1,6 +1,6 @@
 # go-tsk — spec
 
-A task runner that reads `Taskfile.yml`, supports the features one real project
+A task runner that reads `tskfile.yml` — go-task's format under a name of its\nown — supports the features one real project
 uses, and fixes the semantics that make Task unusable as a control plane.
 
 Binary: `tsk`. Platforms: macOS and Linux. No Windows, which is why this can stay
@@ -284,6 +284,14 @@ The binary must run rest-mail's Taskfile **unmodified**:
 
 Diffing both binaries over the same file is the test harness, and it is the
 reason for keeping the format.
+
+## Filename
+
+`tskfile.yml`, not `Taskfile.yml`. The format is go-task's, but the two runners
+are not interchangeable: tsk reads `args:` and go-task ignores it, and go-task
+silently mishandles `task <task> VAR=value`, so a file both might claim invites
+exactly the mistake this program exists to prevent. `Taskfile.yml` is still read
+last, with a notice, so a repository can migrate without a flag day.
 
 ## Deviations found while running rest-mail's Taskfile
 

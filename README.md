@@ -1,6 +1,6 @@
 # go-tsk
 
-A task runner that reads `Taskfile.yml` and lets a task take arguments.
+A task runner that reads `tskfile.yml` and lets a task take arguments.
 
 ```bash
 tsk --list                        # every task, grouped, from its own desc
@@ -13,7 +13,7 @@ Binary: `tsk`. macOS and Linux.
 
 ## Why it exists
 
-[go-task](https://taskfile.dev) has a good file format and three behaviours that
+[go-task](https://taskfile.dev) has a good file format — which `tskfile.yml` keeps —\nand three behaviours that
 make it unusable as a project's control plane. Each was hit in practice, not
 imagined:
 
