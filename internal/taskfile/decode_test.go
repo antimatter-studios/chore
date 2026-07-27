@@ -645,7 +645,7 @@ tasks:
 			},
 			"up": {
 				Desc: "bring the stack up",
-				Args: []string{"config"},
+				Args: Args{{Name: "config"}},
 				Dir:  "deploy",
 				Run:  "once",
 				Deps: []Dep{

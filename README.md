@@ -37,7 +37,9 @@ two includes can quietly overwrite each other's values.
 
 ## What it does differently
 
-- **`args:` on a task** declares its parameters. One declaration, four call forms:
+- **`args:` on a task** declares its parameters — `- config` for a plain one, or
+  `{name: follow, type: bool, desc: …}` when it is a flag, takes an int, or wants
+  a description. One declaration, four call forms:
   `tsk up`, `tsk up mail4.test`, `tsk up --config mail4.test`, `tsk up CONFIG=mail4.test`.
   Required-ness follows from the declaration — no default means required, a default
   in `vars:` means optional, and `vars: {x: ""}` means optional with empty being

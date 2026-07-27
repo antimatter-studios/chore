@@ -182,16 +182,23 @@ func parseFlags(args []string) (options, []string, error) {
 // declaredParams returns the parameter names a task declares, lowercased for
 // matching. An unknown task yields none, so the runner reports the bad name
 // rather than the parser complaining about its arguments.
-func declaredParams(p *taskfile.Project, task string) map[string]string {
+func declaredParams(p *taskfile.Project, task string) map[string]param {
 	t, ok := p.Tasks[task]
 	if !ok {
 		return nil
 	}
-	out := make(map[string]string, len(t.Args))
+	out := make(map[string]param, len(t.Args))
 	for _, a := range t.Args {
-		out[strings.ToLower(a)] = a
+		out[strings.ToLower(a.Name)] = param{name: a.Name, boolean: a.IsBool()}
 	}
 	return out
+}
+
+// param is a declared parameter as the parser needs to see it: what to call it,
+// and whether it takes a value.
+type param struct {
+	name    string
+	boolean bool
 }
 
 // splitArgs sorts the words after a task name into positional arguments and
@@ -204,7 +211,7 @@ func declaredParams(p *taskfile.Project, task string) map[string]string {
 // A flag is only consumed when it names a DECLARED parameter; anything else
 // stays a positional word and reaches the task, so `tsk logs -f api` still
 // passes -f to the task rather than being rejected here.
-func splitArgs(words []string, params map[string]string) ([]string, map[string]string, error) {
+func splitArgs(words []string, params map[string]param) ([]string, map[string]string, error) {
 	var args []string
 	vars := map[string]string{}
 
@@ -214,17 +221,19 @@ func splitArgs(words []string, params map[string]string) ([]string, map[string]s
 		if strings.HasPrefix(w, "--") && len(w) > 2 {
 			name, value, hasValue := strings.Cut(w[2:], "=")
 			if declared, ok := params[strings.ToLower(name)]; ok {
-				if !hasValue {
+				switch {
+				case declared.boolean:
+					// Presence is the value. Crucially it must not eat the next
+					// word: `tsk logs --follow api` leaves api as a positional.
+					value = taskfile.NormalizeBool(valueOr(value, hasValue, "true"))
+				case !hasValue:
 					if i+1 >= len(words) {
 						return nil, nil, fmt.Errorf("--%s needs a value", name)
 					}
 					i++
 					value = words[i]
 				}
-				vars[declared] = value
-				if upper := strings.ToUpper(declared); upper != declared {
-					vars[upper] = value
-				}
+				setParam(vars, declared.name, value)
 				continue
 			}
 		}
@@ -235,8 +244,10 @@ func splitArgs(words []string, params map[string]string) ([]string, map[string]s
 			// {{.config}} and {{.CONFIG}} cannot disagree inside one task — a
 			// supplied value must beat the default in BOTH cases.
 			if declared, isParam := params[strings.ToLower(name)]; isParam {
-				vars[declared] = value
-				vars[strings.ToUpper(declared)] = value
+				if declared.boolean {
+					value = taskfile.NormalizeBool(value)
+				}
+				setParam(vars, declared.name, value)
 			}
 			continue
 		}
@@ -247,6 +258,22 @@ func splitArgs(words []string, params map[string]string) ([]string, map[string]s
 		return args, nil, nil
 	}
 	return args, vars, nil
+}
+
+// setParam records a parameter under the declared spelling and its uppercase
+// form, so {{.config}} and {{.CONFIG}} cannot disagree.
+func setParam(vars map[string]string, name, value string) {
+	vars[name] = value
+	if upper := strings.ToUpper(name); upper != name {
+		vars[upper] = value
+	}
+}
+
+func valueOr(value string, has bool, fallback string) string {
+	if has {
+		return value
+	}
+	return fallback
 }
 
 func isVarName(s string) bool {

@@ -8,6 +8,8 @@
 // interactive tasks, output styles — is deliberately absent.
 package taskfile
 
+import "strings"
+
 // Project is a loaded Taskfile and everything it includes, with tasks
 // flattened into one namespaced map (`postgres:up`, `instance:down`).
 type Project struct {
@@ -76,19 +78,23 @@ type Task struct {
 	Vars map[string]Var `yaml:"vars"`
 	Env  map[string]Var `yaml:"env"`
 
-	// Args names the task's positional parameters, in order:
+	// Args declares the task's parameters, in positional order:
 	//
 	//	up:
-	//	  args: [config]
+	//	  args:
+	//	    - config                 # shorthand for {name: config}
+	//	    - name: follow
+	//	      type: bool
+	//	      desc: keep streaming
 	//
-	// invoked as `tsk up mail4.test`. This is the whole point of the program:
-	// Task has no equivalent, so a config could only be selected by an
+	// invoked as `tsk up mail4.test --follow`. This is the whole point of the
+	// program: Task has no equivalent, so a config could only be selected by an
 	// environment variable set before the command, and `task up CONFIG=x`
 	// silently acted on something else.
 	//
 	// A Taskfile that does not use `args:` remains valid input to Task, so both
 	// programs can be run against the same file and diffed.
-	Args []string `yaml:"args"`
+	Args Args `yaml:"args"`
 
 	Deps Deps `yaml:"deps"`
 	Cmds Cmds `yaml:"cmds"`
@@ -132,6 +138,88 @@ type Cmd struct {
 	// finishes — in reverse order, and whether or not the task succeeded. It is
 	// how a task that brings a topology up guarantees it comes back down.
 	Defer bool `yaml:"-"`
+}
+
+// Args is a task's parameter list.
+type Args []Arg
+
+// Arg is one declared parameter.
+//
+// Type is declared rather than inferred. Inferring "boolean" from a true/false
+// default was tried first and is subtly wrong: a string parameter whose default
+// happens to be "false" would silently become a flag, and a flag would then stop
+// consuming its value. An explicit type also lets `--help` say what a task takes.
+type Arg struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"` // "" or "string" (default), "bool", "int"
+	Desc string `yaml:"desc"`
+}
+
+// IsBool reports whether the parameter is a flag: present or absent, no value.
+func (a Arg) IsBool() bool { return a.Type == TypeBool }
+
+// Parameter types.
+const (
+	TypeString = "string"
+	TypeBool   = "bool"
+	TypeInt    = "int"
+)
+
+// Names returns the parameter names in declared order.
+func (as Args) Names() []string {
+	out := make([]string, len(as))
+	for i, a := range as {
+		out[i] = a.Name
+	}
+	return out
+}
+
+// Find returns the declaration for a name, matched case-insensitively because a
+// parameter answers to both its declared spelling and its uppercase form.
+func (as Args) Find(name string) (Arg, bool) {
+	for _, a := range as {
+		if strings.EqualFold(a.Name, name) {
+			return a, true
+		}
+	}
+	return Arg{}, false
+}
+
+// DefaultFor returns the literal default declared for a parameter, in any
+// spelling, from the task or the file it lives in. A `sh:` var is not a default
+// for this purpose: its value is not known until something runs it.
+func (t *Task) DefaultFor(name string) (string, bool) {
+	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+		if v, ok := t.Vars[spelling]; ok && v.Sh == "" {
+			return v.Value, true
+		}
+		if t.File != nil {
+			if v, ok := t.File.Vars[spelling]; ok && v.Sh == "" {
+				return v.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+// ParamIsBool reports whether a parameter is a flag rather than a value.
+func (t *Task) ParamIsBool(name string) bool {
+	a, ok := t.Args.Find(name)
+	return ok && a.IsBool()
+}
+
+// NormalizeBool renders a boolean parameter the way both consumers of a variable
+// expect: "true" when set, EMPTY when not.
+//
+// Empty rather than "false" because a Go template treats any non-empty string as
+// true — `{{if .VERBOSE}}` would fire on the string "false" — and because the
+// shell idiom is `[ -n "$VERBOSE" ]`. One value that reads correctly in both.
+func NormalizeBool(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "0", "false", "no", "off":
+		return ""
+	}
+	return "true"
 }
 
 // RunOnce reports whether the task should execute at most once per invocation.

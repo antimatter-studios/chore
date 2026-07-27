@@ -177,18 +177,83 @@ func mustContain(t *testing.T, got, want, what string) {
 // `args: [config]` populates `.config` and leaves `.CONFIG` empty — a Taskfile
 // copied from the usage text would run with no config at all, which is exactly
 // the silent-default failure this program exists to remove.
+// A boolean parameter reads correctly in both consumers: {{if .FLAG}} must not
+// fire on the string "false", and [ -n "$FLAG" ] must agree with it. So an unset
+// boolean is EMPTY, not "false" — and the task's own vars must not put the raw
+// literal back on top.
+func TestBooleanParameterNormalisation(t *testing.T) {
+	tasks := func() map[string]*taskfile.Task {
+		return map[string]*taskfile.Task{
+			"logs": {
+				Args: taskfile.Args{{Name: "follow", Type: taskfile.TypeBool}},
+				Vars: map[string]taskfile.Var{"follow": {Value: "false"}},
+				Cmds: cmds(`printf 'tmpl=[%s] shell=[%s]' '{{if .FOLLOW}}on{{end}}' "${FOLLOW}" > out.txt`),
+			},
+		}
+	}
+
+	f := newFixture(t, nil, tasks())
+	f.mustRun("logs", nil, nil)
+	if got := f.read("out.txt"); got != "tmpl=[] shell=[]" {
+		t.Errorf("unset: out.txt = %q, want both readings empty", got)
+	}
+
+	f2 := newFixture(t, nil, tasks())
+	f2.mustRun("logs", nil, map[string]string{"FOLLOW": "true"})
+	if got := f2.read("out.txt"); got != "tmpl=[on] shell=[true]" {
+		t.Errorf("set: out.txt = %q, want both readings true", got)
+	}
+}
+
+// A flag needs no default to be optional — absence is its value. Requiring one
+// would mean typing `--follow=false` to say nothing.
+func TestBooleanParameterIsNeverRequired(t *testing.T) {
+	f := newFixture(t, nil, map[string]*taskfile.Task{
+		"logs": {
+			Args: taskfile.Args{{Name: "follow", Type: taskfile.TypeBool}},
+			Cmds: cmds(`printf 'follow=[%s]' '{{.FOLLOW}}' > out.txt`),
+		},
+	})
+	f.mustRun("logs", nil, nil)
+	if got := f.read("out.txt"); got != "follow=[]" {
+		t.Errorf("out.txt = %q, want an absent flag to read empty", got)
+	}
+}
+
+// An int parameter rejects a value it cannot mean, at the point of binding,
+// rather than letting a shell command fail later with something less obvious.
+func TestIntParameterTypeIsChecked(t *testing.T) {
+	f := newFixture(t, nil, map[string]*taskfile.Task{
+		"logs": {
+			Args: taskfile.Args{{Name: "lines", Type: taskfile.TypeInt}},
+			Cmds: cmds(`printf ran > ran.txt`),
+		},
+	})
+	err := f.mustFail("logs", []string{"abc"}, nil)
+	mustContain(t, err.Error(), "must be a whole number", "error")
+
+	// The same check must apply to a value supplied by name, which arrives by a
+	// different route and once skipped it entirely.
+	named := f.mustFail("logs", nil, map[string]string{"LINES": "abc"})
+	mustContain(t, named.Error(), "must be a whole number", "error")
+	if f.exists("ran.txt") {
+		t.Error("the task ran with a non-numeric value for an int parameter")
+	}
+	f.mustRun("logs", []string{"50"}, nil)
+}
+
 // An explicitly empty default marks a parameter optional. Without this, there is
 // no way to say "may be omitted, and empty is meaningful" — and it is why
 // `args:` needs no required/optional marker: a default's presence is the marker.
 func TestEmptyDefaultMakesAParameterOptional(t *testing.T) {
 	f := newFixture(t, nil, map[string]*taskfile.Task{
 		"list": {
-			Args: []string{"filter"},
+			Args: taskfile.Args{{Name: "filter"}},
 			Vars: map[string]taskfile.Var{"filter": {Value: ""}},
 			Cmds: cmds(`printf 'filter=[%s]' '{{.FILTER}}' > out.txt`),
 		},
 		"needed": {
-			Args: []string{"config"},
+			Args: taskfile.Args{{Name: "config"}},
 			Cmds: cmds(`printf ran > ran.txt`),
 		},
 	})
@@ -208,7 +273,7 @@ func TestEmptyDefaultMakesAParameterOptional(t *testing.T) {
 // a command acts on a config the caller did not mean.
 func TestConflictingArgumentAndNamedValue(t *testing.T) {
 	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"up": {Args: []string{"config"}, Cmds: cmds(`printf ran > ran.txt`)},
+		"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
 	})
 
 	err := f.mustFail("up", []string{"mail4.test"}, map[string]string{"CONFIG": "restmail.test"})
@@ -219,7 +284,7 @@ func TestConflictingArgumentAndNamedValue(t *testing.T) {
 
 	// The same value twice is not a contradiction.
 	f2 := newFixture(t, nil, map[string]*taskfile.Task{
-		"up": {Args: []string{"config"}, Cmds: cmds(`printf ran > ran.txt`)},
+		"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
 	})
 	f2.mustRun("up", []string{"mail4.test"}, map[string]string{"CONFIG": "mail4.test"})
 }
@@ -234,7 +299,7 @@ func TestParameterDefaultReachesTheDotenvPath(t *testing.T) {
 		Dotenv: []string{"config/{{.CONFIG}}/config.env"},
 	}, map[string]*taskfile.Task{
 		"up": {
-			Args: []string{"config"},
+			Args: taskfile.Args{{Name: "config"}},
 			Vars: map[string]taskfile.Var{"config": {Value: "alpha"}},
 			Cmds: cmds(`printf '%s' "$STACK" > out.txt`),
 		},
@@ -260,7 +325,7 @@ func TestParameterDefaultReachesTheDotenvPath(t *testing.T) {
 func TestArgsBindUnderTheNameDeclared(t *testing.T) {
 	f := newFixture(t, nil, map[string]*taskfile.Task{
 		"up": {
-			Args: []string{"config"},
+			Args: taskfile.Args{{Name: "config"}},
 			Cmds: cmds(`printf 'lower=%s upper=%s' '{{.config}}' '{{.CONFIG}}' > out.txt`),
 		},
 	})
@@ -276,7 +341,7 @@ func TestArgsBindUnderTheNameDeclared(t *testing.T) {
 func TestArgsTooManyIsAnError(t *testing.T) {
 	t.Run("task with parameters", func(t *testing.T) {
 		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"up": {Args: []string{"config"}, Cmds: cmds("printf ran > ran.txt")},
+			"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds("printf ran > ran.txt")},
 		})
 		err := f.mustFail("up", []string{"a", "b"}, nil)
 		mustContain(t, err.Error(), "up", "error")
@@ -302,7 +367,7 @@ func TestArgsTooManyIsAnError(t *testing.T) {
 func TestArgsFewerThanParametersFallThrough(t *testing.T) {
 	f := newFixture(t, nil, map[string]*taskfile.Task{
 		"deploy": {
-			Args: []string{"ENV", "TAG"},
+			Args: taskfile.Args{{Name: "ENV"}, {Name: "TAG"}},
 			Vars: vars("TAG", "latest"),
 			Cmds: cmds(`printf '%s@%s' '{{.ENV}}' '{{.TAG}}' > out.txt`),
 		},
@@ -335,7 +400,7 @@ func TestVariablePrecedence(t *testing.T) {
 		// (`tsk up mail4.test CONFIG=other`) and is rejected rather than silently
 		// resolved — the caller named two configs and would get one.
 		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"probe": {Args: []string{"V"}, Cmds: cmds(probe)},
+			"probe": {Args: taskfile.Args{{Name: "V"}}, Cmds: cmds(probe)},
 		})
 		err := f.mustFail("probe", []string{"from-arg"}, map[string]string{"V": "from-call"})
 		mustContain(t, err.Error(), "given twice", "error")
@@ -419,7 +484,7 @@ func TestDotenvResolvesAfterArguments(t *testing.T) {
 			// the template scope, "$STACK" proves it reached the script's
 			// environment, and a real Taskfile relies on both.
 			"up": {
-				Args: []string{"CONFIG"},
+				Args: taskfile.Args{{Name: "CONFIG"}},
 				Cmds: cmds(`printf '%s %s' '{{.STACK}}' "$STACK" > stack.txt`),
 			},
 		})
@@ -744,7 +809,7 @@ func TestRequiresFailsBeforeAnythingRuns(t *testing.T) {
 func TestRequiresIsSatisfiedByAnArgument(t *testing.T) {
 	f := newFixture(t, nil, map[string]*taskfile.Task{
 		"deploy": {
-			Args:     []string{"TARGET"},
+			Args:     taskfile.Args{{Name: "TARGET"}},
 			Requires: []string{"TARGET"},
 			Cmds:     cmds(`printf '%s' '{{.TARGET}}' > out.txt`),
 		},
@@ -876,7 +941,7 @@ func TestTaskDir(t *testing.T) {
 		f := newFixture(t, nil, map[string]*taskfile.Task{
 			"in-sub": {
 				Dir:  "stacks/{{.NAME}}",
-				Args: []string{"NAME"},
+				Args: taskfile.Args{{Name: "NAME"}},
 				Cmds: cmds("printf here > here.txt"),
 			},
 		})
