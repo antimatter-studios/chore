@@ -31,7 +31,12 @@ import (
 
 // DefaultFilename is the file looked for when a path (the root argument, an
 // include's `taskfile:`, or its `dir:`) names a directory rather than a file.
-const DefaultFilename = "Taskfile.yml"
+const DefaultFilename = "tskfile.yml"
+
+// Filenames are the names an include may resolve to when it names a directory,
+// in order. Taskfile.yml is accepted last so an included peer repository that
+// still ships one keeps working.
+var Filenames = []string{"tskfile.yml", "tskfile.yaml", "Taskfile.yml", "Taskfile.yaml"}
 
 // Load reads the Taskfile at path — a file, or a directory holding
 // Taskfile.yml — and every file it includes, and returns the flattened project.
@@ -244,11 +249,18 @@ func locate(path string) (string, error) {
 	if !st.IsDir() {
 		return path, nil
 	}
-	inner := filepath.Join(path, DefaultFilename)
-	if _, err := os.Stat(inner); err != nil {
-		return "", err
+	// A peer repository included by directory may still ship a Taskfile.yml, so
+	// try the tsk names first and fall back rather than refusing to load it.
+	var firstErr error
+	for _, name := range Filenames {
+		inner := filepath.Join(path, name)
+		if _, err := os.Stat(inner); err == nil {
+			return inner, nil
+		} else if firstErr == nil {
+			firstErr = err
+		}
 	}
-	return inner, nil
+	return "", firstErr
 }
 
 func resolveAgainst(dir, path string) string {

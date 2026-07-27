@@ -262,20 +262,12 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 
 	sh := r.shell(r.Project.RootDir, early)
 
-	fileVars := map[string]string{}
-	if t.File != nil {
-		fileVars, err = early.Resolve(ctx, t.File.Vars, sh)
-		if err != nil {
-			return nil, fmt.Errorf("file vars: %w", err)
-		}
-	}
-
 	// A declared parameter's DEFAULT has to be available before the dotenv path is
 	// rendered, because the path is usually keyed on that very parameter
 	// (dotenv: ['config/{{.CONFIG}}/config.env']). Task vars as a whole cannot be
 	// resolved this early — they are allowed to read dotenv values — so resolve
 	// just the parameter defaults, and only those the caller did not supply.
-	paramDefaults, err := early.Push(fileVars).Resolve(ctx, parameterVars(t, argVars, callVars), sh)
+	paramDefaults, err := early.Resolve(ctx, parameterVars(t, argVars, callVars), sh)
 	if err != nil {
 		return nil, fmt.Errorf("parameter defaults: %w", err)
 	}
@@ -308,9 +300,26 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	// otherwise a literal `vars: {CONFIG: a}` loads config a's environment while
 	// the task runs with CONFIG=b — the silent wrong-stack failure this program
 	// exists to remove, reintroduced one layer down.
-	dotenvVars, err := r.dotenv(t, base.Push(fileVars).Push(paramDefaults).Push(callVars).Push(argVars))
+	dotenvVars, err := r.dotenv(ctx, t, base.Push(paramDefaults), callVars, argVars, sh)
 	if err != nil {
 		return nil, err
+	}
+
+	// File vars are resolved AFTER dotenv, because they routinely read it: an
+	// include maps `ADMIN_PROJECT: '{{.RESTMAIL_PROJECT}}'`, and RESTMAIL_PROJECT
+	// exists only once the config's env file is loaded. Resolving them earlier
+	// yields empty strings and container names like "-postgres".
+	//
+	// The dotenv PATHS above are rendered from the same vars but resolved without
+	// dotenv in scope — a path may depend on the argument, never on the contents
+	// of the file it is about to load.
+	fileVars := map[string]string{}
+	if t.File != nil {
+		fileVars, err = base.Push(dotenvVars).Push(paramDefaults).Push(callVars).Push(argVars).
+			Resolve(ctx, t.File.Vars, sh)
+		if err != nil {
+			return nil, fmt.Errorf("file vars: %w", err)
+		}
 	}
 
 	scope := base.Push(dotenvVars).Push(fileVars).Push(paramDefaults)
@@ -545,21 +554,45 @@ func suppliedByName(name string, callVars map[string]string) bool {
 // task's own file. A missing file is an error: silently continuing with
 // defaults is how an entire stack ends up running against unset variables. A
 // path prefixed with `?` is optional.
-func (r *Runner) dotenv(t *taskfile.Task, scope *tmpl.Scope) (map[string]string, error) {
-	files := map[string][]string{}
+// dotenvSource is one file's dotenv declaration together with the variables its
+// paths must be rendered against — its OWN. A path in the root Taskfile means
+// what the root file says, even when the task being run came from an include:
+// rendering `{{.CONFIG_DIR}}` against an included file's variables produces
+// "/config.env" and loads nothing, which is how nearly every namespaced task
+// would silently run with no environment.
+type dotenvSource struct {
+	dir     string
+	entries []string
+	vars    map[string]taskfile.Var
+}
+
+func (r *Runner) dotenv(ctx context.Context, t *taskfile.Task, base *tmpl.Scope, callVars, argVars map[string]string, sh shell.Shell) (map[string]string, error) {
+	var sources []dotenvSource
 	if root := r.Project.Root; root != nil {
-		files[root.Dir] = append(files[root.Dir], root.Dotenv...)
+		sources = append(sources, dotenvSource{dir: root.Dir, entries: root.Dotenv, vars: root.Vars})
 	}
 	if t.File != nil && (r.Project.Root == nil || t.File.Path != r.Project.Root.Path) {
-		files[t.File.Dir] = append(files[t.File.Dir], t.File.Dotenv...)
+		sources = append(sources, dotenvSource{dir: t.File.Dir, entries: t.File.Dotenv, vars: t.File.Vars})
 	}
 
 	out := map[string]string{}
 	declared, loaded := 0, 0
 	var missing []string
 
-	for dir, entries := range files {
-		for _, e := range entries {
+	for _, src := range sources {
+		if len(src.entries) == 0 {
+			continue
+		}
+		// The caller still outranks the file: an argument selects the config, and
+		// the file only says how to spell the path.
+		fileVars, err := base.Push(callVars).Push(argVars).Resolve(ctx, src.vars, sh)
+		if err != nil {
+			return nil, fmt.Errorf("dotenv vars: %w", err)
+		}
+		scope := base.Push(fileVars).Push(callVars).Push(argVars)
+		dir := src.dir
+
+		for _, e := range src.entries {
 			optional := strings.HasPrefix(e, "?")
 			e = strings.TrimPrefix(e, "?")
 			path, err := scope.Render(e)
@@ -641,7 +674,11 @@ func (r *Runner) taskDir(t *taskfile.Task, scope *tmpl.Scope) (string, error) {
 // script can use $VAR as well as {{.VAR}} — the target project relies on that
 // for things like `>$OUTPUT`.
 func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
-	env := os.Environ()
+	// Identify the runner, so a Taskfile can tell which one is executing it. The
+	// concrete need: guards written to catch Task's "CLI variables do not reach
+	// dotenv" trap must not fire here, where the trap does not exist and the
+	// invocation they reject is the correct one.
+	env := append(os.Environ(), "TSK=1")
 	for k, v := range scope.All() {
 		if isEnvName(k) {
 			env = append(env, k+"="+v)

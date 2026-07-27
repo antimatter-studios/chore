@@ -491,6 +491,34 @@ func TestSplitArgsBooleanFlags(t *testing.T) {
 	}
 }
 
+// tskfile.yml is this program's file; Taskfile.yml is accepted only so a
+// repository can migrate, and says so, because one file claimed by two runners
+// that disagree about `args:` and about `task <t> VAR=value` is a trap.
+func TestFilenamePrecedenceAndMigrationNotice(t *testing.T) {
+	t.Run("tskfile.yml wins over Taskfile.yml", func(t *testing.T) {
+		root := writeTree(t, map[string]string{
+			"tskfile.yml":  "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
+			"Taskfile.yml": "version: '3'\ntasks:\n  which:\n    cmds: ['echo taskfile']\n",
+		})
+		got := runMain(t, root, "which")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "tskfile")
+		if strings.Contains(got.stderr, "rename it") {
+			t.Errorf("stderr = %q, want no migration notice when tskfile.yml exists", got.stderr)
+		}
+	})
+
+	t.Run("Taskfile.yml still works, with a notice", func(t *testing.T) {
+		root := writeTree(t, map[string]string{
+			"Taskfile.yml": "version: '3'\ntasks:\n  which:\n    cmds: ['echo taskfile']\n",
+		})
+		got := runMain(t, root, "which")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "taskfile")
+		checkContains(t, got, "stderr", got.stderr, "rename it to tskfile.yml")
+	})
+}
+
 func TestIsVarName(t *testing.T) {
 	cases := map[string]bool{
 		"CONFIG":     true,
@@ -819,7 +847,7 @@ tasks:
 		checkCode(t, got, 1)
 		// The message has to name the thing that was looked for; "not found" on
 		// its own sends people hunting for a config problem they do not have.
-		checkContains(t, got, "stderr", got.stderr, "no Taskfile.yml here or in any parent directory")
+		checkContains(t, got, "stderr", got.stderr, "no tskfile.yml here or in any parent directory")
 	})
 }
 
