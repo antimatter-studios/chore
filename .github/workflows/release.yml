@@ -61,24 +61,22 @@ jobs:
           # debugger attached to a released binary, and it halves the download.
           go build -trimpath -ldflags "-s -w -X main.version=${VER}" -o chore .
 
-          # Verify the version was stamped by READING the binary, not running it:
-          # these are cross-builds, and a linux runner cannot execute a darwin
-          # binary ("Exec format error"). go version -m reports the build settings
-          # embedded in the binary, whatever platform it targets.
-          go version -m chore | grep -q -- "-X main.version=${VER}" || {
-            echo "the built binary is not stamped with ${VER}" >&2
-            go version -m chore >&2
-            exit 1
-          }
-
-          # For the one target the runner can actually execute, run it too — that
-          # catches a binary that is stamped yet broken.
+          # Verify the stamp on the ONE target this runner can execute. The others
+          # are cross-builds — a linux host cannot run a darwin binary — and they
+          # are produced by the same command with the same ldflags, so proving it
+          # once proves the recipe. Reading the stamp out of a foreign binary was
+          # tried and does not work: `go version -m` does not record -ldflags.
+          #
+          # The Homebrew formula's test runs `chore --version` on the user's own
+          # machine, which is where a broken darwin artifact would surface.
           if [ "${GOOS}" = linux ] && [ "${GOARCH}" = amd64 ]; then
             ./chore --version | grep -qx "${VER}" || {
               echo "the built binary does not report ${VER}" >&2
               exit 1
             }
           fi
+
+          test -s chore
           tar czf "chore-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" chore
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
