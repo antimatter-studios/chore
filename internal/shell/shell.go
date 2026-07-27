@@ -16,7 +16,7 @@
 // mvdan.cc/sh because it supports Windows, and pays for it in two ways this
 // program cannot accept: that interpreter does not implement `set -o pipefail`,
 // so a failing pipeline reports success — silently, which is the exact class of
-// bug go-tsk exists to remove — and its builtins differ subtly, e.g. `printf`
+// bug chore exists to remove — and its builtins differ subtly, e.g. `printf`
 // pads by runes rather than bytes, so aligned output drifts. Targeting macOS and
 // Linux only means the real shell is available, with exactly the semantics a
 // developer gets at their own prompt.
@@ -69,7 +69,7 @@ func (s Shell) Capture(ctx context.Context, script string) (string, error) {
 
 // scriptName is what a script sees as $0, and what the shell prefixes its own
 // diagnostics with. `sh -c script name` sets argv[0] for the script.
-const scriptName = "tsk"
+const scriptName = "chore"
 
 func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 	cmd := exec.CommandContext(ctx, s.bin(), "-c", script, scriptName)
@@ -132,7 +132,7 @@ func (s Shell) bin() string {
 }
 
 // ExitError is a script that ran and failed. Code is the shell exit status, so
-// tsk can exit with the same code its command did.
+// chore can exit with the same code its command did.
 type ExitError struct {
 	Code int
 	Err  error
@@ -149,7 +149,7 @@ func (e *ExitError) Unwrap() error { return e.Err }
 
 // ExitCode returns the exit status err represents: 0 for nil, the script's own
 // code for an *ExitError, and 1 for anything else — a cancelled context or a
-// shell that could not start is still a failure, and tsk must exit non-zero.
+// shell that could not start is still a failure, and chore must exit non-zero.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0

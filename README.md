@@ -1,39 +1,117 @@
-# go-tsk
+# chore
 
-A task runner that reads `tskfile.yml` and lets a task take arguments.
+The commands you keep forgetting, in a file, with real arguments.
+
+A task runner that reads `chores.yml` — go-task's format under a name of its own —
+and lets a task declare parameters:
 
 ```bash
-tsk --list                        # every task, grouped, from its own desc
-tsk build                         # run one
-tsk up mail4.test                 # positional argument
-tsk config:check CONFIG=mail4.test # or a variable, bound before dotenv resolves
+chore --list
+chore build
+chore instance:up mail4.test
+chore instance:up --config mail4.test
+```
+
+## Install
+
+```bash
+brew install antimatter-studios/tap/chore
+# or
+go install github.com/antimatter-studios/chore@latest
+```
+
+```bash
+chore --list                        # every task, grouped, from its own desc
+chore build                         # run one
+chore up mail4.test                 # positional argument
+chore config:check CONFIG=mail4.test # or a variable, bound before dotenv resolves
 ```
 
 Binary: `tsk`. macOS and Linux.
 
 ## Why it exists
 
-[go-task](https://taskfile.dev) has a good file format — which `tskfile.yml` keeps —\nand three behaviours that
-make it unusable as a project's control plane. Each was hit in practice, not
-imagined:
+**go-task is a good tool.** Its file format is good enough that `chore` reads it
+rather than inventing another one, and if a project's tasks are "build, test,
+lint" it is the right answer. This is not a criticism of the tool; it is a
+statement about what the tool is *for*.
 
-**A task cannot take an argument.** Bare words after a task name are more task
-names — make's grammar, inherited. So a value has to arrive as an environment
-variable set *before* the command: `CONFIG=mail4.test task up`.
+The problem is lineage. go-task is a make descendant, and make's grammar is
+built around **targets**, not commands: a bare word after the program name is
+another target to build. That single inherited decision means a task can never
+take an argument — so the moment your tasks stop being "build the project" and
+start being "operate this thing", the model fights you. Everything below follows
+from it, measured while driving a 153-task, 3,131-line Taskfile that runs a mail
+server:
 
-**Variables passed on the command line do not reach `dotenv:`.** Task resolves
-`dotenv:` while parsing, before CLI variables are merged. So
-`task up CONFIG=mail4.test` — valid Task syntax, the form its own documentation
-shows — loads the **default** config's environment and acts on the wrong stack,
-silently and with exit 0. The only defence is a guard task that rejects the
-syntax.
+- **A task cannot take an argument.** `task up mail4.test` asks for a task named
+  `mail4.test`. The value has to arrive as an environment variable set *before*
+  the command: `CONFIG=mail4.test task up`. Every wrapper, alias and README line
+  inherits that shape.
+- **Command-line variables do not reach `dotenv:`.** go-task resolves `dotenv:`
+  while parsing, before CLI variables exist, so `task up CONFIG=mail4.test` —
+  valid syntax, the form its own docs show — loads the *default* config's
+  environment and acts on the wrong stack, silently, exit 0. The only defence was
+  a guard task that rejected the syntax outright.
+- **A missing `dotenv:` file is skipped in silence.** Every variable falls back to
+  a default, container names resolve to `-suffix`, filters match nothing, and
+  commands report success.
+- **Included files' variables are flattened into the parent namespace**, so two
+  includes overwrite each other. One peer repository could not be included at
+  all; it had to be shelled out to with `task -d`.
+- **The shell is an embedded reimplementation** (mvdan.cc/sh, there for Windows
+  support), which does not implement `set -o pipefail` — a failing pipeline
+  reports success — and whose `printf` pads by runes rather than bytes, so
+  carefully aligned output drifts. A Taskfile can become quietly dependent on
+  that interpreter's quirks.
 
-**A missing `dotenv:` file is skipped in silence.** Every variable falls back to
-a default, container names resolve to `-suffix`, filters match nothing, and
-commands report success.
+None of that makes go-task bad at what it is. It makes it a poor foundation for a
+**command-line tool that other people run**, which is what a project's task
+surface becomes once it has more than a handful of verbs.
 
-Plus: **included files' variables are flattened into the parent's namespace**, so
-two includes can quietly overwrite each other's values.
+## Why not just
+
+[just](https://github.com/casey/just) is the obvious alternative and it fixes the
+biggest problem outright: recipes take positional parameters. It was evaluated
+seriously — a partial conversion of the same project was written and run. Four
+things ruled it out here:
+
+- **No composition across repositories.** `import` and `mod` read *justfiles*
+  only. 27 of those 153 tasks belong to peer repositories that ship Taskfiles, so
+  adopting just meant hand-writing 27 wrappers around `task -d …` — a facade over
+  the tool being replaced.
+- **No parallel dependencies.** Dependencies run sequentially. Bringing up a
+  stack leans on concurrent `deps:`.
+- **No up-to-date checks.** No equivalent of `sources:`/`generates:`, which gate
+  17 tasks here.
+- **Every recipe line runs in its own shell.** Multi-line logic needs a shebang
+  recipe, or the `[script]` attribute — which still required `set unstable` in
+  1.57. `set -e`, a variable assignment, or a sourced env file otherwise does not
+  survive to the next line.
+
+Two smaller cuts: a stray comment above a recipe silently becomes its
+description, and `just` is not YAML, so the migration was a 3,131-line rewrite
+rather than a rename.
+
+## Why not mise
+
+[mise](https://github.com/jdx/mise) is excellent, and the most-installed of the
+three by a wide margin — but read what it is: *"dev tools, env vars, task
+runner"*, in that order. Its install base is overwhelmingly people replacing asdf
+for toolchain versions, which is its strongest surface and a genuinely different
+job from this one. Adopting it as a task runner means betting on its least-used
+feature, and it is not Taskfile-compatible either, so the migration cost matches
+just's.
+
+Its actual strength is worth stealing separately: pinning toolchain versions per
+project, which is a class of drift this project hit twice.
+
+## What this is instead
+
+Deliberately smaller than all three. `chore` reads go-task's format, so adopting
+it costs a rename; it supports the features one real project measurably uses and
+nothing else; and it targets macOS and Linux only, which is what makes using the
+real shell — with real `pipefail` — possible.
 
 ## What it does differently
 
@@ -54,7 +132,7 @@ two includes can quietly overwrite each other's values.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
 - **No multi-target invocation.** `tsk a b` does not mean "run a then b"; that is
-  `tsk a && tsk b`, which is what people type anyway. Giving up the make grammar is
+  `tsk a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
 
 ## Supported subset

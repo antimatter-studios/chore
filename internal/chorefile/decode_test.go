@@ -1,4 +1,4 @@
-package taskfile
+package chorefile
 
 import (
 	"reflect"
@@ -403,7 +403,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown top-level field",
 			yaml:    "version: '3'\noutput: prefixed\n",
-			wantErr: []string{"output", "taskfile.File"},
+			wantErr: []string{"output", "chorefile.File"},
 		},
 		{
 			// v2 syntax, and the single most likely thing to be pasted in from
@@ -415,7 +415,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown field inside a task",
 			yaml:    "version: '3'\ntasks:\n  build:\n    sourcs: ['*.go']\n",
-			wantErr: []string{"sourcs", "taskfile.Task"},
+			wantErr: []string{"sourcs", "chorefile.Task"},
 		},
 		{
 			name:    "misspelled silent inside a task",
@@ -425,7 +425,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown field inside an include",
 			yaml:    "version: '3'\nincludes:\n  pg:\n    taskfile: pg\n    internal: true\n",
-			wantErr: []string{"internal", "taskfile.Include"},
+			wantErr: []string{"internal", "chorefile.Include"},
 		},
 		{
 			// Unsupported by design (see the spec's "explicitly not supported"
@@ -477,7 +477,7 @@ func TestDecodeEmptyTaskBody(t *testing.T) {
 // --- template preservation ---------------------------------------------
 
 // TestDecodePreservesTemplates is load-bearing. rest-mail's `status` task passes
-// a Go template through to `docker --format`, and writes it as {{`…`}} so tsk's
+// a Go template through to `docker --format`, and writes it as {{`…`}} so chore's
 // own templating layer emits the inner braces verbatim. If decoding normalises,
 // re-quotes or otherwise rewrites the scalar by even one byte, the format string
 // docker receives is different and the command silently produces nothing useful.

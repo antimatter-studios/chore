@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // writeTree materialises a Taskfile tree under a fresh temp dir. Keys are slash
@@ -30,12 +30,12 @@ func writeTree(t *testing.T, files map[string]string) string {
 	return root
 }
 
-func taskNames(p *taskfile.Project) []string {
+func taskNames(p *chorefile.Project) []string {
 	return slices.Sorted(maps.Keys(p.Tasks))
 }
 
 // TestLoadTrees covers include resolution end to end: real YAML on disk, read
-// through taskfile.Decode, one case per rule in the spec.
+// through chorefile.Decode, one case per rule in the spec.
 func TestLoadTrees(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -597,8 +597,8 @@ tasks:
 // --- unit tests over hand-built Files, independent of the YAML layer ---
 
 func TestRegister(t *testing.T) {
-	fileAt := func(path string, tasks map[string]*taskfile.Task) *taskfile.File {
-		return &taskfile.File{Path: path, Dir: filepath.Dir(path), Tasks: tasks}
+	fileAt := func(path string, tasks map[string]*chorefile.Task) *chorefile.File {
+		return &chorefile.File{Path: path, Dir: filepath.Dir(path), Tasks: tasks}
 	}
 
 	cases := []struct {
@@ -610,13 +610,13 @@ func TestRegister(t *testing.T) {
 		{
 			name: "namespaces and aliases",
 			entries: []entry{
-				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*chorefile.Task{
 					"build": {Aliases: []string{"b"}},
 				})},
-				{prefix: "pg", file: fileAt("/p/pg/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "pg", file: fileAt("/p/pg/Taskfile.yml", map[string]*chorefile.Task{
 					"up": {Aliases: []string{"start"}},
 				})},
-				{prefix: "a:b", file: fileAt("/p/a/b/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "a:b", file: fileAt("/p/a/b/Taskfile.yml", map[string]*chorefile.Task{
 					"deep": {},
 				})},
 			},
@@ -625,25 +625,25 @@ func TestRegister(t *testing.T) {
 		{
 			name: "an empty task body is a no-op task, not a panic",
 			entries: []entry{
-				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*taskfile.Task{"build": nil})},
+				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*chorefile.Task{"build": nil})},
 			},
 			want: []string{"build"},
 		},
 		{
 			name: "duplicate names name both files",
 			entries: []entry{
-				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*taskfile.Task{"up": {}})},
-				{prefix: "", file: fileAt("/p/extra/Taskfile.yml", map[string]*taskfile.Task{"up": {}})},
+				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*chorefile.Task{"up": {}})},
+				{prefix: "", file: fileAt("/p/extra/Taskfile.yml", map[string]*chorefile.Task{"up": {}})},
 			},
 			wantErr: []string{`duplicate task "up"`, "/p/Taskfile.yml", "/p/extra/Taskfile.yml"},
 		},
 		{
 			name: "an alias cannot shadow a task declared in a later file",
 			entries: []entry{
-				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*chorefile.Task{
 					"build": {Aliases: []string{"lint"}},
 				})},
-				{prefix: "", file: fileAt("/p/extra/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "", file: fileAt("/p/extra/Taskfile.yml", map[string]*chorefile.Task{
 					"lint": {},
 				})},
 			},
@@ -652,7 +652,7 @@ func TestRegister(t *testing.T) {
 		{
 			name: "two tasks claiming the same alias collide",
 			entries: []entry{
-				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*taskfile.Task{
+				{prefix: "", file: fileAt("/p/Taskfile.yml", map[string]*chorefile.Task{
 					"build": {Aliases: []string{"x"}},
 					"test":  {Aliases: []string{"x"}},
 				})},
@@ -696,11 +696,11 @@ func TestRegister(t *testing.T) {
 }
 
 func TestMergeVars(t *testing.T) {
-	own := map[string]taskfile.Var{
+	own := map[string]chorefile.Var{
 		"IMAGE": {Value: "postgres:15"},
 		"USER":  {Value: "postgres"},
 	}
-	incoming := map[string]taskfile.Var{
+	incoming := map[string]chorefile.Var{
 		"IMAGE": {Value: "postgres:17"},
 		"HEAD":  {Sh: "git rev-parse HEAD"},
 	}

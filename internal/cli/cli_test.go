@@ -1,4 +1,4 @@
-// Tests for the command line: what tsk consumes itself, what it hands to the
+// Tests for the command line: what chore consumes itself, what it hands to the
 // task, and what it prints when there is nothing to run.
 //
 // Most of them drive Main end to end against a Taskfile written into
@@ -121,7 +121,7 @@ func samePath(t *testing.T, a, b string) bool {
 
 // ─── flag parsing ───────────────────────────────────────────────────────────
 
-// TestParseFlagsBeforeTheTaskName pins the flags tsk owns, in both spellings and
+// TestParseFlagsBeforeTheTaskName pins the flags chore owns, in both spellings and
 // both value forms, and the two ways the command line can be wrong.
 func TestParseFlagsBeforeTheTaskName(t *testing.T) {
 	cases := []struct {
@@ -203,8 +203,8 @@ func TestParseFlagsBeforeTheTaskName(t *testing.T) {
 // TestFlagsAfterTheTaskNameBelongToTheTask is the reason the parser is written by
 // hand instead of using flag.FlagSet.
 //
-// `tsk logs -f api` has to mean "run logs with -f and api". A stdlib parser, or
-// any parser that keeps scanning past the task name, reads -f as tsk's own
+// `chore logs -f api` has to mean "run logs with -f and api". A stdlib parser, or
+// any parser that keeps scanning past the task name, reads -f as chore's own
 // --file, swallows "api" as the filename, and then runs nothing — which is
 // exactly the failure that makes a task unable to take an argument.
 func TestFlagsAfterTheTaskNameBelongToTheTask(t *testing.T) {
@@ -221,7 +221,7 @@ func TestFlagsAfterTheTaskNameBelongToTheTask(t *testing.T) {
 		}
 	})
 
-	t.Run("a flag tsk does not know is not an error either", func(t *testing.T) {
+	t.Run("a flag chore does not know is not an error either", func(t *testing.T) {
 		// --since is nobody's flag but the task's. Before the task name it would
 		// be a usage error; after it, it is data.
 		_, rest, err := parseFlags([]string{"logs", "--since", "5m"})
@@ -250,7 +250,7 @@ tasks:
 	})
 }
 
-// TestUnknownFlagIsAUsageError: a flag tsk does not know, before the task name,
+// TestUnknownFlagIsAUsageError: a flag chore does not know, before the task name,
 // must stop the run rather than be passed on — the alternative is a typo'd
 // --forse silently not forcing anything.
 func TestUnknownFlagIsAUsageError(t *testing.T) {
@@ -265,7 +265,7 @@ func TestUnknownFlagIsAUsageError(t *testing.T) {
 }
 
 // TestHelpGoesToStdout: --help is an answer, not a complaint, so it must be
-// pipeable (`tsk --help | less`) and exit 0.
+// pipeable (`chore --help | less`) and exit 0.
 func TestHelpGoesToStdout(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"Taskfile.yml": "version: '3'\ntasks:\n  build:\n    cmds: ['echo build']\n",
@@ -273,7 +273,7 @@ func TestHelpGoesToStdout(t *testing.T) {
 	got := runMain(t, root, "--help")
 
 	checkCode(t, got, 0)
-	checkContains(t, got, "stdout", got.stdout, "usage:", "tsk [flags] <task> [args...]")
+	checkContains(t, got, "stdout", got.stdout, "usage:", "chore [flags] <task> [args...]")
 	if got.stderr != "" {
 		t.Errorf("--help wrote to stderr: %q", got.stderr)
 	}
@@ -311,7 +311,7 @@ func TestSplitArgs(t *testing.T) {
 		},
 		{
 			// `=` alone does not make an assignment: the left side has to look
-			// like a variable name, or `tsk deploy path/to=x` would silently set
+			// like a variable name, or `chore deploy path/to=x` would silently set
 			// a variable nobody can reference and drop the argument.
 			name:     "a path with an equals stays an argument",
 			words:    []string{"path/to=x"},
@@ -365,7 +365,7 @@ func TestSplitArgs(t *testing.T) {
 
 // A --flag naming a declared parameter is consumed as that parameter; anything
 // else stays a positional word so it still reaches the task. Without that rule,
-// adding named parameters would break `tsk logs -f api`.
+// adding named parameters would break `chore logs -f api`.
 func TestSplitArgsNamedParameters(t *testing.T) {
 	params := map[string]param{"config": {name: "config"}}
 
@@ -435,7 +435,7 @@ func TestSplitArgsNamedParameters(t *testing.T) {
 
 // A boolean parameter — one whose default is true/false — is complete on its
 // own, so `--follow` must not swallow the word after it. Getting this wrong
-// turns `tsk logs --follow api` into a request to follow a service called "api"
+// turns `chore logs --follow api` into a request to follow a service called "api"
 // with no filter, or an error, depending on which way it guesses.
 func TestSplitArgsBooleanFlags(t *testing.T) {
 	params := map[string]param{
@@ -491,20 +491,20 @@ func TestSplitArgsBooleanFlags(t *testing.T) {
 	}
 }
 
-// tskfile.yml is this program's file; Taskfile.yml is accepted only so a
+// chores.yml is this program's file; Taskfile.yml is accepted only so a
 // repository can migrate, and says so, because one file claimed by two runners
 // that disagree about `args:` and about `task <t> VAR=value` is a trap.
 func TestFilenamePrecedenceAndMigrationNotice(t *testing.T) {
-	t.Run("tskfile.yml wins over Taskfile.yml", func(t *testing.T) {
+	t.Run("chores.yml wins over Taskfile.yml", func(t *testing.T) {
 		root := writeTree(t, map[string]string{
-			"tskfile.yml":  "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
+			"chores.yml":  "version: '3'\ntasks:\n  which:\n    cmds: ['echo tskfile']\n",
 			"Taskfile.yml": "version: '3'\ntasks:\n  which:\n    cmds: ['echo taskfile']\n",
 		})
 		got := runMain(t, root, "which")
 		checkCode(t, got, 0)
 		checkContains(t, got, "stdout", got.stdout, "tskfile")
 		if strings.Contains(got.stderr, "rename it") {
-			t.Errorf("stderr = %q, want no migration notice when tskfile.yml exists", got.stderr)
+			t.Errorf("stderr = %q, want no migration notice when chores.yml exists", got.stderr)
 		}
 	})
 
@@ -515,7 +515,7 @@ func TestFilenamePrecedenceAndMigrationNotice(t *testing.T) {
 		got := runMain(t, root, "which")
 		checkCode(t, got, 0)
 		checkContains(t, got, "stdout", got.stdout, "taskfile")
-		checkContains(t, got, "stderr", got.stderr, "rename it to tskfile.yml")
+		checkContains(t, got, "stderr", got.stderr, "rename it to chores.yml")
 	})
 }
 
@@ -689,7 +689,7 @@ func parseList(t *testing.T, out string) []listed {
 	return entries
 }
 
-// TestListing covers the answer tsk gives when there is nothing to run, which is
+// TestListing covers the answer chore gives when there is nothing to run, which is
 // the first thing anyone sees in an unfamiliar project.
 func TestListing(t *testing.T) {
 	files := map[string]string{
@@ -745,7 +745,7 @@ tasks:
 		bare := runMain(t, root)
 		listed := runMain(t, root, "--list")
 		if bare.stdout != listed.stdout {
-			t.Errorf("`tsk` and `tsk --list` disagree\n--- tsk ---\n%s--- tsk --list ---\n%s", bare.stdout, listed.stdout)
+			t.Errorf("`tsk` and `chore --list` disagree\n--- chore ---\n%s--- chore --list ---\n%s", bare.stdout, listed.stdout)
 		}
 		checkCode(t, listed, 0)
 	})
@@ -767,7 +767,7 @@ tasks:
 
 // ─── finding the Taskfile ───────────────────────────────────────────────────
 
-// TestTaskfileDiscovery: where tsk looks, and what it says when it finds
+// TestTaskfileDiscovery: where chore looks, and what it says when it finds
 // nothing.
 func TestTaskfileDiscovery(t *testing.T) {
 	files := map[string]string{
@@ -788,7 +788,7 @@ tasks:
 	})
 
 	t.Run("searching upward from a subdirectory", func(t *testing.T) {
-		// Running `tsk build` three directories down is the normal case, and the
+		// Running `chore build` three directories down is the normal case, and the
 		// task must still run against the project root, not the cwd.
 		root := writeTree(t, files)
 		got := runMain(t, filepath.Join(root, "sub", "deeper"), "where")
@@ -812,7 +812,7 @@ tasks:
 	t.Run("-C to a directory that is not there", func(t *testing.T) {
 		got := runMain(t, t.TempDir(), "-C", filepath.Join(t.TempDir(), "nope"), "where")
 		checkCode(t, got, 1)
-		checkContains(t, got, "stderr", got.stderr, "tsk:")
+		checkContains(t, got, "stderr", got.stderr, "chore:")
 	})
 
 	t.Run("-f names the file explicitly", func(t *testing.T) {
@@ -847,7 +847,7 @@ tasks:
 		checkCode(t, got, 1)
 		// The message has to name the thing that was looked for; "not found" on
 		// its own sends people hunting for a config problem they do not have.
-		checkContains(t, got, "stderr", got.stderr, "no tskfile.yml here or in any parent directory")
+		checkContains(t, got, "stderr", got.stderr, "no chores.yml here or in any parent directory")
 	})
 }
 
@@ -868,7 +868,7 @@ func reportedRoot(t *testing.T, r result) string {
 func requireNoTaskfileAbove(t *testing.T, dir string) {
 	t.Helper()
 	for d := dir; ; {
-		for _, name := range []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml"} {
+		for _, name := range []string{"Taskfile.yml", "Taskfile.yaml", "chorefile.yml"} {
 			if _, err := os.Stat(filepath.Join(d, name)); err == nil {
 				t.Skipf("%s exists, so the upward search cannot fail from %s", filepath.Join(d, name), dir)
 			}
@@ -883,7 +883,7 @@ func requireNoTaskfileAbove(t *testing.T, dir string) {
 
 // ─── exit codes ─────────────────────────────────────────────────────────────
 
-// TestExitCodes: tsk is run from scripts and from CI, where the exit code is the
+// TestExitCodes: chore is run from scripts and from CI, where the exit code is the
 // only thing read. A command's own status has to survive to the caller
 // (SPEC "Fixed semantics" #7).
 func TestExitCodes(t *testing.T) {
@@ -905,7 +905,7 @@ tasks:
 	})
 
 	t.Run("a failing command exits with its own code", func(t *testing.T) {
-		// Not 1: a script that branches on `tsk deploy; case $? in 42) …` has to
+		// Not 1: a script that branches on `chore deploy; case $? in 42) …` has to
 		// see what the command actually returned.
 		got := runMain(t, writeTree(t, files), "boom")
 		checkCode(t, got, 42)

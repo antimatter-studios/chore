@@ -2,8 +2,8 @@
 //
 // The grammar is the one thing this program will not compromise on. A bare word
 // after the task name is an ARGUMENT, never another task name — so
-// `tsk up mail4.test` means what it looks like. Running several tasks is
-// `tsk a && tsk b`, which is what people type anyway; inheriting make's
+// `chore up mail4.test` means what it looks like. Running several tasks is
+// `chore a && chore b`, which is what people type anyway; inheriting make's
 // multi-target grammar is what costs every other runner its arguments.
 package cli
 
@@ -16,24 +16,29 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rest-mail/go-tsk/internal/loader"
-	"github.com/rest-mail/go-tsk/internal/run"
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/loader"
+	"github.com/antimatter-studios/chore/internal/run"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
-const usage = `tsk — run tasks from a tskfile.yml
+// Version is the build's version string, set by main. Exported rather than
+// linker-stamped here so the binary has one obvious place it comes from.
+var Version = "dev"
+
+const usage = `chore — run tasks from a chores.yml
 
 usage:
-  tsk [flags] <task> [args...] [-- extra]
+  chore [flags] <task> [args...] [-- extra]
 
 flags:
   -C, --dir DIR     change to DIR before looking for the Taskfile
-  -f, --file FILE   file to read (default: tskfile.yml, searched upward)
+  -f, --file FILE   file to read (default: chores.yml, searched upward)
   -l, --list        list tasks with their descriptions
       --dry         print the commands a task would run, without running them
       --force       run even if up-to-date checks say the work is done
   -v, --verbose     echo commands even for silent tasks
   -h, --help        this text
+      --version     print the version
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -42,7 +47,7 @@ arguments:
         args: [config]
         cmds: ['docker compose --project-name {{.CONFIG}} up']
 
-      tsk up mail4.test
+      chore up mail4.test
 
   Everything after -- is available as {{.CLI_ARGS}}.
 `
@@ -51,39 +56,50 @@ arguments:
 func Main(args []string, stdout, stderr io.Writer) int {
 	opts, rest, err := parseFlags(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "tsk: %v\n\n%s", err, usage)
+		fmt.Fprintf(stderr, "chore: %v\n\n%s", err, usage)
 		return 2
 	}
 	if opts.help {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
+	if opts.version {
+		fmt.Fprintln(stdout, Version)
+		return 0
+	}
 
 	if opts.dir != "" {
 		if err := os.Chdir(opts.dir); err != nil {
-			fmt.Fprintf(stderr, "tsk: %v\n", err)
+			fmt.Fprintf(stderr, "chore: %v\n", err)
 			return 1
 		}
 	}
 
 	path, err := findTaskfile(opts.file)
 	if err != nil {
-		fmt.Fprintf(stderr, "tsk: %v\n", err)
+		fmt.Fprintf(stderr, "chore: %v\n", err)
 		return 1
 	}
 	if base := filepath.Base(path); strings.EqualFold(base, "Taskfile.yml") || strings.EqualFold(base, "Taskfile.yaml") {
-		fmt.Fprintf(stderr, "tsk: reading %s — rename it to %s; go-task ignores `args:` and mishandles `task <task> VAR=value`, so one file for both runners is a trap\n",
+		fmt.Fprintf(stderr, "chore: reading %s — rename it to %s; go-task ignores `args:` and mishandles `task <task> VAR=value`, so one file for both runners is a trap\n",
 			base, Filenames[0])
 	}
 
 	project, err := loader.Load(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "tsk: %v\n", err)
+		fmt.Fprintf(stderr, "chore: %v\n", err)
 		return 1
 	}
 
 	// No task named, or an explicit --list: describe what is available. This is
-	// the same answer, so `tsk` on its own is never a mystery.
+	// the same answer, so `chore` on its own is never a mystery.
+	if len(rest) == 1 && rest[0] == "version" {
+		if _, ok := project.Tasks["version"]; !ok {
+			fmt.Fprintln(stdout, Version)
+			return 0
+		}
+	}
+
 	if opts.list || len(rest) == 0 {
 		writeList(stdout, project)
 		return 0
@@ -95,17 +111,17 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 	// Words after the task name are its positional arguments, except NAME=value
 	// and --param value for a parameter the task declares. All three are bound
-	// before `dotenv:` is resolved, so `tsk config:check CONFIG=mail4.test` acts
+	// before `dotenv:` is resolved, so `chore config:check CONFIG=mail4.test` acts
 	// on mail4.test. Task accepts the NAME=value syntax but resolves dotenv while
 	// parsing, before CLI variables exist, so it silently used the default.
 	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
 	if err != nil {
-		fmt.Fprintf(stderr, "tsk: %v\n", err)
+		fmt.Fprintf(stderr, "chore: %v\n", err)
 		return 2
 	}
 
 	if err := r.Run(context.Background(), rest[0], args, callVars); err != nil {
-		fmt.Fprintf(stderr, "tsk: %v\n", err)
+		fmt.Fprintf(stderr, "chore: %v\n", err)
 		return run.ExitCode(err)
 	}
 	return 0
@@ -113,13 +129,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 type options struct {
 	dir, file                       string
-	list, dry, force, verbose, help bool
+	list, dry, force, verbose, help, version bool
 	cliArgs                         []string
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.
-// Anything after it belongs to the task, so `tsk logs -f api` passes -f to the
-// task rather than to tsk. Anything after `--` becomes CLI_ARGS.
+// Anything after it belongs to the task, so `chore logs -f api` passes -f to the
+// task rather than to chore. Anything after `--` becomes CLI_ARGS.
 func parseFlags(args []string) (options, []string, error) {
 	var o options
 	var rest []string
@@ -168,6 +184,8 @@ func parseFlags(args []string) (options, []string, error) {
 			o.verbose = true
 		case "h", "help":
 			o.help = true
+		case "version", "V":
+			o.version = true
 		default:
 			return o, nil, fmt.Errorf("unknown flag %q", a)
 		}
@@ -186,7 +204,7 @@ func parseFlags(args []string) (options, []string, error) {
 // declaredParams returns the parameter names a task declares, lowercased for
 // matching. An unknown task yields none, so the runner reports the bad name
 // rather than the parser complaining about its arguments.
-func declaredParams(p *taskfile.Project, task string) map[string]param {
+func declaredParams(p *chorefile.Project, task string) map[string]param {
 	t, ok := p.Tasks[task]
 	if !ok {
 		return nil
@@ -208,12 +226,12 @@ type param struct {
 // splitArgs sorts the words after a task name into positional arguments and
 // variables. Three forms are accepted:
 //
-//	tsk up mail4.test           positional, in the order `args:` declares
-//	tsk up CONFIG=mail4.test    a variable, as Task spells it
-//	tsk up --config mail4.test  a named parameter, if the task declares `config`
+//	chore up mail4.test           positional, in the order `args:` declares
+//	chore up CONFIG=mail4.test    a variable, as Task spells it
+//	chore up --config mail4.test  a named parameter, if the task declares `config`
 //
 // A flag is only consumed when it names a DECLARED parameter; anything else
-// stays a positional word and reaches the task, so `tsk logs -f api` still
+// stays a positional word and reaches the task, so `chore logs -f api` still
 // passes -f to the task rather than being rejected here.
 func splitArgs(words []string, params map[string]param) ([]string, map[string]string, error) {
 	var args []string
@@ -228,8 +246,8 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 				switch {
 				case declared.boolean:
 					// Presence is the value. Crucially it must not eat the next
-					// word: `tsk logs --follow api` leaves api as a positional.
-					value = taskfile.NormalizeBool(valueOr(value, hasValue, "true"))
+					// word: `chore logs --follow api` leaves api as a positional.
+					value = chorefile.NormalizeBool(valueOr(value, hasValue, "true"))
 				case !hasValue:
 					if i+1 >= len(words) {
 						return nil, nil, fmt.Errorf("--%s needs a value", name)
@@ -249,7 +267,7 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 			// supplied value must beat the default in BOTH cases.
 			if declared, isParam := params[strings.ToLower(name)]; isParam {
 				if declared.boolean {
-					value = taskfile.NormalizeBool(value)
+					value = chorefile.NormalizeBool(value)
 				}
 				setParam(vars, declared.name, value)
 			}
@@ -298,16 +316,16 @@ func isVarName(s string) bool {
 
 // Filenames are the names looked for, in order.
 //
-// tskfile.yml rather than Taskfile.yml because the two runners are no longer
-// interchangeable: tsk reads `args:` and go-task ignores it, and go-task's
+// chores.yml rather than Taskfile.yml because the two runners are no longer
+// interchangeable: chore reads `args:` and go-task ignores it, and go-task's
 // silent mishandling of `task <t> CONFIG=x` is a trap a shared filename invites
 // people to walk into. Taskfile.yml is still accepted last, so a repository can
 // migrate without a flag day — with a notice, because a file that two programs
 // might claim should not be ambiguous for long.
-var Filenames = []string{"tskfile.yml", "tskfile.yaml", "Taskfile.yml", "Taskfile.yaml"}
+var Filenames = []string{"chores.yml", "chores.yaml", "Taskfile.yml", "Taskfile.yaml"}
 
 // findTaskfile resolves the file to read, searching upward from the working
-// directory so `tsk` works from a subdirectory.
+// directory so `chore` works from a subdirectory.
 func findTaskfile(explicit string) (string, error) {
 	if explicit != "" {
 		abs, err := filepath.Abs(explicit)
@@ -340,7 +358,7 @@ func findTaskfile(explicit string) (string, error) {
 
 // writeList prints the tasks, grouped by namespace, hiding internal ones. The
 // description is the task's `desc`, so there is nothing to keep in sync.
-func writeList(w io.Writer, p *taskfile.Project) {
+func writeList(w io.Writer, p *chorefile.Project) {
 	type entry struct{ name, desc string }
 	groups := map[string][]entry{}
 	width := 0

@@ -1,4 +1,4 @@
-package taskfile
+package chorefile
 
 import (
 	"bytes"

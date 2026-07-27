@@ -40,14 +40,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 const (
 	// DefaultCacheDir is used when the caller passes an empty cacheDir. A
 	// relative cache dir is resolved against the task's directory, so the
-	// default lands at <dir>/.tsk.
-	DefaultCacheDir = ".tsk"
+	// default lands at <dir>/.chore.
+	DefaultCacheDir = ".chore"
 
 	// fingerprintsDir keeps checksums in their own subdirectory so the cache
 	// dir stays available for whatever else needs a scratch space later.
@@ -61,7 +61,7 @@ const (
 
 	// hashPrefix seeds every digest so an empty source set still produces a
 	// version-specific value rather than the digest of nothing.
-	hashPrefix = "tsk-fingerprint-v1\n"
+	hashPrefix = "chore-fingerprint-v1\n"
 )
 
 // excludedDirs are never descended into while expanding a glob. `.git` and
@@ -137,7 +137,7 @@ func (r capturerRunner) Run(ctx context.Context, script string) error {
 // A false return is not an error. The error return is reserved for problems
 // that stop the check from producing an answer at all — a template that will
 // not render, a shell that will not start, an unreadable source file.
-func UpToDate(ctx context.Context, t *taskfile.Task, r Renderer, sh Runner, dir, cacheDir string) (bool, error) {
+func UpToDate(ctx context.Context, t *chorefile.Task, r Renderer, sh Runner, dir, cacheDir string) (bool, error) {
 	if t == nil {
 		return false, nil
 	}
@@ -156,7 +156,7 @@ func UpToDate(ctx context.Context, t *taskfile.Task, r Renderer, sh Runner, dir,
 // statusUpToDate runs every status command until one fails. Short-circuiting is
 // safe because a status command that changes the world is already a bug, and it
 // keeps the common "not up to date" path cheap.
-func statusUpToDate(ctx context.Context, t *taskfile.Task, r Renderer, sh Runner) (bool, error) {
+func statusUpToDate(ctx context.Context, t *chorefile.Task, r Renderer, sh Runner) (bool, error) {
 	if sh == nil {
 		return false, fmt.Errorf("task %q: status check needs a shell", t.Name)
 	}
@@ -194,7 +194,7 @@ func statusUpToDate(ctx context.Context, t *taskfile.Task, r Renderer, sh Runner
 
 // checksumUpToDate compares the current source content against the last
 // recorded run and verifies the outputs are still there.
-func checksumUpToDate(t *taskfile.Task, r Renderer, dir, cacheDir string) (bool, error) {
+func checksumUpToDate(t *chorefile.Task, r Renderer, dir, cacheDir string) (bool, error) {
 	cache := resolveCacheDir(dir, cacheDir)
 
 	// Outputs first: it is the cheapest way to say no, and a missing output
@@ -250,12 +250,12 @@ func checksumUpToDate(t *taskfile.Task, r Renderer, dir, cacheDir string) (bool,
 // generates contain templates, use SaveWith with the same Renderer that was
 // passed to UpToDate — otherwise the two would hash different file sets and the
 // task could never be up to date.
-func Save(t *taskfile.Task, dir, cacheDir string) error {
+func Save(t *chorefile.Task, dir, cacheDir string) error {
 	return SaveWith(t, nil, dir, cacheDir)
 }
 
 // SaveWith is Save with template expansion for sources/generates patterns.
-func SaveWith(t *taskfile.Task, r Renderer, dir, cacheDir string) error {
+func SaveWith(t *chorefile.Task, r Renderer, dir, cacheDir string) error {
 	if t == nil || (len(t.Sources) == 0 && len(t.Generates) == 0) {
 		return nil // nothing to remember
 	}
@@ -285,7 +285,7 @@ func SaveWith(t *taskfile.Task, r Renderer, dir, cacheDir string) error {
 
 // Path is where t's fingerprint is stored, so callers (--force, a cache clean
 // command) can find or remove it without duplicating the naming rules.
-func Path(t *taskfile.Task, dir, cacheDir string) string {
+func Path(t *chorefile.Task, dir, cacheDir string) string {
 	name := ""
 	if t != nil {
 		name = t.Name

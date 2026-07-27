@@ -1,4 +1,4 @@
-// Package loader turns a Taskfile on disk into a taskfile.Project: it reads the
+// Package loader turns a Taskfile on disk into a chorefile.Project: it reads the
 // root file, resolves `includes` depth-first, and flattens every task into one
 // namespaced map (`postgres:up`, `a:b:migrate`).
 //
@@ -13,7 +13,7 @@
 //
 // Everything the loader discovers is written back into the schema types
 // (Name, File, Path, Dir, RootDir) — no side tables — so later packages only
-// need the *taskfile.Project.
+// need the *chorefile.Project.
 package loader
 
 import (
@@ -26,21 +26,21 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // DefaultFilename is the file looked for when a path (the root argument, an
 // include's `taskfile:`, or its `dir:`) names a directory rather than a file.
-const DefaultFilename = "tskfile.yml"
+const DefaultFilename = "chores.yml"
 
 // Filenames are the names an include may resolve to when it names a directory,
 // in order. Taskfile.yml is accepted last so an included peer repository that
 // still ships one keeps working.
-var Filenames = []string{"tskfile.yml", "tskfile.yaml", "Taskfile.yml", "Taskfile.yaml"}
+var Filenames = []string{"chores.yml", "chores.yaml", "Taskfile.yml", "Taskfile.yaml"}
 
 // Load reads the Taskfile at path — a file, or a directory holding
 // Taskfile.yml — and every file it includes, and returns the flattened project.
-func Load(path string) (*taskfile.Project, error) {
+func Load(path string) (*chorefile.Project, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("taskfile %s: %w", path, err)
@@ -60,7 +60,7 @@ func Load(path string) (*taskfile.Project, error) {
 	}
 
 	root := entries[0].file
-	return &taskfile.Project{
+	return &chorefile.Project{
 		Root:  root,
 		Tasks: tasks,
 		// RootDir is the directory physically holding the root file, even if the
@@ -76,14 +76,14 @@ func Load(path string) (*taskfile.Project, error) {
 // includes, includes in sorted key order — so duplicate-name errors are stable.
 type entry struct {
 	prefix string
-	file   *taskfile.File
+	file   *chorefile.File
 }
 
 // request is one file to read, as described by the file that includes it.
 type request struct {
 	path   string                  // absolute path of the file to read
 	prefix string                  // namespace for its tasks
-	vars   map[string]taskfile.Var // the include's `vars:`, merged onto the file
+	vars   map[string]chorefile.Var // the include's `vars:`, merged onto the file
 	dir    string                  // the include's `dir:`, absolute, or ""
 	chain  []string                // absolute paths of the ancestors, for cycle detection
 }
@@ -100,7 +100,7 @@ func load(req request) ([]entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read taskfile: %w", err)
 	}
-	f, err := taskfile.Decode(data)
+	f, err := chorefile.Decode(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", req.path, err)
 	}
@@ -146,7 +146,7 @@ func load(req request) ([]entry, error) {
 
 // childRequest resolves one include against the file that declares it. skip is
 // true when the include is `optional:` and its file is absent.
-func childRequest(f *taskfile.File, name string, inc *taskfile.Include, prefix string, chain []string) (req request, skip bool, err error) {
+func childRequest(f *chorefile.File, name string, inc *chorefile.Include, prefix string, chain []string) (req request, skip bool, err error) {
 	base := inc.Taskfile
 	if base == "" {
 		// `dir:` alone means "the Taskfile.yml in that directory".
@@ -186,8 +186,8 @@ func childRequest(f *taskfile.File, name string, inc *taskfile.Include, prefix s
 // the loader owns (Name, File). It takes the whole entry list because aliases
 // are resolved in a second pass: an alias must never shadow a real task just
 // because its file happened to be included first.
-func register(entries []entry) (map[string]*taskfile.Task, error) {
-	tasks := make(map[string]*taskfile.Task)
+func register(entries []entry) (map[string]*chorefile.Task, error) {
+	tasks := make(map[string]*chorefile.Task)
 
 	for _, e := range entries {
 		for _, name := range slices.Sorted(maps.Keys(e.file.Tasks)) {
@@ -195,7 +195,7 @@ func register(entries []entry) (map[string]*taskfile.Task, error) {
 			if t == nil {
 				// `build:` with an empty body is legal YAML and a no-op task;
 				// materialise it so nothing downstream has to nil-check.
-				t = &taskfile.Task{}
+				t = &chorefile.Task{}
 				e.file.Tasks[name] = t
 			}
 			key := qualify(e.prefix, name)
@@ -227,11 +227,11 @@ func register(entries []entry) (map[string]*taskfile.Task, error) {
 // mergeVars is the only variable flow between files: the include's vars win
 // over the included file's own defaults, which are therefore just that —
 // defaults for when the parent maps nothing in.
-func mergeVars(own, incoming map[string]taskfile.Var) map[string]taskfile.Var {
+func mergeVars(own, incoming map[string]chorefile.Var) map[string]chorefile.Var {
 	if len(incoming) == 0 {
 		return own
 	}
-	out := make(map[string]taskfile.Var, len(own)+len(incoming))
+	out := make(map[string]chorefile.Var, len(own)+len(incoming))
 	maps.Copy(out, own)
 	maps.Copy(out, incoming)
 	return out
@@ -250,7 +250,7 @@ func locate(path string) (string, error) {
 		return path, nil
 	}
 	// A peer repository included by directory may still ship a Taskfile.yml, so
-	// try the tsk names first and fall back rather than refusing to load it.
+	// try the chore names first and fall back rather than refusing to load it.
 	var firstErr error
 	for _, name := range Filenames {
 		inner := filepath.Join(path, name)

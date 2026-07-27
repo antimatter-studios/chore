@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rest-mail/go-tsk/internal/taskfile"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // The tests in this file drive the real scheduler against a real shell. Every
@@ -46,7 +46,7 @@ func (s *syncBuf) String() string {
 type fixture struct {
 	t    *testing.T
 	dir  string
-	file *taskfile.File
+	file *chorefile.File
 	r    *Runner
 	out  *syncBuf
 	err  *syncBuf
@@ -56,11 +56,11 @@ type fixture struct {
 // directory, every task knows its name and its file, and RootDir is the temp
 // directory — which is also where every task runs, so a relative `> marker.txt`
 // in a command lands somewhere the test can read it.
-func newFixture(t *testing.T, file *taskfile.File, tasks map[string]*taskfile.Task) *fixture {
+func newFixture(t *testing.T, file *chorefile.File, tasks map[string]*chorefile.Task) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	if file == nil {
-		file = &taskfile.File{}
+		file = &chorefile.File{}
 	}
 	file.Path = filepath.Join(dir, "Taskfile.yml")
 	file.Dir = dir
@@ -70,7 +70,7 @@ func newFixture(t *testing.T, file *taskfile.File, tasks map[string]*taskfile.Ta
 		task.File = file
 	}
 	out, errOut := &syncBuf{}, &syncBuf{}
-	project := &taskfile.Project{Root: file, Tasks: tasks, RootDir: dir}
+	project := &chorefile.Project{Root: file, Tasks: tasks, RootDir: dir}
 	return &fixture{t: t, dir: dir, file: file, r: New(project, out, errOut), out: out, err: errOut}
 }
 
@@ -133,30 +133,30 @@ func (f *fixture) exists(rel string) bool {
 }
 
 // cmds turns shell snippets into plain command steps.
-func cmds(scripts ...string) []taskfile.Cmd {
-	out := make([]taskfile.Cmd, 0, len(scripts))
+func cmds(scripts ...string) []chorefile.Cmd {
+	out := make([]chorefile.Cmd, 0, len(scripts))
 	for _, s := range scripts {
-		out = append(out, taskfile.Cmd{Cmd: s})
+		out = append(out, chorefile.Cmd{Cmd: s})
 	}
 	return out
 }
 
 // vars builds a `vars:` block from alternating key/value literals.
-func vars(kv ...string) map[string]taskfile.Var {
+func vars(kv ...string) map[string]chorefile.Var {
 	if len(kv)%2 != 0 {
 		panic("vars: odd number of arguments")
 	}
-	out := map[string]taskfile.Var{}
+	out := map[string]chorefile.Var{}
 	for i := 0; i < len(kv); i += 2 {
-		out[kv[i]] = taskfile.Var{Value: kv[i+1]}
+		out[kv[i]] = chorefile.Var{Value: kv[i+1]}
 	}
 	return out
 }
 
-func depsOn(names ...string) []taskfile.Dep {
-	out := make([]taskfile.Dep, 0, len(names))
+func depsOn(names ...string) []chorefile.Dep {
+	out := make([]chorefile.Dep, 0, len(names))
 	for _, n := range names {
-		out = append(out, taskfile.Dep{Task: n})
+		out = append(out, chorefile.Dep{Task: n})
 	}
 	return out
 }
@@ -182,11 +182,11 @@ func mustContain(t *testing.T, got, want, what string) {
 // boolean is EMPTY, not "false" — and the task's own vars must not put the raw
 // literal back on top.
 func TestBooleanParameterNormalisation(t *testing.T) {
-	tasks := func() map[string]*taskfile.Task {
-		return map[string]*taskfile.Task{
+	tasks := func() map[string]*chorefile.Task {
+		return map[string]*chorefile.Task{
 			"logs": {
-				Args: taskfile.Args{{Name: "follow", Type: taskfile.TypeBool}},
-				Vars: map[string]taskfile.Var{"follow": {Value: "false"}},
+				Args: chorefile.Args{{Name: "follow", Type: chorefile.TypeBool}},
+				Vars: map[string]chorefile.Var{"follow": {Value: "false"}},
 				Cmds: cmds(`printf 'tmpl=[%s] shell=[%s]' '{{if .FOLLOW}}on{{end}}' "${FOLLOW}" > out.txt`),
 			},
 		}
@@ -205,24 +205,24 @@ func TestBooleanParameterNormalisation(t *testing.T) {
 	}
 }
 
-// tsk identifies itself in the environment so a Taskfile can distinguish the two
+// chore identifies itself in the environment so a Taskfile can distinguish the two
 // runners — needed where a guard exists to catch a Task-specific trap.
 func TestRunnerIdentifiesItself(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"probe": {Cmds: cmds(`printf '%s' "${TSK}" > out.txt`)},
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"probe": {Cmds: cmds(`printf '%s' "${CHORE}" > out.txt`)},
 	})
 	f.mustRun("probe", nil, nil)
 	if got := f.read("out.txt"); got != "1" {
-		t.Errorf("TSK = %q, want 1", got)
+		t.Errorf("CHORE = %q, want 1", got)
 	}
 }
 
 // A flag needs no default to be optional — absence is its value. Requiring one
 // would mean typing `--follow=false` to say nothing.
 func TestBooleanParameterIsNeverRequired(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"logs": {
-			Args: taskfile.Args{{Name: "follow", Type: taskfile.TypeBool}},
+			Args: chorefile.Args{{Name: "follow", Type: chorefile.TypeBool}},
 			Cmds: cmds(`printf 'follow=[%s]' '{{.FOLLOW}}' > out.txt`),
 		},
 	})
@@ -235,9 +235,9 @@ func TestBooleanParameterIsNeverRequired(t *testing.T) {
 // An int parameter rejects a value it cannot mean, at the point of binding,
 // rather than letting a shell command fail later with something less obvious.
 func TestIntParameterTypeIsChecked(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"logs": {
-			Args: taskfile.Args{{Name: "lines", Type: taskfile.TypeInt}},
+			Args: chorefile.Args{{Name: "lines", Type: chorefile.TypeInt}},
 			Cmds: cmds(`printf ran > ran.txt`),
 		},
 	})
@@ -258,14 +258,14 @@ func TestIntParameterTypeIsChecked(t *testing.T) {
 // no way to say "may be omitted, and empty is meaningful" — and it is why
 // `args:` needs no required/optional marker: a default's presence is the marker.
 func TestEmptyDefaultMakesAParameterOptional(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"list": {
-			Args: taskfile.Args{{Name: "filter"}},
-			Vars: map[string]taskfile.Var{"filter": {Value: ""}},
+			Args: chorefile.Args{{Name: "filter"}},
+			Vars: map[string]chorefile.Var{"filter": {Value: ""}},
 			Cmds: cmds(`printf 'filter=[%s]' '{{.FILTER}}' > out.txt`),
 		},
 		"needed": {
-			Args: taskfile.Args{{Name: "config"}},
+			Args: chorefile.Args{{Name: "config"}},
 			Cmds: cmds(`printf ran > ran.txt`),
 		},
 	})
@@ -284,8 +284,8 @@ func TestEmptyDefaultMakesAParameterOptional(t *testing.T) {
 // is refused rather than resolved by precedence — silently preferring one is how
 // a command acts on a config the caller did not mean.
 func TestConflictingArgumentAndNamedValue(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"up": {Args: chorefile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
 	})
 
 	err := f.mustFail("up", []string{"mail4.test"}, map[string]string{"CONFIG": "restmail.test"})
@@ -295,8 +295,8 @@ func TestConflictingArgumentAndNamedValue(t *testing.T) {
 	}
 
 	// The same value twice is not a contradiction.
-	f2 := newFixture(t, nil, map[string]*taskfile.Task{
-		"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
+	f2 := newFixture(t, nil, map[string]*chorefile.Task{
+		"up": {Args: chorefile.Args{{Name: "config"}}, Cmds: cmds(`printf ran > ran.txt`)},
 	})
 	f2.mustRun("up", []string{"mail4.test"}, map[string]string{"CONFIG": "mail4.test"})
 }
@@ -304,15 +304,15 @@ func TestConflictingArgumentAndNamedValue(t *testing.T) {
 // A parameter's DEFAULT must reach the dotenv path, which is the thing usually
 // keyed on it. Task vars as a whole are resolved after dotenv (they may read its
 // values), so parameter defaults specifically are resolved earlier — otherwise
-// `tsk up` with no argument renders `config//config.env` and fails, while
-// `tsk up mail4.test` works, which is a baffling way to greet a new user.
+// `chore up` with no argument renders `config//config.env` and fails, while
+// `chore up mail4.test` works, which is a baffling way to greet a new user.
 func TestParameterDefaultReachesTheDotenvPath(t *testing.T) {
-	f := newFixture(t, &taskfile.File{
+	f := newFixture(t, &chorefile.File{
 		Dotenv: []string{"config/{{.CONFIG}}/config.env"},
-	}, map[string]*taskfile.Task{
+	}, map[string]*chorefile.Task{
 		"up": {
-			Args: taskfile.Args{{Name: "config"}},
-			Vars: map[string]taskfile.Var{"config": {Value: "alpha"}},
+			Args: chorefile.Args{{Name: "config"}},
+			Vars: map[string]chorefile.Var{"config": {Value: "alpha"}},
 			Cmds: cmds(`printf '%s' "$STACK" > out.txt`),
 		},
 	})
@@ -335,9 +335,9 @@ func TestParameterDefaultReachesTheDotenvPath(t *testing.T) {
 // the form this program's own usage text shows — must work rather than silently
 // interpolating nothing.
 func TestArgsBindUnderTheNameDeclared(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"up": {
-			Args: taskfile.Args{{Name: "config"}},
+			Args: chorefile.Args{{Name: "config"}},
 			Cmds: cmds(`printf 'lower=%s upper=%s' '{{.config}}' '{{.CONFIG}}' > out.txt`),
 		},
 	})
@@ -352,8 +352,8 @@ func TestArgsBindUnderTheNameDeclared(t *testing.T) {
 // something the task will not do, so guessing is worse than refusing.
 func TestArgsTooManyIsAnError(t *testing.T) {
 	t.Run("task with parameters", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"up": {Args: taskfile.Args{{Name: "config"}}, Cmds: cmds("printf ran > ran.txt")},
+		f := newFixture(t, nil, map[string]*chorefile.Task{
+			"up": {Args: chorefile.Args{{Name: "config"}}, Cmds: cmds("printf ran > ran.txt")},
 		})
 		err := f.mustFail("up", []string{"a", "b"}, nil)
 		mustContain(t, err.Error(), "up", "error")
@@ -364,7 +364,7 @@ func TestArgsTooManyIsAnError(t *testing.T) {
 	})
 
 	t.Run("task with no parameters", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"build": {Cmds: cmds("printf ran > ran.txt")},
 		})
 		err := f.mustFail("build", []string{"stray"}, nil)
@@ -377,9 +377,9 @@ func TestArgsTooManyIsAnError(t *testing.T) {
 // it simply is not in the argument layer, so the name resolves further down the
 // scope. That is the whole mechanism behind an optional argument with a default.
 func TestArgsFewerThanParametersFallThrough(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"deploy": {
-			Args: taskfile.Args{{Name: "ENV"}, {Name: "TAG"}},
+			Args: chorefile.Args{{Name: "ENV"}, {Name: "TAG"}},
 			Vars: vars("TAG", "latest"),
 			Cmds: cmds(`printf '%s@%s' '{{.ENV}}' '{{.TAG}}' > out.txt`),
 		},
@@ -409,17 +409,17 @@ func TestVariablePrecedence(t *testing.T) {
 		// SPEC lists positional args above call vars, and that ordering still holds
 		// for everything else. But for a DECLARED parameter the two forms are the
 		// same knob, so supplying both is a contradiction from the command line
-		// (`tsk up mail4.test CONFIG=other`) and is rejected rather than silently
+		// (`chore up mail4.test CONFIG=other`) and is rejected rather than silently
 		// resolved — the caller named two configs and would get one.
-		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"probe": {Args: taskfile.Args{{Name: "V"}}, Cmds: cmds(probe)},
+		f := newFixture(t, nil, map[string]*chorefile.Task{
+			"probe": {Args: chorefile.Args{{Name: "V"}}, Cmds: cmds(probe)},
 		})
 		err := f.mustFail("probe", []string{"from-arg"}, map[string]string{"V": "from-call"})
 		mustContain(t, err.Error(), "given twice", "error")
 	})
 
 	t.Run("call var beats task var", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"probe": {Vars: vars("V", "from-task"), Cmds: cmds(probe)},
 		})
 		f.mustRun("probe", nil, map[string]string{"V": "from-call"})
@@ -429,7 +429,7 @@ func TestVariablePrecedence(t *testing.T) {
 	})
 
 	t.Run("task var beats file var", func(t *testing.T) {
-		f := newFixture(t, &taskfile.File{Vars: vars("V", "from-file")}, map[string]*taskfile.Task{
+		f := newFixture(t, &chorefile.File{Vars: vars("V", "from-file")}, map[string]*chorefile.Task{
 			"probe": {Vars: vars("V", "from-task"), Cmds: cmds(probe)},
 		})
 		f.mustRun("probe", nil, nil)
@@ -439,10 +439,10 @@ func TestVariablePrecedence(t *testing.T) {
 	})
 
 	t.Run("file var beats dotenv", func(t *testing.T) {
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"app.env"},
 			Vars:   vars("V", "from-file"),
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			"probe": {Cmds: cmds(probe)},
 		})
 		f.write("app.env", "V=from-dotenv\n")
@@ -456,7 +456,7 @@ func TestVariablePrecedence(t *testing.T) {
 		// The process environment is the base layer, so a dotenv file is how a
 		// config overrides whatever the developer happens to have exported.
 		t.Setenv("V", "from-process-env")
-		f := newFixture(t, &taskfile.File{Dotenv: []string{"app.env"}}, map[string]*taskfile.Task{
+		f := newFixture(t, &chorefile.File{Dotenv: []string{"app.env"}}, map[string]*chorefile.Task{
 			"probe": {Cmds: cmds(probe)},
 		})
 		f.write("app.env", "V=from-dotenv\n")
@@ -468,7 +468,7 @@ func TestVariablePrecedence(t *testing.T) {
 
 	t.Run("process environment is visible when nothing overrides it", func(t *testing.T) {
 		t.Setenv("TSK_TEST_ONLY_IN_ENV", "from-process-env")
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"probe": {Cmds: cmds(`printf '%s' '{{.TSK_TEST_ONLY_IN_ENV}}' > out.txt`)},
 		})
 		f.mustRun("probe", nil, nil)
@@ -489,14 +489,14 @@ func TestVariablePrecedence(t *testing.T) {
 func TestDotenvResolvesAfterArguments(t *testing.T) {
 	newStacks := func(t *testing.T) *fixture {
 		t.Helper()
-		f := newFixture(t, &taskfile.File{
+		f := newFixture(t, &chorefile.File{
 			Dotenv: []string{"config/{{.CONFIG}}/config.env"},
-		}, map[string]*taskfile.Task{
+		}, map[string]*chorefile.Task{
 			// Both spellings are asserted: {{.STACK}} proves the value reached
 			// the template scope, "$STACK" proves it reached the script's
 			// environment, and a real Taskfile relies on both.
 			"up": {
-				Args: taskfile.Args{{Name: "CONFIG"}},
+				Args: chorefile.Args{{Name: "CONFIG"}},
 				Cmds: cmds(`printf '%s %s' '{{.STACK}}' "$STACK" > stack.txt`),
 			},
 		})
@@ -524,7 +524,7 @@ func TestDotenvResolvesAfterArguments(t *testing.T) {
 	})
 
 	t.Run("NAME=value call var selects the config", func(t *testing.T) {
-		// `tsk up CONFIG=beta` — the exact invocation Task accepted and got wrong.
+		// `chore up CONFIG=beta` — the exact invocation Task accepted and got wrong.
 		f := newStacks(t)
 		f.mustRun("up", nil, map[string]string{"CONFIG": "beta"})
 		if got := f.read("stack.txt"); got != "beta beta" {
@@ -551,7 +551,7 @@ func TestDotenvResolvesAfterArguments(t *testing.T) {
 // finish in under 600ms, so the ceiling separates the two implementations while
 // still leaving room for process startup on a loaded machine.
 func TestDepsRunConcurrently(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"top":    {Deps: depsOn("slow-a", "slow-b")},
 		"slow-a": {Cmds: cmds("sleep 0.3; printf a > a.txt")},
 		"slow-b": {Cmds: cmds("sleep 0.3; printf b > b.txt")},
@@ -572,7 +572,7 @@ func TestDepsRunConcurrently(t *testing.T) {
 // TestFailingDepCancelsTheOthers: the first error cancels the group, so a long
 // dep is killed rather than left to finish work whose result is already void.
 func TestFailingDepCancelsTheOthers(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"top":   {Deps: depsOn("fails", "slow"), Cmds: cmds("printf top > top.txt")},
 		"fails": {Cmds: cmds("exit 1")},
 		"slow":  {Cmds: cmds("sleep 0.5; printf slow > slow.txt")},
@@ -598,7 +598,7 @@ func TestFailingDepCancelsTheOthers(t *testing.T) {
 // duplicate inside that window — which is precisely what `run: once` exists to
 // prevent for a task that creates a network or a volume.
 func TestRunOnceExecutesOnce(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"top":   {Deps: depsOn("a", "b")},
 		"a":     {Deps: depsOn("setup"), Cmds: cmds("printf a > a.txt")},
 		"b":     {Deps: depsOn("setup"), Cmds: cmds("printf b > b.txt")},
@@ -616,8 +616,8 @@ func TestRunOnceExecutesOnce(t *testing.T) {
 // rendered variables, so `once` means "once per distinct configuration", not
 // "once per name". Two deps that ask for different stacks must both happen.
 func TestRunOnceKeyIncludesVariables(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"top": {Deps: []taskfile.Dep{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"top": {Deps: []chorefile.Dep{
 			{Task: "setup", Vars: vars("N", "1")},
 			{Task: "setup", Vars: vars("N", "2")},
 		}},
@@ -638,8 +638,8 @@ func TestRunOnceKeyIncludesVariables(t *testing.T) {
 // compose. Each step tears down what the step before it built, so unwinding has
 // to happen in the opposite order to setting up.
 func TestDeferRunsLastAndInReverse(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"deploy": {Cmds: []taskfile.Cmd{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
 			{Cmd: "printf 1 >> order.txt"},
 			{Cmd: "printf a >> order.txt", Defer: true},
 			{Cmd: "printf b >> order.txt", Defer: true},
@@ -658,8 +658,8 @@ func TestDeferRunsLastAndInReverse(t *testing.T) {
 // that brings a topology up can promise it comes back down even when the middle
 // of the task explodes. The steps after the failure must still be skipped.
 func TestDeferRunsAfterFailure(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"deploy": {Cmds: []taskfile.Cmd{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
 			{Cmd: "printf up >> order.txt"},
 			{Cmd: "printf down >> order.txt", Defer: true},
 			{Cmd: "exit 42"},
@@ -681,8 +681,8 @@ func TestDeferRunsAfterFailure(t *testing.T) {
 // error must stay the one that explains why the task failed. Reporting the
 // teardown error instead would send a reader to investigate the wrong thing.
 func TestDeferredFailureDoesNotMaskTheRealOne(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"deploy": {Cmds: []taskfile.Cmd{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
 			{Cmd: "exit 7", Defer: true},
 			{Cmd: "exit 42"},
 		}},
@@ -701,8 +701,8 @@ func TestDeferredFailureDoesNotMaskTheRealOne(t *testing.T) {
 // teardown is the failure, and swallowing it would leave the topology half up
 // while the run reported success.
 func TestDeferredFailureAloneFailsTheTask(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"deploy": {Cmds: []taskfile.Cmd{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
 			{Cmd: "printf ok > ok.txt"},
 			{Cmd: "exit 7", Defer: true},
 		}},
@@ -727,8 +727,8 @@ func TestDeferredFailureAloneFailsTheTask(t *testing.T) {
 // immediately AFTER the step that creates the thing, never at the end of the
 // list, or the case it exists for is exactly the case it misses.
 func TestDeferDeclaredAfterTheFailureIsNotRegistered(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"deploy": {Cmds: []taskfile.Cmd{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
 			{Cmd: "exit 1"},
 			{Cmd: "printf late >> order.txt", Defer: true},
 		}},
@@ -747,8 +747,8 @@ func TestIgnoreError(t *testing.T) {
 	t.Run("per command", func(t *testing.T) {
 		// The exemption is scoped to the one step that declares it: the step
 		// after it still runs, and a later real failure is still a failure.
-		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"check": {Cmds: []taskfile.Cmd{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
+			"check": {Cmds: []chorefile.Cmd{
 				{Cmd: "exit 3", IgnoreError: true},
 				{Cmd: "printf after > after.txt"},
 			}},
@@ -762,8 +762,8 @@ func TestIgnoreError(t *testing.T) {
 	})
 
 	t.Run("per command does not cover the other steps", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
-			"check": {Cmds: []taskfile.Cmd{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
+			"check": {Cmds: []chorefile.Cmd{
 				{Cmd: "exit 3", IgnoreError: true},
 				{Cmd: "exit 9"},
 			}},
@@ -777,7 +777,7 @@ func TestIgnoreError(t *testing.T) {
 	t.Run("per task", func(t *testing.T) {
 		// A task-level exemption covers every step, so the task runs to the end
 		// and reports success — the shape of a best-effort cleanup task.
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"clean": {IgnoreError: true, Cmds: cmds("exit 1", "printf second > second.txt", "exit 2")},
 		})
 		f.mustRun("clean", nil, nil)
@@ -794,7 +794,7 @@ func TestIgnoreError(t *testing.T) {
 // to be checked before deps are scheduled. Checking it later would mean the
 // missing variable is discovered after half the work has already happened.
 func TestRequiresFailsBeforeAnythingRuns(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"deploy": {
 			Requires: []string{"TSK_TEST_TARGET"},
 			Deps:     depsOn("side-effect"),
@@ -819,9 +819,9 @@ func TestRequiresFailsBeforeAnythingRuns(t *testing.T) {
 // scope, not just the task's own vars — otherwise `requires` and `args` could
 // not be used together, which is the obvious way to write a mandatory parameter.
 func TestRequiresIsSatisfiedByAnArgument(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"deploy": {
-			Args:     taskfile.Args{{Name: "TARGET"}},
+			Args:     chorefile.Args{{Name: "TARGET"}},
 			Requires: []string{"TARGET"},
 			Cmds:     cmds(`printf '%s' '{{.TARGET}}' > out.txt`),
 		},
@@ -835,11 +835,11 @@ func TestRequiresIsSatisfiedByAnArgument(t *testing.T) {
 
 // ---------- 9. exit codes ----------
 
-// TestExitCodePropagates covers SPEC "Fixed semantics" #7: tsk exits with the
-// code its command did, so a caller's `if tsk x; then` and its retry logic keep
+// TestExitCodePropagates covers SPEC "Fixed semantics" #7: chore exits with the
+// code its command did, so a caller's `if chore x; then` and its retry logic keep
 // working.
 func TestExitCodePropagates(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"boom": {Cmds: cmds("exit 42")},
 	})
 	err := f.mustFail("boom", nil, nil)
@@ -860,8 +860,8 @@ func TestExitCodePropagates(t *testing.T) {
 // TestExitCodeSurvivesNesting: the code has to travel back through a `- task:`
 // step, otherwise nesting a task would quietly flatten every failure to 1.
 func TestExitCodeSurvivesNesting(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
-		"outer": {Cmds: []taskfile.Cmd{{Task: "inner"}}},
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"outer": {Cmds: []chorefile.Cmd{{Task: "inner"}}},
 		"inner": {Cmds: cmds("exit 17")},
 	})
 	err := f.mustFail("outer", nil, nil)
@@ -876,7 +876,7 @@ func TestExitCodeSurvivesNesting(t *testing.T) {
 // TestDryRunPrintsWithoutExecuting: --dry is only useful if it is trustworthy,
 // so the assertion that matters is the marker file that must NOT exist.
 func TestDryRunPrintsWithoutExecuting(t *testing.T) {
-	f := newFixture(t, nil, map[string]*taskfile.Task{
+	f := newFixture(t, nil, map[string]*chorefile.Task{
 		"up":   {Deps: depsOn("prep"), Cmds: cmds(`printf '{{.WHAT}}' > marker.txt`), Vars: vars("WHAT", "danger")},
 		"prep": {Cmds: cmds("printf prep > prep.txt")},
 	})
@@ -898,7 +898,7 @@ func TestDryRunPrintsWithoutExecuting(t *testing.T) {
 func TestUnknownTask(t *testing.T) {
 	newProject := func(t *testing.T) *fixture {
 		t.Helper()
-		return newFixture(t, nil, map[string]*taskfile.Task{
+		return newFixture(t, nil, map[string]*chorefile.Task{
 			"build":     {Cmds: cmds("true")},
 			"test:unit": {Cmds: cmds("true")},
 			"test:e2e":  {Cmds: cmds("true")},
@@ -934,7 +934,7 @@ func TestUnknownTask(t *testing.T) {
 
 func TestTaskDir(t *testing.T) {
 	t.Run("relative to the taskfile", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"in-sub": {Dir: "sub", Cmds: cmds("printf here > here.txt")},
 		})
 		f.mkdir("sub")
@@ -950,10 +950,10 @@ func TestTaskDir(t *testing.T) {
 
 	t.Run("rendered from a variable", func(t *testing.T) {
 		// dir: is templated, which is how one task serves several instances.
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"in-sub": {
 				Dir:  "stacks/{{.NAME}}",
-				Args: taskfile.Args{{Name: "NAME"}},
+				Args: chorefile.Args{{Name: "NAME"}},
 				Cmds: cmds("printf here > here.txt"),
 			},
 		})
@@ -966,7 +966,7 @@ func TestTaskDir(t *testing.T) {
 	})
 
 	t.Run("absolute", func(t *testing.T) {
-		f := newFixture(t, nil, map[string]*taskfile.Task{
+		f := newFixture(t, nil, map[string]*chorefile.Task{
 			"elsewhere": {Cmds: cmds("printf here > here.txt")},
 		})
 		outside := t.TempDir()

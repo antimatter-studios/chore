@@ -1,0 +1,130 @@
+name: Release
+
+# Tag-driven: pushing v1.2.3 builds every platform, publishes a release with
+# checksums, and tells the Homebrew tap to bump its formula.
+#
+# The artifact names are not arbitrary — they are the names the tap's formula
+# already expects for its other binaries:
+#   chore-<version>-<os>-<arch>.tar.gz   os ∈ darwin|linux, arch ∈ arm64|x86_64
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the leading v)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { os: darwin, arch: arm64, goarch: arm64 }
+          - { os: darwin, arch: x86_64, goarch: amd64 }
+          - { os: linux, arch: arm64, goarch: arm64 }
+          - { os: linux, arch: x86_64, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VER="${{ steps.v.outputs.version }}"
+          # -s -w strips the symbol table and DWARF: nothing here needs a
+          # debugger attached to a released binary, and it halves the download.
+          go build -trimpath -ldflags "-s -w -X main.version=${VER}" -o chore .
+          ./chore --version | grep -qx "${VER}" || {
+            echo "the built binary does not report ${VER}" >&2
+            exit 1
+          }
+          tar czf "chore-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" chore
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chore-${{ matrix.os }}-${{ matrix.arch }}
+          path: chore-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -1 *.tar.gz
+          sha256sum *.tar.gz | tee checksums.txt
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # gh is preinstalled on the runner, so no third-party action needs
+          # pinning to publish.
+          if ! gh release view "v${VER}" >/dev/null 2>&1; then
+            gh release create "v${VER}" --title "v${VER}" --generate-notes
+          fi
+          gh release upload "v${VER}" dist/*.tar.gz dist/checksums.txt --clobber
+
+      # The tap holds the formula, so it does the bump. A repository_dispatch
+      # keeps the credential one-way: this repo can ask, and cannot write there.
+      - name: Ask the tap to update the formula
+        if: ${{ env.TAP_TOKEN != '' }}
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${TAP_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/antimatter-studios/homebrew-tap/dispatches \
+            -d "{\"event_type\":\"formula-release\",\"client_payload\":{\"formula\":\"chore\",\"version\":\"${VER}\"}}"

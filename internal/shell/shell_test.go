@@ -155,7 +155,7 @@ func TestSetOptionsPersist(t *testing.T) {
 	}
 }
 
-// TestExitCodePropagation checks that tsk can exit with the code its command
+// TestExitCodePropagation checks that chore can exit with the code its command
 // exited with, which is the whole contract of ExitError.
 func TestExitCodePropagation(t *testing.T) {
 	for _, code := range []int{0, 1, 2, 42, 127} {
@@ -528,7 +528,7 @@ func TestShellFeatures(t *testing.T) {
 //
 // The system shell reports this itself — bash exits 2 with a message on stderr
 // naming the line — so unlike an embedded interpreter it IS an exit status, and
-// tsk propagates the shell's own code rather than inventing one.
+// chore propagates the shell's own code rather than inventing one.
 func TestSyntaxError(t *testing.T) {
 	var stdout, stderr strings.Builder
 	sh := Shell{Dir: t.TempDir(), Out: &stdout, Err: &stderr}

@@ -23,15 +23,15 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/rest-mail/go-tsk/internal/fingerprint"
-	"github.com/rest-mail/go-tsk/internal/shell"
-	"github.com/rest-mail/go-tsk/internal/taskfile"
-	"github.com/rest-mail/go-tsk/internal/tmpl"
+	"github.com/antimatter-studios/chore/internal/fingerprint"
+	"github.com/antimatter-studios/chore/internal/shell"
+	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/tmpl"
 )
 
 // Runner executes tasks from a loaded project.
 type Runner struct {
-	Project *taskfile.Project
+	Project *chorefile.Project
 	Out     io.Writer
 	Err     io.Writer
 
@@ -52,7 +52,7 @@ type Runner struct {
 }
 
 // New returns a Runner writing to out and errOut.
-func New(p *taskfile.Project, out, errOut io.Writer) *Runner {
+func New(p *chorefile.Project, out, errOut io.Writer) *Runner {
 	return &Runner{
 		Project: p,
 		Out:     out,
@@ -98,7 +98,7 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 	return r.execute(ctx, t, scope)
 }
 
-func (r *Runner) execute(ctx context.Context, t *taskfile.Task, scope *tmpl.Scope) error {
+func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
 	dir, err := r.taskDir(t, scope)
 	if err != nil {
 		return fmt.Errorf("%s: %w", t.Name, err)
@@ -125,7 +125,7 @@ func (r *Runner) execute(ctx context.Context, t *taskfile.Task, scope *tmpl.Scop
 	// Deferred steps run when the task finishes, in reverse order, whether or not
 	// it succeeded — which is the only reason a task can promise to tear down
 	// what it brought up.
-	var deferred []taskfile.Cmd
+	var deferred []chorefile.Cmd
 	var runErr error
 
 	for i, c := range t.Cmds {
@@ -167,7 +167,7 @@ func (r *Runner) execute(ctx context.Context, t *taskfile.Task, scope *tmpl.Scop
 
 // deps runs a task's dependencies concurrently. The first failure cancels the
 // rest, and its error is what the task reports.
-func (r *Runner) deps(ctx context.Context, t *taskfile.Task, scope *tmpl.Scope) error {
+func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
 	if len(t.Deps) == 0 {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (r *Runner) deps(ctx context.Context, t *taskfile.Task, scope *tmpl.Scope) 
 }
 
 // command runs one step: either a call to another task or a shell script.
-func (r *Runner) command(ctx context.Context, t *taskfile.Task, scope *tmpl.Scope, sh shell.Shell, c taskfile.Cmd) error {
+func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, sh shell.Shell, c chorefile.Cmd) error {
 	if c.Task != "" {
 		name, err := scope.Render(c.Task)
 		if err != nil {
@@ -232,7 +232,7 @@ func (r *Runner) command(ctx context.Context, t *taskfile.Task, scope *tmpl.Scop
 // passed by the caller, then positional arguments. Nothing later shadows
 // something earlier, and it is all resolved here — there is no second, earlier
 // evaluation point of the kind that made Task's dotenv see stale values.
-func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, callVars map[string]string) (*tmpl.Scope, error) {
+func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, callVars map[string]string) (*tmpl.Scope, error) {
 	base := tmpl.New(os.Environ())
 	base.Set("ROOT_DIR", r.Project.RootDir)
 	base.Set("TASK", t.Name)
@@ -276,7 +276,7 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 	// "false" as true.
 	for k, v := range paramDefaults {
 		if t.ParamIsBool(k) {
-			paramDefaults[k] = taskfile.NormalizeBool(v)
+			paramDefaults[k] = chorefile.NormalizeBool(v)
 		}
 	}
 	// A default is written in one case; the path that consumes it may use the
@@ -340,7 +340,7 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 		}
 		for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
 			if v, ok := final.Get(spelling); ok {
-				final.Set(spelling, taskfile.NormalizeBool(v))
+				final.Set(spelling, chorefile.NormalizeBool(v))
 			}
 		}
 	}
@@ -372,7 +372,7 @@ func (r *Runner) scope(ctx context.Context, t *taskfile.Task, args []string, cal
 
 // declaresDefault reports whether the task or its file defines a variable for
 // the parameter, in any spelling — presence, not emptiness.
-func declaresDefault(t *taskfile.Task, name string) bool {
+func declaresDefault(t *chorefile.Task, name string) bool {
 	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
 		if _, ok := t.Vars[spelling]; ok {
 			return true
@@ -387,10 +387,10 @@ func declaresDefault(t *taskfile.Task, name string) bool {
 }
 
 // checkArgConflicts rejects a parameter given twice with different values, e.g.
-// `tsk up mail4.test --config restmail.test`. One of the two was going to be
+// `chore up mail4.test --config restmail.test`. One of the two was going to be
 // ignored, and picking a winner silently is how you act on a config you did not
 // mean to name.
-func checkArgConflicts(t *taskfile.Task, argVars, callVars map[string]string) error {
+func checkArgConflicts(t *chorefile.Task, argVars, callVars map[string]string) error {
 	for _, spec := range t.Args {
 		name := spec.Name
 		positional, given := argVars[name]
@@ -411,7 +411,7 @@ func checkArgConflicts(t *taskfile.Task, argVars, callVars map[string]string) er
 // parameterVars picks out the task vars that define defaults for declared
 // parameters the caller did not supply. Under both spellings, since a parameter
 // answers to either.
-func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]taskfile.Var {
+func parameterVars(t *chorefile.Task, supplied ...map[string]string) map[string]chorefile.Var {
 	given := func(name string) bool {
 		for _, m := range supplied {
 			if _, ok := m[name]; ok {
@@ -423,7 +423,7 @@ func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]t
 		}
 		return false
 	}
-	out := map[string]taskfile.Var{}
+	out := map[string]chorefile.Var{}
 	for _, spec := range t.Args {
 		name := spec.Name
 		if given(name) {
@@ -442,7 +442,7 @@ func parameterVars(t *taskfile.Task, supplied ...map[string]string) map[string]t
 // arguments than parameters is allowed — the remaining names fall through to
 // vars, which is how a default value works. More is an error, because it means
 // the caller expected something the task will not do.
-func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
+func bindArgs(t *chorefile.Task, args []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(args) > len(t.Args) {
 		if len(t.Args) == 0 {
@@ -475,7 +475,7 @@ func bindArgs(t *taskfile.Task, args []string) (map[string]string, error) {
 // checkArgs fails when a declared parameter was neither supplied nor defaulted.
 // Running with an empty value is how a command ends up addressing nothing at
 // all, so an unsupplied parameter with no default is an error, not a blank.
-func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scope *tmpl.Scope) error {
+func checkArgs(t *chorefile.Task, args []string, callVars map[string]string, scope *tmpl.Scope) error {
 	var missing []string
 
 	for i, a := range t.Args {
@@ -484,7 +484,7 @@ func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scop
 			continue
 		}
 		// A flag is never required: its absence IS its value. Demanding one would
-		// mean writing `tsk logs --follow=false` to say nothing at all.
+		// mean writing `chore logs --follow=false` to say nothing at all.
 		if a.IsBool() {
 			continue
 		}
@@ -504,7 +504,7 @@ func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scop
 		missing = append(missing, name)
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("needs argument(s) %s — pass positionally (tsk %s <%s>), as %s=value, or give it a default in vars",
+		return fmt.Errorf("needs argument(s) %s — pass positionally (chore %s <%s>), as %s=value, or give it a default in vars",
 			strings.Join(missing, ", "), t.Name, missing[0], strings.ToUpper(missing[0]))
 	}
 	return nil
@@ -513,8 +513,8 @@ func checkArgs(t *taskfile.Task, args []string, callVars map[string]string, scop
 // checkArgType rejects a value the parameter cannot mean. Only int is checked:
 // a string takes anything, and a bool is set by presence rather than by a value
 // the caller types.
-func checkArgType(t *taskfile.Task, spec taskfile.Arg, value string) error {
-	if spec.Type != taskfile.TypeInt {
+func checkArgType(t *chorefile.Task, spec chorefile.Arg, value string) error {
+	if spec.Type != chorefile.TypeInt {
 		return nil
 	}
 	if _, err := strconv.Atoi(strings.TrimSpace(value)); err != nil {
@@ -524,7 +524,7 @@ func checkArgType(t *taskfile.Task, spec taskfile.Arg, value string) error {
 }
 
 // checkNamedTypes validates values supplied as --name or NAME=value.
-func checkNamedTypes(t *taskfile.Task, callVars map[string]string) error {
+func checkNamedTypes(t *chorefile.Task, callVars map[string]string) error {
 	for _, spec := range t.Args {
 		for _, spelling := range []string{spec.Name, strings.ToUpper(spec.Name), strings.ToLower(spec.Name)} {
 			v, ok := callVars[spelling]
@@ -563,10 +563,10 @@ func suppliedByName(name string, callVars map[string]string) bool {
 type dotenvSource struct {
 	dir     string
 	entries []string
-	vars    map[string]taskfile.Var
+	vars    map[string]chorefile.Var
 }
 
-func (r *Runner) dotenv(ctx context.Context, t *taskfile.Task, base *tmpl.Scope, callVars, argVars map[string]string, sh shell.Shell) (map[string]string, error) {
+func (r *Runner) dotenv(ctx context.Context, t *chorefile.Task, base *tmpl.Scope, callVars, argVars map[string]string, sh shell.Shell) (map[string]string, error) {
 	var sources []dotenvSource
 	if root := r.Project.Root; root != nil {
 		sources = append(sources, dotenvSource{dir: root.Dir, entries: root.Dotenv, vars: root.Vars})
@@ -634,7 +634,7 @@ func (r *Runner) dotenv(ctx context.Context, t *taskfile.Task, base *tmpl.Scope,
 	}
 	for _, m := range missing {
 		if r.warnOnce(m) {
-			fmt.Fprintf(r.Err, "tsk: %s does not exist, continuing without it (prefix the path with ? to silence this)\n", m)
+			fmt.Fprintf(r.Err, "chore: %s does not exist, continuing without it (prefix the path with ? to silence this)\n", m)
 		}
 	}
 	return out, nil
@@ -651,7 +651,7 @@ func (r *Runner) warnOnce(path string) bool {
 	return true
 }
 
-func (r *Runner) taskDir(t *taskfile.Task, scope *tmpl.Scope) (string, error) {
+func (r *Runner) taskDir(t *chorefile.Task, scope *tmpl.Scope) (string, error) {
 	dir := r.Project.RootDir
 	if t.File != nil && t.File.Dir != "" {
 		dir = t.File.Dir
@@ -678,7 +678,7 @@ func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
 	// concrete need: guards written to catch Task's "CLI variables do not reach
 	// dotenv" trap must not fire here, where the trap does not exist and the
 	// invocation they reject is the correct one.
-	env := append(os.Environ(), "TSK=1")
+	env := append(os.Environ(), "CHORE=1")
 	for k, v := range scope.All() {
 		if isEnvName(k) {
 			env = append(env, k+"="+v)
@@ -687,7 +687,7 @@ func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
 	return shell.Shell{Dir: dir, Env: env, Out: r.Out, Err: r.Err}
 }
 
-func (r *Runner) silent(t *taskfile.Task) bool {
+func (r *Runner) silent(t *chorefile.Task) bool {
 	if r.Verbose {
 		return false
 	}
@@ -697,7 +697,7 @@ func (r *Runner) silent(t *taskfile.Task) bool {
 	return t.File != nil && t.File.Silent
 }
 
-func (r *Runner) cacheDir() string { return filepath.Join(r.Project.RootDir, ".tsk") }
+func (r *Runner) cacheDir() string { return filepath.Join(r.Project.RootDir, ".chore") }
 
 // onceEntry is one `run: once` task's single execution, shared by every caller
 // that asks for it.
@@ -741,7 +741,7 @@ func onceKey(name string, scope *tmpl.Scope) string {
 	return b.String()
 }
 
-func checkRequires(t *taskfile.Task, scope *tmpl.Scope) error {
+func checkRequires(t *chorefile.Task, scope *tmpl.Scope) error {
 	var missing []string
 	for _, name := range t.Requires {
 		if v, ok := scope.Get(name); !ok || v == "" {
@@ -757,7 +757,7 @@ func checkRequires(t *taskfile.Task, scope *tmpl.Scope) error {
 
 // skipPlatform reports whether the task declares platforms and none of them
 // match the host. Entries are "os", "arch", or "os/arch".
-func skipPlatform(t *taskfile.Task) (bool, string) {
+func skipPlatform(t *chorefile.Task) (bool, string) {
 	if len(t.Platforms) == 0 {
 		return false, ""
 	}

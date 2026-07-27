@@ -1,4 +1,4 @@
-module github.com/rest-mail/go-tsk
+module github.com/antimatter-studios/chore
 
 go 1.25.0
 
