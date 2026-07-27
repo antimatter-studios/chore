@@ -3,6 +3,7 @@ package taskfile
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,9 @@ func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 		v.Value = s
 		return nil
 	case yaml.MappingNode:
+		if err := knownFields(n, "a variable", "sh"); err != nil {
+			return err
+		}
 		var m struct {
 			Sh *string `yaml:"sh"`
 		}
@@ -76,6 +80,9 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 		c.Cmd = s
 		return nil
 	case yaml.MappingNode:
+		if err := knownFields(n, "a command", "cmd", "task", "vars", "silent", "ignore_error", "defer"); err != nil {
+			return err
+		}
 		type raw struct {
 			Cmd         string         `yaml:"cmd"`
 			Task        string         `yaml:"task"`
@@ -128,6 +135,9 @@ func (d *Dep) UnmarshalYAML(n *yaml.Node) error {
 		d.Task = s
 		return nil
 	case yaml.MappingNode:
+		if err := knownFields(n, "a dependency", "task", "vars", "silent"); err != nil {
+			return err
+		}
 		type raw struct {
 			Task   string         `yaml:"task"`
 			Vars   map[string]Var `yaml:"vars"`
@@ -145,6 +155,62 @@ func (d *Dep) UnmarshalYAML(n *yaml.Node) error {
 	default:
 		return fmt.Errorf("line %d: a dependency must be a string or a mapping", n.Line)
 	}
+}
+
+// UnmarshalYAML rejects an empty list entry. See the Cmds type comment.
+func (c *Cmds) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkNoNullElements(n, "cmds"); err != nil {
+		return err
+	}
+	var out []Cmd
+	if err := n.Decode(&out); err != nil {
+		return err
+	}
+	*c = out
+	return nil
+}
+
+// UnmarshalYAML rejects an empty list entry. See the Cmds type comment.
+func (d *Deps) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkNoNullElements(n, "deps"); err != nil {
+		return err
+	}
+	var out []Dep
+	if err := n.Decode(&out); err != nil {
+		return err
+	}
+	*d = out
+	return nil
+}
+
+func checkNoNullElements(n *yaml.Node, what string) error {
+	if n.Kind != yaml.SequenceNode {
+		return fmt.Errorf("line %d: %s must be a list", n.Line, what)
+	}
+	for i, el := range n.Content {
+		if el.Tag == "!!null" {
+			return fmt.Errorf("line %d: %s entry %d is empty — a bare \"-\" would be dropped silently", el.Line, what, i+1)
+		}
+	}
+	return nil
+}
+
+// knownFields rejects any key of a mapping node that is not in allowed.
+//
+// Decode sets KnownFields(true), but yaml.Node.Decode — the only way a custom
+// UnmarshalYAML can read its node — builds a fresh decoder that does NOT
+// inherit it. So inside Var, Cmd and Dep strictness has to be re-imposed by
+// hand, or `{sh: date, shh: 1}` and `{cmd: x, slient: true}` decode cleanly and
+// the typo becomes exactly the silence Decode exists to prevent.
+func knownFields(n *yaml.Node, what string, allowed ...string) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		if !slices.Contains(allowed, key.Value) {
+			return fmt.Errorf("line %d: unknown field %s in %s; expected one of %v",
+				key.Line, quoteForError(key.Value), what, allowed)
+		}
+	}
+	return nil
 }
 
 // scalarString renders a YAML scalar as the string the templating layer expects.

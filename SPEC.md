@@ -65,10 +65,21 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
 
 ## Fixed semantics
 
-1. **Positional arguments.** `args: [config]` on a task; `tsk up mail4.test`
-   binds them in order. Too many arguments is an error. Bare words are never
-   additional task names — multi-target invocation does not exist. Running
-   several tasks is `tsk a && tsk b`, which is what everyone types anyway.
+1. **Arguments.** `args: [config]` declares a task's parameters. One declaration,
+   four call forms, all equivalent and all bound before dotenv resolves:
+
+       tsk up                       # default from vars
+       tsk up mail4.test            # positional, in declared order
+       tsk up --config mail4.test   # named, for a declared parameter
+       tsk up CONFIG=mail4.test     # Task's spelling, still accepted
+
+   A value binds under the declared name AND its uppercase form, because Taskfile
+   convention is uppercase and a case mismatch would silently interpolate nothing.
+   A flag is consumed only if it names a declared parameter, so `tsk logs -f api`
+   still passes `-f` to the task. Too many arguments is an error; a parameter with
+   neither argument nor default is an error, not a blank. Bare words are never
+   additional task names — multi-target invocation does not exist. Running several
+   tasks is `tsk a && tsk b`, which is what everyone types anyway.
 2. **One resolution order, applied once, at invocation:**
    `positional args` → `call vars` (from a `- task:`/`deps` reference) →
    `task vars` → `include vars` → `file vars` → `dotenv` → process environment.
@@ -247,6 +258,26 @@ happen to be visible:
 2. **Parse errors surface later.** bash reads a `-c` string incrementally, so
    commands before a malformed construct do run; an interpreter that parses the
    whole script first would have run nothing.
+
+## Bugs the test suite found in code that already "worked"
+
+All four were in code passing a 153-task acceptance run, which is why the run
+alone was not evidence:
+
+1. **`run: once` was not once.** Dedup was recorded after execution returned, so
+   two concurrent `deps` both saw "not started" and both ran it — double-creating
+   whatever the task creates. Now a `sync.Once` per key; the second caller blocks
+   and takes the first's result.
+2. **The dotenv path ignored the caller.** File vars outranked call vars when
+   rendering `dotenv:`, so `vars: {CONFIG: a}` beat `tsk show CONFIG=b`: the task
+   ran with CONFIG=b and config **a**'s environment. rest-mail hid it by using the
+   self-defaulting idiom everywhere.
+3. **Strictness stopped at the first custom unmarshaler.** `KnownFields(true)` is
+   not inherited by `yaml.Node.Decode`, so `{sh: date, shh: 1}` and
+   `{cmd: x, slient: true}` decoded cleanly — a typo became silence, in the
+   program written to abolish silence.
+4. **A bare `-` in a list vanished.** yaml.v3 zero-fills a null element before any
+   unmarshaler runs; the step simply disappeared. Named slice types now reject it.
 
 ## Verified against rest-mail (2026-07-27)
 

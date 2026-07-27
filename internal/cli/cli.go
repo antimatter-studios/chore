@@ -89,12 +89,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	r.DryRun, r.Force, r.Verbose = opts.dry, opts.force, opts.verbose
 	r.CLIArgs = strings.Join(opts.cliArgs, " ")
 
-	// Words after the task name are its positional arguments, except NAME=value,
-	// which sets a variable. Both are bound before `dotenv:` is resolved, so
-	// `tsk config:check CONFIG=mail4.test` acts on mail4.test. Task accepts the
-	// same syntax but resolves dotenv while parsing, before CLI variables exist,
-	// so it silently acted on the default config instead.
-	args, callVars := splitArgs(rest[1:])
+	// Words after the task name are its positional arguments, except NAME=value
+	// and --param value for a parameter the task declares. All three are bound
+	// before `dotenv:` is resolved, so `tsk config:check CONFIG=mail4.test` acts
+	// on mail4.test. Task accepts the NAME=value syntax but resolves dotenv while
+	// parsing, before CLI variables exist, so it silently used the default.
+	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
+	if err != nil {
+		fmt.Fprintf(stderr, "tsk: %v\n", err)
+		return 2
+	}
 
 	if err := r.Run(context.Background(), rest[0], args, callVars); err != nil {
 		fmt.Fprintf(stderr, "tsk: %v\n", err)
@@ -104,9 +108,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 }
 
 type options struct {
-	dir, file                        string
-	list, dry, force, verbose, help  bool
-	cliArgs                          []string
+	dir, file                       string
+	list, dry, force, verbose, help bool
+	cliArgs                         []string
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.
@@ -175,23 +179,74 @@ func parseFlags(args []string) (options, []string, error) {
 	return o, rest, nil
 }
 
-// splitArgs separates positional arguments from NAME=value variable
-// assignments. A word is an assignment only if the part before `=` looks like a
-// variable name, so a path or a domain with an `=` in it stays an argument.
-func splitArgs(words []string) ([]string, map[string]string) {
+// declaredParams returns the parameter names a task declares, lowercased for
+// matching. An unknown task yields none, so the runner reports the bad name
+// rather than the parser complaining about its arguments.
+func declaredParams(p *taskfile.Project, task string) map[string]string {
+	t, ok := p.Tasks[task]
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(t.Args))
+	for _, a := range t.Args {
+		out[strings.ToLower(a)] = a
+	}
+	return out
+}
+
+// splitArgs sorts the words after a task name into positional arguments and
+// variables. Three forms are accepted:
+//
+//	tsk up mail4.test           positional, in the order `args:` declares
+//	tsk up CONFIG=mail4.test    a variable, as Task spells it
+//	tsk up --config mail4.test  a named parameter, if the task declares `config`
+//
+// A flag is only consumed when it names a DECLARED parameter; anything else
+// stays a positional word and reaches the task, so `tsk logs -f api` still
+// passes -f to the task rather than being rejected here.
+func splitArgs(words []string, params map[string]string) ([]string, map[string]string, error) {
 	var args []string
 	vars := map[string]string{}
-	for _, w := range words {
+
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+
+		if strings.HasPrefix(w, "--") && len(w) > 2 {
+			name, value, hasValue := strings.Cut(w[2:], "=")
+			if declared, ok := params[strings.ToLower(name)]; ok {
+				if !hasValue {
+					if i+1 >= len(words) {
+						return nil, nil, fmt.Errorf("--%s needs a value", name)
+					}
+					i++
+					value = words[i]
+				}
+				vars[declared] = value
+				if upper := strings.ToUpper(declared); upper != declared {
+					vars[upper] = value
+				}
+				continue
+			}
+		}
+
 		if name, value, ok := strings.Cut(w, "="); ok && isVarName(name) {
 			vars[name] = value
+			// If it names a declared parameter, set the declared spelling too, so
+			// {{.config}} and {{.CONFIG}} cannot disagree inside one task — a
+			// supplied value must beat the default in BOTH cases.
+			if declared, isParam := params[strings.ToLower(name)]; isParam {
+				vars[declared] = value
+				vars[strings.ToUpper(declared)] = value
+			}
 			continue
 		}
 		args = append(args, w)
 	}
+
 	if len(vars) == 0 {
-		return args, nil
+		return args, nil, nil
 	}
-	return args, vars
+	return args, vars, nil
 }
 
 func isVarName(s string) bool {

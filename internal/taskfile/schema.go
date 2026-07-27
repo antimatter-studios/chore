@@ -90,8 +90,8 @@ type Task struct {
 	// programs can be run against the same file and diffed.
 	Args []string `yaml:"args"`
 
-	Deps []Dep `yaml:"deps"`
-	Cmds []Cmd `yaml:"cmds"`
+	Deps Deps `yaml:"deps"`
+	Cmds Cmds `yaml:"cmds"`
 
 	// Up-to-date checks. Status is a list of shell commands: all exiting zero
 	// means "already done, skip". Sources/Generates compare content checksums.
@@ -103,6 +103,16 @@ type Task struct {
 	Name string `yaml:"-"` // namespaced name, e.g. "postgres:up"
 	File *File  `yaml:"-"` // the file this task came from
 }
+
+// Cmds and Deps are named slice types purely so they can reject a null element.
+// yaml.v3 zero-fills a null into a struct slice entry BEFORE any element
+// unmarshaler runs, so a stray "- " in a cmds: list silently disappears — a step
+// that vanishes without a word is the failure mode this program is built to
+// eliminate, so the list itself has to catch it.
+type Cmds []Cmd
+
+// Deps is the dependency list; see Cmds for why it is a named type.
+type Deps []Dep
 
 // Dep is a prerequisite. Dependencies of one task run concurrently.
 type Dep struct {
