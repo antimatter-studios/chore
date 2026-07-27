@@ -748,6 +748,40 @@ func TestDecodeNullListElementIsRejected(t *testing.T) {
 	}
 }
 
+// A parameter name that cannot be referenced as {{.Name}} is rejected at decode
+// time. The empty case is not hypothetical: `- !config` is YAML tag syntax and
+// decodes to "", so without this the task would silently receive nothing under a
+// name nobody can write.
+func TestDecodeRejectsUnusableParameterNames(t *testing.T) {
+	for _, tt := range []struct{ name, yaml, want string }{
+		{
+			name: "yaml tag decodes to an empty name",
+			yaml: "version: '3'\ntasks:\n  up:\n    args:\n      - !config\n",
+			want: "YAML tag syntax",
+		},
+		{
+			name: "punctuation cannot be a template variable",
+			yaml: "version: '3'\ntasks:\n  up:\n    args: ['con-fig']\n",
+			want: "cannot be used as a variable",
+		},
+		{
+			name: "a leading digit cannot either",
+			yaml: "version: '3'\ntasks:\n  up:\n    args: ['2fast']\n",
+			want: "cannot be used as a variable",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("Decode = nil error, want the bad parameter name rejected")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // A well-formed list is unaffected by that check.
 func TestDecodeListsWithoutNullsStillDecode(t *testing.T) {
 	f, err := Decode([]byte("version: '3'\ntasks:\n  t:\n    deps:\n      - build\n    cmds:\n      - echo hi\n"))

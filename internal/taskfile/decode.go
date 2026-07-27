@@ -25,9 +25,45 @@ func Decode(data []byte) (*File, error) {
 			// `foo:` with an empty body is legal and means "a task that does
 			// nothing" — usually a placeholder or an alias target.
 			f.Tasks[name] = &Task{}
+			continue
+		}
+		for i, arg := range t.Args {
+			if !validParamName(arg) {
+				return nil, fmt.Errorf("taskfile: task %q: args entry %d is %s, which cannot be used as a variable —"+
+					" a parameter name must start with a letter or underscore and contain only letters, digits and underscores",
+					name, i+1, describeParam(arg))
+			}
 		}
 	}
 	return &f, nil
+}
+
+// validParamName reports whether a declared parameter can actually be referenced
+// as {{.Name}}. A name that cannot be is always a mistake, and one particular
+// mistake is easy to make: `- !config` is YAML TAG syntax, and yaml.v3 decodes it
+// to the empty string rather than failing, so the parameter silently becomes
+// unnameable. Rejecting it here is the difference between a clear error and a
+// task that mysteriously receives nothing.
+func validParamName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func describeParam(s string) string {
+	if s == "" {
+		return "empty (a leading \"!\" is YAML tag syntax — remove it)"
+	}
+	return quoteForError(s)
 }
 
 // UnmarshalYAML accepts either form a variable can take:

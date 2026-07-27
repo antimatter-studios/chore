@@ -8,8 +8,6 @@
 // interactive tasks, output styles — is deliberately absent.
 package taskfile
 
-import "strings"
-
 // Project is a loaded Taskfile and everything it includes, with tasks
 // flattened into one namespaced map (`postgres:up`, `instance:down`).
 type Project struct {
@@ -134,36 +132,6 @@ type Cmd struct {
 	// finishes — in reverse order, and whether or not the task succeeded. It is
 	// how a task that brings a topology up guarantees it comes back down.
 	Defer bool `yaml:"-"`
-}
-
-// Param is a declared parameter: its name, and whether the caller must supply it
-// even when a default exists.
-type Param struct {
-	Name     string
-	Required bool
-}
-
-// Params parses the `args:` list.
-//
-// A trailing "!" marks a parameter the caller must supply on the command line,
-// defaults notwithstanding: `args: [config!]`. The marker is a SUFFIX because a
-// leading "!" is YAML tag syntax — `args: [!config]` fails to parse, and
-// `- !config` in block style is worse: it parses as a tag with null content and
-// silently yields a parameter named "".
-//
-// Without the marker a parameter is required only when nothing defines it: a
-// default in `vars:` makes it optional, and an explicitly empty default
-// (`filter: ""`) is how an author says "may be omitted".
-func (t *Task) Params() []Param {
-	out := make([]Param, 0, len(t.Args))
-	for _, a := range t.Args {
-		if name, found := strings.CutSuffix(a, "!"); found {
-			out = append(out, Param{Name: name, Required: true})
-			continue
-		}
-		out = append(out, Param{Name: a})
-	}
-	return out
 }
 
 // RunOnce reports whether the task should execute at most once per invocation.
