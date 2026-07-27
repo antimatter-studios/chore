@@ -188,8 +188,8 @@ func declaredParams(p *taskfile.Project, task string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(t.Args))
-	for _, a := range t.Args {
-		out[strings.ToLower(a)] = a
+	for _, p := range t.Params() {
+		out[strings.ToLower(p.Name)] = p.Name
 	}
 	return out
 }
