@@ -53,8 +53,8 @@ func TestRender(t *testing.T) {
 		},
 		{
 			name: "undefined variable in the middle of a path",
-			text: "{{.ROOT_DIR}}/bin/tsk",
-			want: "/bin/tsk",
+			text: "{{.ROOT_DIR}}/bin/chore",
+			want: "/bin/chore",
 		},
 
 		// `default`: the one function.
