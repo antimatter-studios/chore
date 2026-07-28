@@ -1055,3 +1055,71 @@ func TestDatedRendersOrPassesThrough(t *testing.T) {
 		t.Errorf("dated() = %q, want the date and its age", got)
 	}
 }
+
+// TestTaskHelp: `chore <task> --help` describes the task and RUNS NOTHING.
+//
+// Everything after a task name is otherwise the task's own data, so --help bound as
+// a positional argument and `chore instance:up --help` started a database. A flag
+// that reads as "tell me about this" must never do anything.
+func TestTaskHelp(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": `version: '3'
+vars:
+  CONFIG: '{{.CONFIG | default "restmail.test"}}'
+tasks:
+  up:
+    desc: Bring up an instance
+    args:
+      - {name: config, desc: which instance}
+      - {name: follow, type: bool, desc: tail the logs}
+    cmds: ['echo RAN > ran.txt']
+  bare:
+    desc: No parameters
+    cmds: ['echo RAN > ran.txt']
+`,
+	})
+
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag+" does not run the task", func(t *testing.T) {
+			got := runMain(t, root, "up", flag)
+			checkCode(t, got, 0)
+			if _, err := os.Stat(filepath.Join(root, "ran.txt")); err == nil {
+				t.Fatal("the task RAN; --help must never execute anything")
+			}
+			checkContains(t, got, "stdout", got.stdout, "Bring up an instance")
+			checkContains(t, got, "stdout", got.stdout, "which instance")
+			checkContains(t, got, "stdout", got.stdout, "tail the logs")
+			// bool is shown as such, and a default in the FILE's vars counts:
+			// reading only the task's own vars called config required.
+			checkContains(t, got, "stdout", got.stdout, "bool")
+			checkContains(t, got, "stdout", got.stdout, "optional")
+		})
+	}
+
+	t.Run("a task with no parameters says so", func(t *testing.T) {
+		got := runMain(t, root, "bare", "--help")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "takes no arguments")
+	})
+
+	// After `--`, the words belong to the task: a command that genuinely needs to
+	// pass --help through must still be able to.
+	t.Run("after -- it is the task's data", func(t *testing.T) {
+		root2 := writeTree(t, map[string]string{
+			"chores.yml": `version: '3'
+tasks:
+  show:
+    cmds: ['echo "[{{.CLI_ARGS}}]" > out.txt']
+`,
+		})
+		got := runMain(t, root2, "show", "--", "--help")
+		checkCode(t, got, 0)
+		b, err := os.ReadFile(filepath.Join(root2, "out.txt"))
+		if err != nil {
+			t.Fatalf("the task did not run: %v", err)
+		}
+		if strings.TrimSpace(string(b)) != "[--help]" {
+			t.Errorf("CLI_ARGS = %s, want [--help]", strings.TrimSpace(string(b)))
+		}
+	})
+}

@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.1.3
+
+- `--help` is global and answers about whatever the command line names: the program
+  when no task is given, that task when one is, from either position. It used to be
+  swallowed as a task argument, so `chore instance:up --help` STARTED a stack. A task's
+  help is built from its own declarations — the `desc`, each parameter's type,
+  whether it is optional, and the four ways it can be called. After `--` the words
+  still belong to the task, so a command that must pass `--help` through can.
 
 - `--version` reports when the source was committed, with its age:
   `dated 2026-07-28 11:21 UTC (9 minutes ago)`. The COMMIT's date, not the build

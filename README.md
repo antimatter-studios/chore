@@ -151,6 +151,9 @@ real shell — with real `pipefail` — possible.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
+- **`chore <task> --help` describes the task and runs nothing.** Built from the
+  task's own declarations: its `desc`, each parameter's type and whether it is
+  optional, and the call forms. Works before or after the task name.
 - **The running binary identifies itself**, including how old it is:
   `dated 2026-07-28 11:21 UTC (9 minutes ago)` — the date the SOURCE was committed,
   not when a machine compiled it, because a wall-clock stamp would break the
