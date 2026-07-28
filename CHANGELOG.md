@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `--version` reports when the source was committed, with its age:
+  `dated 2026-07-28 11:21 UTC (9 minutes ago)`. The COMMIT's date, not the build
+  machine's clock — a wall-clock stamp would make two builds of the same source
+  differ, and the release proves on every tag that they do not. The age is computed
+  when you run it; only the stamp is fixed.
+
 ## v0.1.2
 
 Everything here was found by driving a real 197-task project, not by reading code.

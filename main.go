@@ -19,7 +19,16 @@ import (
 // asserts against, so it must never be empty.
 var version = "dev"
 
+// buildDate is stamped by the release build with the COMMIT's date:
+//
+//	go build -ldflags "-X main.buildDate=2026-07-28T11:21:58Z"
+//
+// Empty when built from source, where the toolchain records vcs.time instead. It is
+// never the wall clock: the release must rebuild to identical bytes.
+var buildDate = ""
+
 func main() {
 	cli.Version = version
+	cli.BuildDate = buildDate
 	os.Exit(cli.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

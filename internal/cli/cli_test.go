@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1018,4 +1019,39 @@ tasks:
 		checkCode(t, loud, 0)
 		checkContains(t, loud, "stdout", loud.stdout, "echo hello", "hello")
 	})
+}
+
+// TestAge: --version answers "how old is this", so the age is computed at run time
+// from a stamp that is fixed. Only the stamp must be stable for a rebuild to be
+// byte-identical; reading the clock here is fine and is the point.
+func TestAge(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "just now"},
+		{time.Minute, "1 minute ago"},
+		{90 * time.Minute, "1 hour ago"},
+		{25 * time.Hour, "1 day ago"},
+		{72 * time.Hour, "3 days ago"},
+		{70 * 24 * time.Hour, "2 months ago"},
+	} {
+		if got := age(c.d); got != c.want {
+			t.Errorf("age(%s) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+func TestDatedRendersOrPassesThrough(t *testing.T) {
+	if got := dated(""); got != "" {
+		t.Errorf("dated(\"\") = %q, want empty so the row is dropped", got)
+	}
+	// Unparseable input is shown as-is rather than swallowed: better a raw string
+	// than a silently missing row.
+	if got := dated("not-a-date"); got != "not-a-date" {
+		t.Errorf("dated(junk) = %q, want it passed through", got)
+	}
+	if got := dated("2026-07-28T11:21:58Z"); !strings.Contains(got, "2026-07-28") || !strings.Contains(got, "ago") {
+		t.Errorf("dated() = %q, want the date and its age", got)
+	}
 }

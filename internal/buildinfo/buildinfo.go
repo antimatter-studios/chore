@@ -27,6 +27,15 @@ import (
 
 // Info is everything worth knowing about the running binary.
 type Info struct {
+	// Date is when the SOURCE was committed, not when someone compiled it.
+	//
+	// A wall-clock build time would break the one property the release pipeline
+	// proves on every tag: rebuild the same source and get the same bytes. A
+	// timestamp is precisely what makes two builds differ, which is why the release
+	// passes -buildvcs=false. The commit date is a property of the source, so it is
+	// stable across rebuilds — and it answers the useful question ("how old is this
+	// code") rather than the accidental one ("when did a machine run go build").
+	Date     string
 	Version  string // "1.2.3", "dev+a581449-dirty", or "dev" if nothing is known
 	Commit   string // short revision, when the build recorded one
 	Dirty    bool   // the working tree had uncommitted changes
@@ -37,9 +46,10 @@ type Info struct {
 
 // Get resolves the running binary's identity. stamped is main.version, which is
 // "dev" (never empty) unless the build passed -X main.version.
-func Get(stamped string) Info {
+func Get(stamped, stampedDate string) Info {
 	i := Info{
 		Version:  stamped,
+		Date:     stampedDate,
 		Go:       runtime.Version(),
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
 	}
@@ -52,6 +62,13 @@ func Get(stamped string) Info {
 				i.Commit = short(s.Value)
 			case "vcs.modified":
 				i.Dirty = s.Value == "true"
+			case "vcs.time":
+				// The checkout's commit date, recorded by any build that did not
+				// pass -buildvcs=false. A stamp still wins: a release has no VCS
+				// data at all, so the stamp is the only source there.
+				if i.Date == "" {
+					i.Date = s.Value
+				}
 			}
 		}
 	}

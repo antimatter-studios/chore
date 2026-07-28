@@ -4,13 +4,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A stamped release is authoritative: the release pipeline builds with
 // -buildvcs=false, so there is no VCS data to fall back to and the stamp is all
 // the binary knows about itself.
 func TestStampedReleaseWins(t *testing.T) {
-	i := Get("0.1.1")
+	i := Get("0.1.1", "")
 	if i.Version != "0.1.1" {
 		t.Errorf("Version = %q, want 0.1.1", i.Version)
 	}
@@ -28,7 +29,7 @@ func TestStampedReleaseWins(t *testing.T) {
 // The dev script stamps dev+<sha>; the revision inside it must not be repeated in
 // the detail block as a separate commit line.
 func TestDevStampCarriesItsRevision(t *testing.T) {
-	i := Get("dev+a581449-dirty")
+	i := Get("dev+a581449-dirty", "")
 	if !i.Dev {
 		t.Error("dev+… is not reported as a dev build")
 	}
@@ -45,7 +46,7 @@ func TestDevStampCarriesItsRevision(t *testing.T) {
 // Nothing stamped is the plain `go build` case: report a dev build, and take the
 // revision from what the toolchain recorded rather than from a hardcoded string.
 func TestUnstampedIsADevBuild(t *testing.T) {
-	i := Get("dev")
+	i := Get("dev", "")
 	if !i.Dev {
 		t.Error("an unstamped build is not reported as a dev build")
 	}
@@ -100,4 +101,24 @@ func TestPseudoRevision(t *testing.T) {
 			t.Errorf("pseudoRevision(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// The date is the COMMIT's, never the clock: a wall-clock stamp would make two
+// builds of one source differ, and the release pipeline proves on every tag that
+// they do not.
+func TestDate(t *testing.T) {
+	t.Run("a stamp wins, since a release has no VCS data", func(t *testing.T) {
+		if got := Get("0.1.2", "2026-07-28T11:21:58Z").Date; got != "2026-07-28T11:21:58Z" {
+			t.Errorf("Date = %q, want the stamped commit date", got)
+		}
+	})
+
+	t.Run("unstamped falls back to the recorded commit time", func(t *testing.T) {
+		// `go test` compiles with VCS data, so this binary knows its commit date.
+		if got := Get("dev", "").Date; got == "" {
+			t.Skip("no vcs.time recorded for this build")
+		} else if _, err := time.Parse(time.RFC3339, got); err != nil {
+			t.Errorf("Date = %q, which is not RFC3339: %v", got, err)
+		}
+	})
 }

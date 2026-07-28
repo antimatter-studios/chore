@@ -151,7 +151,10 @@ real shell — with real `pipefail` — possible.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
-- **The running binary identifies itself.** `chore --version` prints the bare
+- **The running binary identifies itself**, including how old it is:
+  `dated 2026-07-28 11:21 UTC (9 minutes ago)` — the date the SOURCE was committed,
+  not when a machine compiled it, because a wall-clock stamp would break the
+  byte-for-byte rebuild the release pipeline verifies. `chore --version` prints the bare
   version on stdout — unchanged, so anything parsing it still works — and the
   build's commit, toolchain and the `chores.yml` it found on stderr. The version
   is read out of the build itself (`runtime/debug`), not hardcoded or passed in by
