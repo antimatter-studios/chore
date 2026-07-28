@@ -1,2 +1,7 @@
 bin/
 .chore/
+
+# goreleaser's output, plus what the release workflow derives from it
+dist/
+unpacked/
+binaries.txt
