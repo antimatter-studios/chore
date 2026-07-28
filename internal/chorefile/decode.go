@@ -2,9 +2,12 @@ package chorefile
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,13 +15,36 @@ import (
 // Decode parses a Taskfile. Unknown fields are an error: a typo in a key is far
 // more likely than a deliberate extension, and Task's habit of ignoring what it
 // does not recognise turns a typo into silence.
+// readable turns a yaml decode error into something aimed at whoever wrote the
+// file rather than at whoever wrote this package. yaml.v3 reports an unknown key
+// as `field dotenv not found in type chorefile.Task`, which names a Go type the
+// reader has never heard of and cannot act on.
+func readable(err error) error {
+	msg := err.Error()
+	msg = strings.TrimPrefix(msg, "yaml: unmarshal errors:\n")
+	// `field X not found in type chorefile.Y` → `unknown field "X" in a Y`
+	msg = unknownField.ReplaceAllStringFunc(msg, func(m string) string {
+		g := unknownField.FindStringSubmatch(m)
+		kind := strings.ToLower(g[2])
+		article := "a"
+		if strings.ContainsRune("aeiou", rune(kind[0])) {
+			article = "an"
+		}
+		return fmt.Sprintf("unknown field %q in %s %s", g[1], article, kind)
+	})
+	msg = strings.ReplaceAll(msg, "chorefile.", "")
+	return errors.New(strings.TrimSpace(msg))
+}
+
+var unknownField = regexp.MustCompile(`field ([A-Za-z0-9_-]+) not found in type chorefile\.([A-Za-z]+)`)
+
 func Decode(data []byte) (*File, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
 	var f File
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("taskfile: %w", err)
+		return nil, readable(err)
 	}
 	for name, t := range f.Tasks {
 		if t == nil {

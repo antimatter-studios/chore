@@ -42,28 +42,44 @@ else
 fi
 _chore_root="$(cd "$(dirname "$_chore_self")/.." && pwd)"
 _chore_bin="$_chore_root/bin"
+_chore_tag="install-chore-dev:"
+
+# --- colour, when stderr is a terminal ------------------------------------
+# Same rule the binary follows: styled for a person, plain for anything that
+# captures it, and NO_COLOR is honoured because it is the convention.
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+  _chore_c_name=$'\033[1;35m'  # bold magenta — matches chore's own accent
+  _chore_c_key=$'\033[36m'     # cyan for the value that matters
+  _chore_c_dim=$'\033[90m'
+  _chore_c_off=$'\033[0m'
+else
+  _chore_c_name=''; _chore_c_key=''; _chore_c_dim=''; _chore_c_off=''
+fi
+_chore_say() { # _chore_say <label> <value>
+  printf '%s%s%s %-8s %s%s%s\n' \
+    "$_chore_c_name" "$_chore_tag" "$_chore_c_off" "$1" \
+    "${2:+$_chore_c_key}" "$2" "$_chore_c_off" >&2
+}
+_chore_note() { printf '%s%s %s%s\n' "$_chore_c_dim" "$_chore_tag" "$1" "$_chore_c_off" >&2; }
 
 # --- build, unless told not to -------------------------------------------
 if [ "${1:-}" != "--no-build" ]; then
-  _chore_sha="$(git -C "$_chore_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  if [ -n "$(git -C "$_chore_root" status --porcelain 2>/dev/null)" ]; then
-    _chore_sha="$_chore_sha-dirty"
-  fi
-  echo "install-chore-dev: building dev+$_chore_sha" >&2
-  # Built here rather than via `chore build`, because the chore that would run
-  # that task is the one being replaced — and if the tree does not compile, this
-  # must fail before anything touches PATH.
-  if ! ( cd "$_chore_root" && go build -ldflags "-X main.version=dev+$_chore_sha" -o bin/chore . ); then
-    echo "install-chore-dev: build failed — PATH unchanged" >&2
-    unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha
+  _chore_note "building"
+  # No -ldflags: the binary reads its own revision out of the build the toolchain
+  # records, so the version is live rather than a string this script computes and
+  # bakes in. Built here rather than via `chore build`, because the chore that
+  # would run that task is the one being replaced — and a tree that does not
+  # compile must fail before anything touches PATH.
+  if ! ( cd "$_chore_root" && go build -o bin/chore . ); then
+    _chore_note "build failed — PATH unchanged"
+    unset _chore_sourced _chore_self _chore_root _chore_bin _chore_tag
     return 1
   fi
 fi
 
 if [ ! -x "$_chore_bin/chore" ]; then
-  echo "install-chore-dev: $_chore_bin/chore not found — build it first:" >&2
-  echo "    source scripts/install-chore-dev        # builds for you" >&2
-  unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha
+  _chore_note "$_chore_bin/chore not found — source without --no-build to build it"
+  unset _chore_sourced _chore_self _chore_root _chore_bin _chore_tag
   return 1
 fi
 
@@ -94,11 +110,13 @@ elif [ -n "${BASH_VERSION:-}" ]; then
   hash -r 2>/dev/null || true
 fi
 
-echo "install-chore-dev: chore    → $(command -v chore)" >&2
-echo "install-chore-dev: version  → $(chore --version 2>/dev/null || echo '?')" >&2
+_chore_say "chore" "$(command -v chore)"
+_chore_say "version" "$(chore --version 2>/dev/null || echo '?')"
 if [ -n "$_chore_was" ] && [ "$_chore_was" != "$_chore_bin/chore" ]; then
-  echo "install-chore-dev: shadows   $_chore_was" >&2
+  _chore_note "shadows  $_chore_was"
 fi
-echo "install-chore-dev: undo     → source $_chore_root/scripts/uninstall-chore-dev" >&2
+_chore_note "undo     source $_chore_root/scripts/uninstall-chore-dev"
 
-unset _chore_sourced _chore_self _chore_root _chore_bin _chore_sha _chore_was
+unset _chore_sourced _chore_self _chore_root _chore_bin _chore_was _chore_tag \
+  _chore_c_name _chore_c_key _chore_c_dim _chore_c_off
+unset -f _chore_say _chore_note 2>/dev/null

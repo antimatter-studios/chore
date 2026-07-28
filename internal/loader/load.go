@@ -81,11 +81,13 @@ type entry struct {
 
 // request is one file to read, as described by the file that includes it.
 type request struct {
-	path   string                   // absolute path of the file to read
-	prefix string                   // namespace for its tasks
-	vars   map[string]chorefile.Var // the include's `vars:`, merged onto the file
-	dir    string                   // the include's `dir:`, absolute, or ""
-	chain  []string                 // absolute paths of the ancestors, for cycle detection
+	path    string                   // absolute path of the file to read
+	prefix  string                   // namespace for its tasks
+	vars    map[string]chorefile.Var // the include's `vars:`, resolved in the includING file
+	parent  *chorefile.File          // the file that included this one, nil for the root
+	inherit bool                     // the include's `inherit:`
+	dir     string                   // the include's `dir:`, absolute, or ""
+	chain   []string                 // absolute paths of the ancestors, for cycle detection
 }
 
 func load(req request) ([]entry, error) {
@@ -106,17 +108,24 @@ func load(req request) ([]entry, error) {
 	}
 
 	f.Path = req.path
+	f.Namespace = req.prefix
 	f.Dir = filepath.Dir(req.path)
 	if req.dir != "" {
 		// An include's `dir:` is the working directory mapped in for this file's
-		// tasks, so it replaces Dir. filepath.Dir(f.Path) still gives the
-		// directory physically holding the file, which is how the runner tells
-		// the two apart (f.Dir != filepath.Dir(f.Path) means an include mapped a
-		// directory) and is what the loader itself uses to resolve relative
-		// include paths below.
+		// tasks. Recorded in WorkDir, where the runner reads it, AND in Dir, which
+		// is what dotenv paths and {{.TASKFILE_DIR}} resolve against. Relative
+		// include paths below use filepath.Dir(f.Path) directly, so they still
+		// resolve against the directory physically holding this file.
 		f.Dir = req.dir
+		f.WorkDir = req.dir
 	}
-	f.Vars = mergeVars(f.Vars, req.vars)
+	// The include's vars are NOT merged into this file's own: they belong to the
+	// parent's scope and are resolved there. Merging them here is what made
+	// '{{.POSTGRES_IP}}' render empty — the name it refers to exists in the file
+	// that wrote the mapping, not in this one.
+	f.IncludeVars = req.vars
+	f.Parent = req.parent
+	f.Inherit = req.inherit
 
 	entries := []entry{{prefix: req.prefix, file: f}}
 	chain := append(slices.Clone(req.chain), req.path)
@@ -179,7 +188,8 @@ func childRequest(f *chorefile.File, name string, inc *chorefile.Include, prefix
 		// contributes no namespace segment at all.
 		prefix = qualify(prefix, name)
 	}
-	return request{path: path, prefix: prefix, vars: inc.Vars, dir: dir, chain: chain}, false, nil
+	return request{path: path, prefix: prefix, vars: inc.Vars, dir: dir, chain: chain,
+		parent: f, inherit: inc.Inherit}, false, nil
 }
 
 // register flattens the loaded files into Project.Tasks and fills in the fields
@@ -222,19 +232,6 @@ func register(entries []entry) (map[string]*chorefile.Task, error) {
 		}
 	}
 	return tasks, nil
-}
-
-// mergeVars is the only variable flow between files: the include's vars win
-// over the included file's own defaults, which are therefore just that —
-// defaults for when the parent maps nothing in.
-func mergeVars(own, incoming map[string]chorefile.Var) map[string]chorefile.Var {
-	if len(incoming) == 0 {
-		return own
-	}
-	out := make(map[string]chorefile.Var, len(own)+len(incoming))
-	maps.Copy(out, own)
-	maps.Copy(out, incoming)
-	return out
 }
 
 // locate turns a path into the Taskfile to read: a directory means the

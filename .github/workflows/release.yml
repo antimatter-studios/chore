@@ -127,14 +127,18 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          ls -1 *.tar.gz
-          sha256sum *.tar.gz | tee checksums.txt
+          # `--` rather than `./*`: shellcheck is right that an unguarded glob
+          # could pass a dash-leading filename as an option, but `./*` would also
+          # prepend "./" to every name in checksums.txt, which the Homebrew tap
+          # parses. `--` keeps the output byte-identical.
+          ls -1 -- *.tar.gz
+          sha256sum -- *.tar.gz | tee checksums.txt
 
           # Hash the binaries too, not only the tarballs: tar embeds mtimes and
           # ownership, so a reproduction check has to compare the binary inside.
           mkdir -p unpacked
           for t in *.tar.gz; do tar xzf "$t" -O chore > "unpacked/${t%.tar.gz}"; done
-          (cd unpacked && sha256sum * | sed 's|  | |') | tee binaries.txt
+          (cd unpacked && sha256sum -- * | sed 's|  | |') | tee binaries.txt
 
       - name: Create the release
         env:
