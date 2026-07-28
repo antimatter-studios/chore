@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.3
 
 - `--help` is global and answers about whatever the command line names: the program
   when no task is given, that task when one is, from either position. It used to be
