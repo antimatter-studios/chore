@@ -210,14 +210,24 @@ chore verify-release 0.1.0 darwin arm64
 Or by hand, if you would rather not run the thing you are checking:
 
 ```bash
-git checkout v0.1.0
+git checkout v0.1.4
+# The binary is stamped with the COMMIT's date in UTC, so the rebuild has to
+# derive the same string — a wall-clock date would never match.
+date=$(git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
 GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 GOTOOLCHAIN=go1.25.0 \
-  go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=0.1.0" -o chore .
+  go build -buildvcs=false -trimpath \
+    -ldflags "-s -w -X main.version=0.1.4 -X main.buildDate=$date" -o chore .
 shasum -a 256 chore
 # compare with binaries.txt from the release
 ```
 
-Three details make this work, and all three are load-bearing:
+Releases up to and including v0.1.3 were built by a hand-written pipeline that
+derived that date with `git log -1 --format=%cI`, which keeps the committer's
+local UTC offset instead. Same instant, different bytes, different hash — so
+verifying one of those releases needs `%cI` above. `chore verify-release` tries
+both recipes and reports which one reproduced.
+
+Four details make this work, and all four are load-bearing:
 
 - **`GOTOOLCHAIN` is pinned to a patch release.** go1.25.0 and go1.25.6 emit
   different binaries; pinning only the minor version is not enough.
@@ -225,9 +235,12 @@ Three details make this work, and all three are load-bearing:
   differ for every build and are the sole reason an otherwise identical rebuild
   produces a different hash. The commit is recorded in the release itself, where
   it can be verified rather than merely read out of a binary.
+- **The build date comes from the commit, never the clock.** Otherwise every
+  rebuild differs by construction, and none of the above matters.
 - **`binaries.txt` alongside `checksums.txt`.** `tar` records mtimes and
-  ownership, so tarball hashes are not stable across builders; the comparison has
-  to be against the binary inside.
+  ownership. goreleaser is configured to take archive mtimes from the commit too,
+  so the tarballs are stable as well — but the binary hash is the one that does
+  not depend on how the release was packaged, so that is what to compare.
 
 The release workflow proves this on every release rather than claiming it: after
 publishing, it rebuilds all four targets from the same commit and fails if any

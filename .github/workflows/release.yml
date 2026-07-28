@@ -1,208 +1,133 @@
 name: Release
 
-# Tag-driven: pushing v1.2.3 builds every platform, publishes a release with
-# checksums, and tells the Homebrew tap to bump its formula.
+# Tag-driven: pushing v1.2.3 cross-builds every platform, publishes a release with
+# checksums, and then proves the build was reproducible.
 #
-# The artifact names are not arbitrary — they are the names the tap's formula
-# already expects for its other binaries:
-#   chore-<version>-<os>-<arch>.tar.gz   os ∈ darwin|linux, arch ∈ arm64|x86_64
+# The build itself lives in .goreleaser.yml — targets, flags, ldflags and artifact
+# names are all there, including WHY each flag exists. This file only drives it and
+# adds the two things goreleaser does not do (see the last two steps).
+#
+# workflow_dispatch has no version input: the version comes from the tag goreleaser
+# sees, so a hand-typed one could not be honoured. To re-run a release, dispatch this
+# workflow with the TAG selected as the ref.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to build (without the leading v)"
-        required: true
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+  release:
+    name: Build and publish
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - { os: darwin, arch: arm64, goarch: arm64 }
-          - { os: darwin, arch: x86_64, goarch: amd64 }
-          - { os: linux, arch: arm64, goarch: arm64 }
-          - { os: linux, arch: x86_64, goarch: amd64 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # goreleaser derives the version and the changelog range from tags, and
+          # stamps the commit date into the binary — none of which a shallow clone has.
+          fetch-depth: 0
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Resolve version
-        id: v
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.version }}" ]; then
-            VER="${{ inputs.version }}"
-          else
-            VER="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Build
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          # Pinned exactly, not `latest`: goreleaser builds the artifact users install,
+          # so it is part of the supply chain. It also writes the tar archives, whose
+          # bytes the reproduction step below compares — a silent upgrade could change
+          # them. This is the version the config was verified against.
+          version: v2.17.0
+          args: release --clean
         env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-          # Pin the exact toolchain patch, not just the minor: go1.25.0 and
-          # go1.25.6 emit different binaries, so without this nobody can
-          # reproduce the artifact even with the right source and flags.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin the exact toolchain patch, not just the minor: go1.25.0 and go1.25.6
+          # emit different binaries, so without this nobody can reproduce the artifact
+          # even with the right source and flags.
           GOTOOLCHAIN: go1.25.0
+
+      - name: Check the version stamp
         run: |
           set -euo pipefail
-          VER="${{ steps.v.outputs.version }}"
-
-          # Every flag here exists so that a third party can rebuild this exact
-          # binary and compare hashes — which is what makes trusting this pipeline
-          # OPTIONAL rather than mandatory:
+          VER="${GITHUB_REF_NAME#v}"
+          # Verify the stamp on the ONE target this runner can execute. The others are
+          # cross-builds — a linux host cannot run a darwin binary — and all four come
+          # from the same config, so proving it once proves the recipe. Reading the
+          # stamp out of a foreign binary was tried and does not work: `go version -m`
+          # does not record -ldflags.
           #
-          #   -s -w          strip symbols and DWARF (smaller, and deterministic)
-          #   -trimpath      remove the builder's absolute paths
-          #   -buildvcs=false  omit vcs.revision/vcs.time, which are the ONLY
-          #                  reason an otherwise identical rebuild differs; the
-          #                  commit is recorded in the release and its attestation
-          #                  instead, where it can be verified rather than merely
-          #                  read out of the binary
-          #   CGO_ENABLED=0  no host C toolchain in the output
-          #   GOTOOLCHAIN    the exact compiler
-          # The COMMIT's date, never the clock. Both this build and the
-          # reproduction below derive it the same way from the same checkout, so a
-          # rebuild of this source produces identical bytes — which is the property
-          # the reproduction step exists to prove. `date` here would break it.
-          BUILD_DATE="$(git log -1 --format=%cI)"
-          go build -buildvcs=false -trimpath \
-            -ldflags "-s -w -X main.version=${VER} -X main.buildDate=${BUILD_DATE}" -o chore .
-
-          # Verify the stamp on the ONE target this runner can execute. The others
-          # are cross-builds — a linux host cannot run a darwin binary — and they
-          # are produced by the same command with the same ldflags, so proving it
-          # once proves the recipe. Reading the stamp out of a foreign binary was
-          # tried and does not work: `go version -m` does not record -ldflags.
-          #
-          # The Homebrew formula's test runs `chore --version` on the user's own
+          # The Homebrew formula's own test runs `chore --version` on the user's
           # machine, which is where a broken darwin artifact would surface.
-          if [ "${GOOS}" = linux ] && [ "${GOARCH}" = amd64 ]; then
-            ./chore --version | grep -qx "${VER}" || {
-              echo "the built binary does not report ${VER}" >&2
-              exit 1
-            }
-          fi
+          ./dist/chore_linux_amd64_v1/chore --version | grep -qx "${VER}" || {
+            echo "the built binary does not report ${VER}" >&2
+            exit 1
+          }
 
-          test -s chore
-          tar czf "chore-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" chore
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: chore-${{ matrix.os }}-${{ matrix.arch }}
-          path: chore-*.tar.gz
-          if-no-files-found: error
-
-  release:
-    name: Publish release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Resolve version
-        id: v
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checksums
-        working-directory: dist
-        run: |
-          set -euo pipefail
-          # `--` rather than `./*`: shellcheck is right that an unguarded glob
-          # could pass a dash-leading filename as an option, but `./*` would also
-          # prepend "./" to every name in checksums.txt, which the Homebrew tap
-          # parses. `--` keeps the output byte-identical.
-          ls -1 -- *.tar.gz
-          sha256sum -- *.tar.gz | tee checksums.txt
-
-          # Hash the binaries too, not only the tarballs: tar embeds mtimes and
-          # ownership, so a reproduction check has to compare the binary inside.
-          mkdir -p unpacked
-          for t in *.tar.gz; do tar xzf "$t" -O chore > "unpacked/${t%.tar.gz}"; done
-          (cd unpacked && sha256sum -- * | sed 's|  | |') | tee binaries.txt
-
-      - name: Create the release
+      - name: Publish binary checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VER: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          # gh is preinstalled on the runner, so no third-party action needs
-          # pinning to publish.
-          if ! gh release view "v${VER}" >/dev/null 2>&1; then
-            gh release create "v${VER}" --title "v${VER}" --generate-notes
-          fi
-          gh release upload "v${VER}" dist/*.tar.gz dist/checksums.txt dist/binaries.txt --clobber
+          # goreleaser's checksums.txt covers the ARCHIVES. This covers the binaries
+          # INSIDE them, which is what the reproduction step can actually compare: two
+          # runs produce identical binaries, and with mod_timestamp identical archives
+          # too, but only the binary hash is independent of how it was packaged.
+          mkdir -p unpacked
+          for t in dist/*.tar.gz; do
+            n=$(basename "$t" .tar.gz)
+            tar xzf "$t" -O chore > "unpacked/$n"
+          done
+          # Single space, matching the format published since the first release.
+          (cd unpacked && sha256sum -- * | sed 's|  | |') | tee binaries.txt
+          gh release upload "${GITHUB_REF_NAME}" binaries.txt --clobber
 
-      # Prove the claim rather than asserting it: rebuild every target from this
-      # same commit and require the binaries to be byte-identical to the ones just
-      # published. If a future change makes the build non-reproducible — a
-      # timestamp, an absolute path, an unpinned toolchain — this fails here,
-      # instead of a user discovering it while trying to verify a release.
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
+      # Prove the claim rather than asserting it: rebuild every target from this same
+      # commit and require the binaries to be byte-identical to the ones just
+      # published. If a future change makes the build non-reproducible — a timestamp,
+      # an absolute path, an unpinned toolchain — this fails here, instead of a user
+      # discovering it while trying to verify a release.
+      #
+      # `build` rather than `release`, so nothing is published a second time. It wipes
+      # dist, which is why binaries.txt is written to the workspace root above.
       - name: Reproduce the release independently
         env:
           GOTOOLCHAIN: go1.25.0
-          CGO_ENABLED: "0"
-          VER: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
+          goreleaser build --clean
           fail=0
-          # Same derivation as the build step, from the same commit.
-          BUILD_DATE="$(git log -1 --format=%cI)"
           while read -r want name; do
-            os=$(echo "$name" | sed -E "s/^chore-${VER}-([a-z]+)-.*/\1/")
-            arch=$(echo "$name" | sed -E "s/^chore-${VER}-[a-z]+-(.*)/\1/")
-            case "$arch" in x86_64) goarch=amd64 ;; *) goarch="$arch" ;; esac
-            GOOS="$os" GOARCH="$goarch" go build -buildvcs=false -trimpath \
-              -ldflags "-s -w -X main.version=${VER} -X main.buildDate=${BUILD_DATE}" \
-              -o "rebuilt-${os}-${arch}"
-            got=$(sha256sum "rebuilt-${os}-${arch}" | cut -d" " -f1)
+            # dist layout is chore_<goos>_<goarch>_<variant>/chore; map the published
+            # artifact name back onto it. Names are chore-<version>-<os>-<arch>.
+            arch=${name##*-}
+            rest=${name%-*}
+            os=${rest##*-}
+            case "$arch" in
+              x86_64) goarch=amd64_v1 ;;
+              arm64) goarch=arm64_v8.0 ;;
+              *) goarch="$arch" ;;
+            esac
+            got=$(sha256sum "dist/chore_${os}_${goarch}/chore" | cut -d" " -f1)
             if [ "$got" = "$want" ]; then
               echo "  ${os}/${arch}: reproduced"
             else
               echo "  ${os}/${arch}: MISMATCH published=${want} rebuilt=${got}" >&2
               fail=1
             fi
-          done < dist/binaries.txt
+          done < binaries.txt
           [ "$fail" = 0 ]
 
       # No step here notifies the Homebrew tap, deliberately.
       #
       # The tap is a PULL consumer: its tap-sync workflow is triggered by a human,
-      # reads this repository's public releases, computes the checksums from the
-      # assets it downloaded, and opens an unmerged PR for review. Nothing that
-      # reaches `brew install` is published without someone looking at it, and no
-      # project — including this one — holds a credential that can write there.
+      # reads this repository's public releases, and opens an unmerged PR for review.
+      # Nothing that reaches `brew install` is published without someone looking at it,
+      # and no project — including this one — holds a credential that can write there.
+      # goreleaser's `brews:` block would invert that, which is why it is not used.
       #
       # To publish this release to brew: run "Sync formulae from releases" in
       # antimatter-studios/homebrew-tap, then merge the PR it opens.

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- The release is built by goreleaser instead of a hand-written build matrix. Same
+  four artifacts under the same names, the same pinned toolchain and flags, and the
+  release still rebuilds every target afterwards and fails if a byte differs. Two
+  things this buys that the old pipeline did not have: archive mtimes now come from
+  the commit, so the tarballs are byte-stable and not just the binaries inside them,
+  and one runner cross-builds all four targets instead of four runners each building
+  one.
+
+  **The build date is now stamped in UTC**, where the old pipeline kept the
+  committer's local offset — the same instant, but a different string, so a
+  different hash. Verifying a release built before this change needs the old
+  derivation; `chore verify-release` tries both and says which one reproduced.
+
+- `chore verify-release` never reproduced v0.1.3. It rebuilt without
+  `-X main.buildDate`, which that release stamps, so it reported a mismatch for a
+  release that was in fact reproducible.
+
 ## v0.1.3
 
 - `--help` is global and answers about whatever the command line names: the program

@@ -1,0 +1,78 @@
+# Release build for chore.
+#
+# The artifact names are not arbitrary — they are the names the Homebrew tap's formula
+# already expects for its other binaries:
+#
+#   chore-<version>-<os>-<arch>.tar.gz   os ∈ darwin|linux, arch ∈ arm64|x86_64
+#
+# Everything below that looks fussy is in service of ONE property: a third party can
+# rebuild these exact bytes from this commit and compare hashes, which is what makes
+# trusting this pipeline optional rather than mandatory. The release workflow proves it
+# on every release instead of asserting it.
+version: 2
+
+project_name: chore
+
+builds:
+  - id: chore
+    main: .
+    binary: chore
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath # drop the builder's absolute paths
+      # Omit vcs.revision/vcs.time. Those stamps are the ONLY reason an otherwise
+      # identical rebuild differs, and the commit is recorded in the release itself,
+      # where it can be verified rather than merely read back out of the binary.
+      - -buildvcs=false
+    ldflags:
+      - -s -w # strip symbols and DWARF: smaller, and deterministic
+      - -X main.version={{ .Version }}
+      # The COMMIT's date, never the clock — `.Date` is wall-clock and would make every
+      # rebuild of the same source differ, defeating the reproduction check.
+      - -X main.buildDate={{ .CommitDate }}
+    # Archive member mtimes come from the commit too, for the same reason.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: chore
+    ids: [chore]
+    formats: [tar.gz]
+    # amd64 → x86_64 because that is what the formula asks for.
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    # The tarball holds the bare binary and nothing else: no README or LICENSE, because
+    # the tap extracts and installs `chore` directly.
+    files: []
+    wrap_in_directory: false
+
+checksum:
+  # Hashes of the ARCHIVES. The release also publishes binaries.txt — hashes of the
+  # binaries INSIDE them — because tar records mtimes and ownership, so verifying an
+  # archive hash is not the same as verifying the program. See the release workflow.
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  # Let GitHub compose the notes from the commits in the range, as `gh release create
+  # --generate-notes` did before this config existed.
+  use: github
+
+release:
+  # A release created ahead of time (or a re-run) keeps its notes rather than being
+  # overwritten, but the assets are always replaced.
+  mode: append
+
+# The Homebrew tap is deliberately NOT published to from here.
+#
+# goreleaser can write a formula directly (`brews:`), and that is exactly what this
+# repository must not do: the tap is a PULL consumer. Its own workflow is triggered by a
+# human, reads this repository's public releases, computes checksums from the assets it
+# downloaded, and opens an unmerged PR for review. Nothing reaching `brew install` is
+# published without someone looking at it, and no project — including this one — holds a
+# credential that can write there.
+#
+# To publish a release to brew: run "Sync formulae from releases" in
+# antimatter-studios/homebrew-tap, then merge the PR it opens.
