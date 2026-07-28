@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,21 @@ type Runner struct {
 	Force   bool
 	Verbose bool
 	CLIArgs string // everything after `--`
+
+	// CLIVars are the NAME=value pairs typed on the command line.
+	//
+	// They are global to the RUN, not to the task named, and they outrank anything
+	// written in the file. What you typed is what you meant: `chore down
+	// CONFIG=mail1` has to reach the `- task: postgres:down` that `down` calls, or
+	// the child renders `mailref-{{.CONFIG}}-postgres` as "mailref--postgres",
+	// matches no container, and reports success having stopped nothing. That is the
+	// exact class of silent-wrong-target failure this program exists to remove.
+	//
+	// The one thing above them is vars a parent passes EXPLICITLY to a child
+	// (`- task: x` with `vars:`), because a file that names a value for one step is
+	// describing that step, not taking a guess: e2e brings up two reference servers
+	// by passing each its own name, and a global must not collapse them into one.
+	CLIVars map[string]string
 
 	// once tracks `run: once` tasks by name plus rendered variables, so the same
 	// task invoked with different arguments still runs twice.
@@ -179,6 +195,7 @@ func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope)
 			if err != nil {
 				return fmt.Errorf("%s: dep name: %w", t.Name, err)
 			}
+			name = reference(t, name)
 			vars, err := scope.Resolve(gctx, d.Vars, r.shell(r.Project.RootDir, scope))
 			if err != nil {
 				return fmt.Errorf("%s: dep %s vars: %w", t.Name, name, err)
@@ -196,6 +213,7 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		if err != nil {
 			return fmt.Errorf("%s: cmd task name: %w", t.Name, err)
 		}
+		name = reference(t, name)
 		vars, err := scope.Resolve(ctx, c.Vars, sh)
 		if err != nil {
 			return fmt.Errorf("%s: cmd task %s vars: %w", t.Name, name, err)
@@ -258,7 +276,7 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	if err := checkNamedTypes(t, callVars); err != nil {
 		return nil, err
 	}
-	early := base.Push(argVars).Push(callVars)
+	early := base.Push(r.CLIVars).Push(argVars).Push(callVars)
 
 	sh := r.shell(r.Project.RootDir, early)
 
@@ -300,7 +318,7 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// otherwise a literal `vars: {CONFIG: a}` loads config a's environment while
 	// the task runs with CONFIG=b — the silent wrong-stack failure this program
 	// exists to remove, reintroduced one layer down.
-	dotenvVars, err := r.dotenv(ctx, t, base.Push(paramDefaults), callVars, argVars, sh)
+	dotenvVars, err := r.dotenv(ctx, t, base.Push(r.CLIVars).Push(paramDefaults), callVars, argVars, sh)
 	if err != nil {
 		return nil, err
 	}
@@ -313,21 +331,100 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// The dotenv PATHS above are rendered from the same vars but resolved without
 	// dotenv in scope — a path may depend on the argument, never on the contents
 	// of the file it is about to load.
+	// A file's variables, and the ones an include MAPPED into it.
+	//
+	// The two are resolved in different scopes, which is the whole point. An
+	// include's `vars: {IP: '{{.POSTGRES_IP}}'}` is written in the parent and means
+	// the parent's POSTGRES_IP, so it is rendered walking DOWN from the root: each
+	// file's own variables form the scope in which its includes' mappings are
+	// rendered. A file's own `vars:` then resolve seeing only the outside world and
+	// what was mapped to it — never the parent's other variables, because an
+	// include seeing everything above it is exactly the bleed this file format is
+	// famous for. (`inherit:` is how a file will opt into that deliberately.)
+	//
+	// Resolved the other way round, `{{.POSTGRES_IP}}` renders as "" and a reference
+	// mail server starts as "mailref-mail1-postgres @" with no address.
+	outside := base.Push(dotenvVars).Push(paramDefaults).Push(r.CLIVars).
+		Push(callVars).Push(argVars)
+
+	// Walk the include chain from the root down. Two scopes, deliberately:
+	//
+	//   effective — everything the file at this level ends up contributing. The
+	//               NEXT level's mappings are rendered against it, because
+	//               `vars: {IP: '{{.POSTGRES_IP}}'}` is written HERE and means
+	//               this file's POSTGRES_IP.
+	//   visible   — what the file at this level may SEE while resolving its own
+	//               `vars:`. Just the mapping, unless the include says `inherit:`.
+	//
+	// Keeping them apart is the whole point. Collapsing them lets an included file
+	// silently read every variable above it, which is the bleed this format is
+	// known for and which rest-mail's own comments warn about: two includes of one
+	// file then differ by whatever their parents happened to define.
 	fileVars := map[string]string{}
-	if t.File != nil {
-		fileVars, err = base.Push(dotenvVars).Push(paramDefaults).Push(callVars).Push(argVars).
-			Resolve(ctx, t.File.Vars, sh)
+	effective := map[string]string{}
+	for _, f := range fileChain(t.File) { // root first, the task's file last
+		mapped := map[string]string{}
+		if len(f.IncludeVars) > 0 {
+			mapped, err = outside.Push(effective).Resolve(ctx, f.IncludeVars, sh)
+			if err != nil {
+				return nil, fmt.Errorf("include vars for %s: %w", f.Path, err)
+			}
+		}
+
+		visible := mapped
+		if f.Inherit {
+			// Opt-in: the including file's values, with the mapping on top.
+			visible = mergeStrings(effective, mapped)
+		}
+		own, err := outside.Push(visible).Resolve(ctx, f.Vars, sh)
 		if err != nil {
 			return nil, fmt.Errorf("file vars: %w", err)
 		}
+		// The mapping outranks the file's own value: the file states what it needs
+		// by default, the include states what it is being handed. An inherited
+		// value sits below both — a file always wins on a name it defines itself.
+		fileVars = mergeStrings(mergeStrings(visible, own), mapped)
+		effective = fileVars
 	}
 
-	scope := base.Push(dotenvVars).Push(fileVars).Push(paramDefaults)
+	// `env:` is the process environment, so unlike `vars:` it is INHERITED rather
+	// than scoped: the ROOT file's env reaches a task in an included file. That is
+	// what this exists for — one `OUTPUT` at the root, consumed by every image
+	// build in tasks/*.yml as `>$OUTPUT`. Scoping it the way include vars are
+	// scoped would leave those redirects empty, which is bash's "ambiguous
+	// redirect" and a failed task.
+	//
+	// Resolved after dotenv, so an env value may read a config's variables, and
+	// before the task's own vars, so those can read it. A value is a Var like any
+	// other — `sh:` belongs to the VALUE, not to the key it sits under, so it works
+	// here for the same reason it works in `vars:`, through the same resolver.
+	fileEnv := map[string]string{}
+	for _, f := range envFiles(r.Project, t) {
+		resolved, err := base.Push(dotenvVars).Push(fileEnv).Push(paramDefaults).
+			Push(r.CLIVars).Push(callVars).Push(argVars).Resolve(ctx, f.Env, sh)
+		if err != nil {
+			return nil, fmt.Errorf("file env: %w", err)
+		}
+		maps.Copy(fileEnv, resolved)
+	}
+
+	// Above fileVars: where a file sets the same name in both, `env:` is what the
+	// shell would see under go-task, and a template disagreeing with the shell
+	// about one name is worse than either answer.
+	scope := base.Push(dotenvVars).Push(fileVars).Push(fileEnv).Push(paramDefaults)
 	taskVars, err := scope.Push(argVars).Push(callVars).Resolve(ctx, t.Vars, sh)
 	if err != nil {
 		return nil, fmt.Errorf("task vars: %w", err)
 	}
-	final := scope.Push(taskVars).Push(callVars).Push(argVars)
+	taskEnv, err := scope.Push(taskVars).Push(argVars).Push(callVars).Resolve(ctx, t.Env, sh)
+	if err != nil {
+		return nil, fmt.Errorf("task env: %w", err)
+	}
+	// The caller stays on top of both: flipping a toggle per invocation
+	// (`chore up VERBOSE=1`) is the reason these values are variable at all.
+	// Typed values above everything the file says, and above the task's own vars:
+	// a `vars:` block is a default, not a veto on the command line.
+	final := scope.Push(taskVars).Push(taskEnv).Push(r.CLIVars).Push(callVars).Push(argVars)
 
 	// Boolean parameters are normalised HERE, not only where their default is
 	// resolved: the task's own vars are pushed on top afterwards and would
@@ -568,13 +665,41 @@ type dotenvSource struct {
 
 func (r *Runner) dotenv(ctx context.Context, t *chorefile.Task, base *tmpl.Scope, callVars, argVars map[string]string, sh shell.Shell) (map[string]string, error) {
 	var sources []dotenvSource
+	// A task that declares `dotenv:` speaks for itself and inherits nothing —
+	// including `dotenv: []`, which loads nothing at all. Rendered against its own
+	// file's vars, like any other source.
+	if t.Dotenv != nil {
+		if len(t.Dotenv) == 0 {
+			return map[string]string{}, nil
+		}
+		dir := r.Project.RootDir
+		vars := map[string]chorefile.Var{}
+		if t.File != nil {
+			dir, vars = t.File.Dir, t.File.Vars
+		}
+		return r.loadDotenv(ctx, []dotenvSource{{dir: dir, entries: t.Dotenv, vars: vars}}, base, callVars, argVars, sh)
+	}
+	// The root's dotenv applies to every task, including those in included files.
+	//
+	// Tried the other way — each file answering only for its own `dotenv:` — and it
+	// broke the stack: an include maps `POSTGRES_IP: '{{.MAIL3_POSTGRES_IP}}'`, and
+	// that name comes from the root's config.env. A child's MAPPING therefore
+	// depends on the PARENT's dotenv, so scoping dotenv per file would need it
+	// resolved per level of the chain, not merely per task. Until then the root's
+	// applies throughout, and a task that must not require it says so with
+	// `dotenv: []` — which is what a hand-off to a peer project does.
 	if root := r.Project.Root; root != nil {
 		sources = append(sources, dotenvSource{dir: root.Dir, entries: root.Dotenv, vars: root.Vars})
 	}
 	if t.File != nil && (r.Project.Root == nil || t.File.Path != r.Project.Root.Path) {
 		sources = append(sources, dotenvSource{dir: t.File.Dir, entries: t.File.Dotenv, vars: t.File.Vars})
 	}
+	return r.loadDotenv(ctx, sources, base, callVars, argVars, sh)
+}
 
+// loadDotenv reads one or more declarations, reporting a miss rather than
+// silently continuing with defaults.
+func (r *Runner) loadDotenv(ctx context.Context, sources []dotenvSource, base *tmpl.Scope, callVars, argVars map[string]string, sh shell.Shell) (map[string]string, error) {
 	out := map[string]string{}
 	declared, loaded := 0, 0
 	var missing []string
@@ -652,9 +777,22 @@ func (r *Runner) warnOnce(path string) bool {
 }
 
 func (r *Runner) taskDir(t *chorefile.Task, scope *tmpl.Scope) (string, error) {
+	// The ROOT directory, not the directory of the file the task is written in.
+	//
+	// A task in an included file runs where the project runs — that is what
+	// go-task does, and it is why {{.TASKFILE_DIR}} exists at all: you ask for the
+	// file's own directory when you actually want it. Using it as the working
+	// directory instead meant every relative path in an included file silently
+	// pointed one level down: in rest-mail `-v $(pwd):/app` bind-mounted tasks/ as
+	// the application, so the api container restarted forever on "open .air.toml:
+	// no such file or directory", and `docker build … -f Dockerfile .` beside it
+	// had the wrong build context.
+	//
+	// An include that declares `dir:` is the exception, and the one case where
+	// moving is intended. The loader records that in WorkDir, and only then.
 	dir := r.Project.RootDir
-	if t.File != nil && t.File.Dir != "" {
-		dir = t.File.Dir
+	if t.File != nil && t.File.WorkDir != "" {
+		dir = t.File.WorkDir
 	}
 	if t.Dir != "" {
 		d, err := scope.Render(t.Dir)
@@ -679,6 +817,13 @@ func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
 	// dotenv" trap must not fire here, where the trap does not exist and the
 	// invocation they reject is the correct one.
 	env := append(os.Environ(), "CHORE=1")
+	// CHORE_BIN is THIS binary's path, so a task that has to drive another project
+	// recurses with the runner it was launched with. Without it a task shells out to
+	// whatever `chore` is first on PATH — the Homebrew build while you are testing a
+	// local one, which is how a fix appears not to work.
+	if exe, err := os.Executable(); err == nil {
+		env = append(env, "CHORE_BIN="+exe)
+	}
 	for k, v := range scope.All() {
 		if isEnvName(k) {
 			env = append(env, k+"="+v)
@@ -808,6 +953,68 @@ func isEnvName(k string) bool {
 		}
 	}
 	return true
+}
+
+// reference resolves a task name written INSIDE a taskfile — a `- task:` step or a
+// `deps:` entry — to the name the project knows it by.
+//
+// A reference is relative to the file it is written in: `- task: deps` inside
+// tasks/webmail.yml means webmail's own `deps`, never a root task that happens to
+// share the name. Resolving these globally is why `chore instance:up` stopped with
+// `no task "deps"` while go-task ran it.
+//
+// The prefix is applied even when the reference already contains a colon, which is
+// what makes tasks/monitoring.yml work: it holds a task literally named
+// "prometheus:up", and `- task: prometheus:up` written beside it means that one —
+// monitoring:prometheus:up.
+//
+// A leading colon escapes to the root namespace, as in `- task: :build`. This is
+// go-task's behaviour in each case, verified against it rather than assumed.
+func reference(caller *chorefile.Task, name string) string {
+	if strings.HasPrefix(name, ":") {
+		return strings.TrimPrefix(name, ":")
+	}
+	if caller.File == nil || caller.File.Namespace == "" {
+		return name
+	}
+	return caller.File.Namespace + ":" + name
+}
+
+// fileChain returns f and its ancestors, ROOT FIRST, so a walk resolves each
+// include's mapping in the scope of the file that wrote it.
+func fileChain(f *chorefile.File) []*chorefile.File {
+	var up []*chorefile.File
+	for cur := f; cur != nil; cur = cur.Parent {
+		up = append(up, cur)
+	}
+	slices.Reverse(up)
+	return up
+}
+
+// mergeStrings returns a copy of a with b's entries on top.
+func mergeStrings(a, b map[string]string) map[string]string {
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[string]string, len(a)+len(b))
+	maps.Copy(out, a)
+	maps.Copy(out, b)
+	return out
+}
+
+// envFiles lists the files whose `env:` applies to a task, lowest priority first:
+// the root file, then the task's own file when that is a different one. Deliberately
+// NOT the whole include chain — a task's file and the root are the two scopes a
+// reader can see from where the task is written.
+func envFiles(p *chorefile.Project, t *chorefile.Task) []*chorefile.File {
+	var files []*chorefile.File
+	if p != nil && p.Root != nil && len(p.Root.Env) > 0 {
+		files = append(files, p.Root)
+	}
+	if t.File != nil && t.File != p.Root && len(t.File.Env) > 0 {
+		files = append(files, t.File)
+	}
+	return files
 }
 
 // ExitCode reports the process exit code an error should produce.

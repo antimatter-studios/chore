@@ -13,12 +13,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
+	"github.com/antimatter-studios/chore/internal/buildinfo"
 	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/loader"
 	"github.com/antimatter-studios/chore/internal/run"
+	"github.com/antimatter-studios/chore/internal/ui"
 )
 
 // Version is the build's version string, set by main. Exported rather than
@@ -37,6 +38,7 @@ flags:
       --dry         print the commands a task would run, without running them
       --force       run even if up-to-date checks say the work is done
   -v, --verbose     echo commands even for silent tasks
+      --no-color    plain output, no colour (also: NO_COLOR, or a non-terminal)
   -h, --help        this text
       --version     print the version
 
@@ -54,40 +56,63 @@ arguments:
 
 // Main runs the command line and returns the process exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
+	// One UI per destination: stdout can be a pipe while stderr is still a
+	// terminal, so each decides for itself whether to style.
+	out, errUI := ui.New(stdout), ui.New(stderr)
+
 	opts, rest, err := parseFlags(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "chore: %v\n\n%s", err, usage)
+		errUI.Errorf("%v", err)
+		errUI.Raw("\n" + usage)
 		return 2
 	}
+	if opts.noColor {
+		out.SetPlain(true)
+		errUI.SetPlain(true)
+	}
 	if opts.help {
-		fmt.Fprint(stdout, usage)
+		out.Raw(usage)
 		return 0
 	}
 	if opts.version {
-		fmt.Fprintln(stdout, Version)
+		info := buildinfo.Get(Version)
+		// stdout stays EXACTLY the bare version: the Homebrew formula matches on
+		// this output, and anything scripted reads the first thing it prints. The
+		// context goes to stderr, where it cannot break a pipeline.
+		out.Raw(info.Version + "\n")
+		errUI.Detail([][2]string{
+			{"commit", commitOf(info)},
+			{"built", info.Go + " " + info.Platform},
+			{"file", foundTaskfile(opts.file)},
+		})
 		return 0
+	}
+
+	// Say so when this is not the installed release — see ui.Banner.
+	if info := buildinfo.Get(Version); info.Dev {
+		errUI.Banner("chore", info.Version)
 	}
 
 	if opts.dir != "" {
 		if err := os.Chdir(opts.dir); err != nil {
-			fmt.Fprintf(stderr, "chore: %v\n", err)
+			errUI.Errorf("%v", err)
 			return 1
 		}
 	}
 
 	path, err := findTaskfile(opts.file)
 	if err != nil {
-		fmt.Fprintf(stderr, "chore: %v\n", err)
+		errUI.Errorf("%v", err)
 		return 1
 	}
 	if base := filepath.Base(path); strings.EqualFold(base, "Taskfile.yml") || strings.EqualFold(base, "Taskfile.yaml") {
-		fmt.Fprintf(stderr, "chore: reading %s — rename it to %s; go-task ignores `args:` and mishandles `task <task> VAR=value`, so one file for both runners is a trap\n",
+		errUI.Errorf("reading %s — rename it to %s; go-task ignores `args:` and mishandles `task <task> VAR=value`, so one file for both runners is a trap",
 			base, Filenames[0])
 	}
 
 	project, err := loader.Load(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "chore: %v\n", err)
+		errUI.Errorf("%v", err)
 		return 1
 	}
 
@@ -95,13 +120,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// the same answer, so `chore` on its own is never a mystery.
 	if len(rest) == 1 && rest[0] == "version" {
 		if _, ok := project.Tasks["version"]; !ok {
-			fmt.Fprintln(stdout, Version)
+			out.Raw(buildinfo.Get(Version).Version + "\n")
 			return 0
 		}
 	}
 
 	if opts.list || len(rest) == 0 {
-		writeList(stdout, project)
+		out.List(listing(project))
 		return 0
 	}
 
@@ -116,21 +141,26 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// parsing, before CLI variables exist, so it silently used the default.
 	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
 	if err != nil {
-		fmt.Fprintf(stderr, "chore: %v\n", err)
+		errUI.Errorf("%v", err)
 		return 2
 	}
 
+	// The same NAME=value pairs are ALSO global for the run, so they survive into
+	// the tasks this one calls — `chore down CONFIG=mail1` has to reach the
+	// `- task: postgres:down` inside `down`.
+	r.CLIVars = callVars
+
 	if err := r.Run(context.Background(), rest[0], args, callVars); err != nil {
-		fmt.Fprintf(stderr, "chore: %v\n", err)
+		errUI.Errorf("%v", err)
 		return run.ExitCode(err)
 	}
 	return 0
 }
 
 type options struct {
-	dir, file                                string
-	list, dry, force, verbose, help, version bool
-	cliArgs                                  []string
+	dir, file                                         string
+	list, dry, force, verbose, help, version, noColor bool
+	cliArgs                                           []string
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.
@@ -176,6 +206,8 @@ func parseFlags(args []string) (options, []string, error) {
 			o.file = v
 		case "l", "list":
 			o.list = true
+		case "no-color", "no-colour":
+			o.noColor = true
 		case "dry", "dry-run":
 			o.dry = true
 		case "force":
@@ -356,12 +388,16 @@ func findTaskfile(explicit string) (string, error) {
 	}
 }
 
-// writeList prints the tasks, grouped by namespace, hiding internal ones. The
-// description is the task's `desc`, so there is nothing to keep in sync.
-func writeList(w io.Writer, p *chorefile.Project) {
-	type entry struct{ name, desc string }
-	groups := map[string][]entry{}
-	width := 0
+// listing groups the project's tasks by namespace for rendering, hiding internal
+// ones and listing each canonical name once. The description is the task's
+// `desc`, so there is nothing to keep in sync.
+//
+// Grouping only — how it LOOKS is internal/ui's business, including the padding.
+// The width used to be computed here with %-*s, which counts bytes, so a task
+// name containing anything outside ASCII pushed every later description out of
+// column.
+func listing(p *chorefile.Project) []ui.Group {
+	groups := map[string][]ui.Task{}
 	for name, t := range p.Tasks {
 		if t.Internal || name != t.Name { // skip aliases: list the canonical name once
 			continue
@@ -370,33 +406,42 @@ func writeList(w io.Writer, p *chorefile.Project) {
 		if i := strings.LastIndex(name, ":"); i >= 0 {
 			ns = name[:i]
 		}
-		groups[ns] = append(groups[ns], entry{name, t.Desc})
-		if len(name) > width {
-			width = len(name)
-		}
-	}
-	if len(groups) == 0 {
-		fmt.Fprintln(w, "no tasks")
-		return
+		groups[ns] = append(groups[ns], ui.Task{Name: name, Desc: t.Desc})
 	}
 
-	names := make([]string, 0, len(groups))
-	for ns := range groups {
-		names = append(names, ns)
+	out := make([]ui.Group, 0, len(groups))
+	for ns, tasks := range groups {
+		out = append(out, ui.Group{Name: ns, Tasks: tasks})
 	}
-	sort.Strings(names)
+	return out
+}
 
-	fmt.Fprintln(w, "tasks:")
-	for _, ns := range names {
-		es := groups[ns]
-		sort.Slice(es, func(i, j int) bool { return es[i].name < es[j].name })
-		fmt.Fprintf(w, "\n  [%s]\n", ns)
-		for _, e := range es {
-			if e.desc == "" {
-				fmt.Fprintf(w, "    %s\n", e.name)
-				continue
-			}
-			fmt.Fprintf(w, "    %-*s  %s\n", width, e.name, e.desc)
-		}
+// commitOf renders the revision for the --version block, marking a tree that had
+// uncommitted changes.
+//
+// Empty — so Detail drops the row — in two cases: the build recorded no revision
+// (a release, built with -buildvcs=false so that two builds of the same source are
+// byte-identical, with the stamped version as its identity instead), or the
+// version string already contains it, which is every dev build. Printing
+// "dev+8e37399-dirty" and then "commit 8e37399 (uncommitted changes)" underneath
+// says one thing twice.
+func commitOf(i buildinfo.Info) string {
+	if i.Commit == "" || strings.Contains(i.Version, i.Commit) {
+		return ""
 	}
+	if i.Dirty {
+		return i.Commit + " (uncommitted changes)"
+	}
+	return i.Commit
+}
+
+// foundTaskfile reports which file chore would read from here, so `--version` also
+// answers "and is it even looking at the project I think it is". Not an error if
+// there is none — asking for a version outside a project is normal.
+func foundTaskfile(flag string) string {
+	path, err := findTaskfile(flag)
+	if err != nil {
+		return ""
+	}
+	return path
 }

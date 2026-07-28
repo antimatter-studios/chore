@@ -403,7 +403,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown top-level field",
 			yaml:    "version: '3'\noutput: prefixed\n",
-			wantErr: []string{"output", "chorefile.File"},
+			wantErr: []string{"output", `unknown field "output" in a file`},
 		},
 		{
 			// v2 syntax, and the single most likely thing to be pasted in from
@@ -415,7 +415,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown field inside a task",
 			yaml:    "version: '3'\ntasks:\n  build:\n    sourcs: ['*.go']\n",
-			wantErr: []string{"sourcs", "chorefile.Task"},
+			wantErr: []string{"sourcs", `unknown field "sourcs" in a task`},
 		},
 		{
 			name:    "misspelled silent inside a task",
@@ -425,7 +425,7 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 		{
 			name:    "unknown field inside an include",
 			yaml:    "version: '3'\nincludes:\n  pg:\n    taskfile: pg\n    internal: true\n",
-			wantErr: []string{"internal", "chorefile.Include"},
+			wantErr: []string{"internal", `unknown field "internal" in an include`},
 		},
 		{
 			// Unsupported by design (see the spec's "explicitly not supported"

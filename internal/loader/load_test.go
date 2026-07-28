@@ -399,11 +399,13 @@ tasks:
 	if !ok {
 		t.Fatalf("pg:up missing, have %v", taskNames(p))
 	}
-	// The include layer reaches the runner through the task's own file.
+	// The two layers reach the runner SEPARATELY: the file keeps its own defaults,
+	// and the include's mapping is recorded unresolved, to be rendered in the scope
+	// of the file that wrote it. Which value wins is the runtime's business — see
+	// TestIncludeMappingUsesTheParentScope in internal/run.
 	want := map[string]string{
-		"IMAGE": "postgres:17", // include beats the included file's default
-		"USER":  "postgres",    // untouched default survives
-		"PORT":  "5432",        // include-only var is added
+		"IMAGE": "postgres:15", // the included file's own default, left alone
+		"USER":  "postgres",
 	}
 	got := map[string]string{}
 	for k, v := range up.File.Vars {
@@ -411,6 +413,12 @@ tasks:
 	}
 	if len(got) != len(want) {
 		t.Fatalf("included file vars = %v, want %v", got, want)
+	}
+	if v := up.File.IncludeVars["IMAGE"].Value; v != "postgres:17" {
+		t.Errorf("IncludeVars[IMAGE] = %q, want the include's value", v)
+	}
+	if v := up.File.IncludeVars["PORT"].Value; v != "5432" {
+		t.Errorf("IncludeVars[PORT] = %q, want the include-only var", v)
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -695,36 +703,55 @@ func TestRegister(t *testing.T) {
 	}
 }
 
-func TestMergeVars(t *testing.T) {
-	own := map[string]chorefile.Var{
-		"IMAGE": {Value: "postgres:15"},
-		"USER":  {Value: "postgres"},
-	}
-	incoming := map[string]chorefile.Var{
-		"IMAGE": {Value: "postgres:17"},
-		"HEAD":  {Sh: "git rev-parse HEAD"},
-	}
+// An include's vars are recorded, NOT merged into the file they are given to:
+// they are written in the parent and mean the parent's variables, so the runtime
+// resolves them there. Merging them here is what made '{{.POSTGRES_IP}}' inside an
+// include render empty.
+func TestIncludeVarsAreRecordedNotMerged(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml": `version: "3"
+vars:
+  PARENT_VALUE: from-parent
+  IMAGE: parent-image
+includes:
+  kid:
+    taskfile: ./kid.yml
+    vars:
+      MAPPED: '{{.PARENT_VALUE}}'
+      IMAGE: mapped-image
+tasks:
+  root: {cmds: ['true']}
+`,
+		"kid.yml": `version: "3"
+vars:
+  IMAGE: kid-default
+tasks:
+  show: {cmds: ['true']}
+`,
+	})
 
-	got := mergeVars(own, incoming)
-	if got["IMAGE"].Value != "postgres:17" {
-		t.Errorf("IMAGE = %q, want the include's value", got["IMAGE"].Value)
+	p, err := Load(filepath.Join(dir, "chores.yml"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got["USER"].Value != "postgres" {
-		t.Errorf("USER = %q, want the file's own default", got["USER"].Value)
+	kid := p.Tasks["kid:show"].File
+
+	if got := kid.IncludeVars["MAPPED"].Value; got != "{{.PARENT_VALUE}}" {
+		t.Errorf("IncludeVars[MAPPED] = %q, want the UNRESOLVED template", got)
 	}
-	if got["HEAD"].Sh != "git rev-parse HEAD" {
-		t.Errorf("HEAD = %+v, want the include's dynamic var", got["HEAD"])
+	// Still a template here on purpose: resolving it needs the parent's scope,
+	// which the loader does not have and must not guess at.
+	if _, ok := kid.Vars["MAPPED"]; ok {
+		t.Error("the include's vars were merged into the child's own")
 	}
-	// The inputs must be untouched: the same file may be included twice with
-	// different vars, and each copy has to stay independent.
-	if own["IMAGE"].Value != "postgres:15" {
-		t.Error("mergeVars mutated the file's own vars")
+	if got := kid.Vars["IMAGE"].Value; got != "kid-default" {
+		t.Errorf("child's own IMAGE = %q, want it left alone", got)
 	}
-	if len(incoming) != 2 {
-		t.Error("mergeVars mutated the include's vars")
+	if kid.Parent == nil || kid.Parent.Path != filepath.Join(dir, "chores.yml") {
+		t.Errorf("Parent = %v, want the including file", kid.Parent)
 	}
-	if got := mergeVars(own, nil); len(got) != 2 {
-		t.Errorf("mergeVars(own, nil) = %v, want the file's own vars", got)
+	if p.Root.Parent != nil {
+		t.Error("the root file has a parent")
 	}
 }
 
@@ -772,11 +799,16 @@ tasks:
 	if got := taskNames(p); !slices.Equal(got, []string{"first:up", "second:up"}) {
 		t.Fatalf("tasks = %v", got)
 	}
-	if v := p.Tasks["first:up"].File.Vars["NAME"].Value; v != "one" {
+	// Each include keeps its OWN mapping: the same file included twice is two
+	// independent copies, or one instance's name would leak into the other.
+	if v := p.Tasks["first:up"].File.IncludeVars["NAME"].Value; v != "one" {
 		t.Errorf("first NAME = %q, want one", v)
 	}
-	if v := p.Tasks["second:up"].File.Vars["NAME"].Value; v != "two" {
+	if v := p.Tasks["second:up"].File.IncludeVars["NAME"].Value; v != "two" {
 		t.Errorf("second NAME = %q, want two", v)
+	}
+	if v := p.Tasks["first:up"].File.Vars["NAME"].Value; v != "default" {
+		t.Errorf("the file's own NAME = %q, want its untouched default", v)
 	}
 	if p.Tasks["first:up"] == p.Tasks["second:up"] {
 		t.Error("both includes share one task pointer; each include must load its own copy")

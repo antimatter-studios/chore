@@ -35,6 +35,25 @@ else
 fi
 _chore_root="$(cd "$(dirname "$_chore_self")/.." && pwd)"
 _chore_bin="${CHORE_DEV:-$_chore_root/bin}"
+_chore_tag="uninstall-chore-dev:"
+
+# --- colour, when stderr is a terminal ------------------------------------
+# Same rule the binary follows: styled for a person, plain for anything that
+# captures it, and NO_COLOR is honoured because it is the convention.
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+  _chore_c_name=$'\033[1;35m'  # bold magenta — matches chore's own accent
+  _chore_c_key=$'\033[36m'     # cyan for the value that matters
+  _chore_c_dim=$'\033[90m'
+  _chore_c_off=$'\033[0m'
+else
+  _chore_c_name=''; _chore_c_key=''; _chore_c_dim=''; _chore_c_off=''
+fi
+_chore_say() { # _chore_say <label> <value>
+  printf '%s%s%s %-8s %s%s%s\n' \
+    "$_chore_c_name" "$_chore_tag" "$_chore_c_off" "$1" \
+    "${2:+$_chore_c_key}" "$2" "$_chore_c_off" >&2
+}
+_chore_note() { printf '%s%s %s%s\n' "$_chore_c_dim" "$_chore_tag" "$1" "$_chore_c_off" >&2; }
 
 case ":$PATH:" in
   *":$_chore_bin:"*)
@@ -64,15 +83,17 @@ case ":$PATH:" in
     fi
 
     if _chore_now="$(command -v chore 2>/dev/null)"; then
-      echo "uninstall-chore-dev: chore    → $_chore_now" >&2
-      echo "uninstall-chore-dev: version  → $(chore --version 2>/dev/null || echo '?')" >&2
+      _chore_say "chore" "$_chore_now"
+      _chore_say "version" "$(chore --version 2>/dev/null || echo '?')"
     else
-      echo "uninstall-chore-dev: removed $_chore_bin from PATH; no chore on PATH now" >&2
+      _chore_note "removed $_chore_bin from PATH; no chore on PATH now"
     fi
     ;;
   *)
-    echo "uninstall-chore-dev: $_chore_bin is not on PATH — nothing to do" >&2
+    _chore_note "$_chore_bin is not on PATH — nothing to do"
     ;;
 esac
 
-unset _chore_sourced _chore_self _chore_root _chore_bin _chore_new _chore_now
+unset _chore_sourced _chore_self _chore_root _chore_bin _chore_new _chore_now \
+  _chore_tag _chore_c_name _chore_c_key _chore_c_dim _chore_c_off
+unset -f _chore_say _chore_note 2>/dev/null

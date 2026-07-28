@@ -32,7 +32,38 @@ type File struct {
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
-	Dir  string `yaml:"-"` // directory holding this file
+	Dir  string `yaml:"-"` // directory holding this file, or the include's dir:
+	// WorkDir is the include's `dir:`, absolute, and "" when the include did not
+	// declare one. Recorded separately because it is the ONE thing that moves a
+	// task's working directory away from the project root, and inferring it from
+	// `Dir != filepath.Dir(Path)` is ambiguous: an include whose dir: happens to
+	// be the directory the file already lives in is indistinguishable from an
+	// include with no dir: at all.
+	WorkDir string `yaml:"-"`
+	// Namespace is the include prefix this file's tasks are flattened under —
+	// "monitoring", "a:b", or "" for the root file. Recorded because a task's own
+	// NAME cannot reveal it: tasks/monitoring.yml defines a task literally called
+	// "prometheus:up", so `monitoring:prometheus:up` has the namespace
+	// "monitoring", not "monitoring:prometheus", and trimming at the last colon
+	// gets it wrong.
+	Namespace string `yaml:"-"`
+	// Parent is the file that included this one, nil for the root. Kept so the
+	// mapped vars below can be resolved where they were WRITTEN.
+	Parent *File `yaml:"-"`
+	// IncludeVars is the `vars:` block of the include that pulled this file in.
+	//
+	// Held separately from Vars, because the two are resolved in different scopes.
+	// `vars: {IP: '{{.POSTGRES_IP}}'}` is written in the PARENT and means the
+	// parent's POSTGRES_IP; resolving it here, where an include deliberately sees
+	// nothing but what was mapped to it, yields "" — which is how a reference mail
+	// server came up as "mailref-mail1-postgres @" with no address at all.
+	IncludeVars map[string]Var `yaml:"-"`
+	// Inherit is the include's `inherit:`. False by default: an included file sees
+	// the outside world and what was MAPPED to it, and nothing else. Set true and
+	// the including file's variables come with it, as a layer BELOW the file's own —
+	// so a global config can be declared once at the root without every include
+	// listing every name, and a file still wins on any name it defines itself.
+	Inherit bool `yaml:"-"`
 }
 
 // Include pulls another Taskfile into a namespace.
@@ -42,6 +73,10 @@ type File struct {
 // files can silently overwrite each other's variables — the reason rest-mail
 // cannot include reference-mailserver at all.
 type Include struct {
+	// Inherit brings the including file's variables into this one, as a layer below
+	// its own. Off by default, because a file that silently sees everything above it
+	// is the variable-bleed this format is known for.
+	Inherit  bool           `yaml:"inherit"`
 	Taskfile string         `yaml:"taskfile"`
 	Dir      string         `yaml:"dir"`
 	Optional bool           `yaml:"optional"`
@@ -77,6 +112,14 @@ type Task struct {
 
 	Vars map[string]Var `yaml:"vars"`
 	Env  map[string]Var `yaml:"env"`
+	// Dotenv REPLACES the files its taskfile declares, and `dotenv: []` declines
+	// them outright. A task that drives another project has no business loading
+	// this one's environment: the root file requires a config's config.env, which
+	// is right for every task that operates on a config and wrong for one whose
+	// whole job is to hand off to a peer repository that owns its own.
+	//
+	// nil means "not declared" — inherit, which is what almost every task wants.
+	Dotenv []string `yaml:"dotenv"`
 
 	// Args declares the task's parameters, in positional order:
 	//

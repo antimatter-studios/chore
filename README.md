@@ -32,9 +32,10 @@ Binary: `chore`. macOS and Linux.
 ### Running a local build
 
 To try a change without installing it, source the dev script. It builds
-`./bin/chore`, puts that directory first on PATH **for the current shell**, and
-stamps the binary `dev+<sha>` (`-dirty` with uncommitted changes) so
-`chore --version` always says which binary just ran:
+`./bin/chore` and puts that directory first on PATH **for the current shell**.
+The binary reports itself as `dev+<sha>` (`-dirty` with uncommitted changes) and
+prints that above every command it runs, so a local build can never be mistaken
+for the installed one:
 
 ```bash
 source scripts/install-chore-dev              # build, then shadow the installed chore
@@ -150,6 +151,36 @@ real shell — with real `pipefail` — possible.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
+- **The running binary identifies itself.** `chore --version` prints the bare
+  version on stdout — unchanged, so anything parsing it still works — and the
+  build's commit, toolchain and the `chores.yml` it found on stderr. The version
+  is read out of the build itself (`runtime/debug`), not hardcoded or passed in by
+  whoever compiled it: a plain `go build` in a checkout reports `dev+<sha>`, a
+  release reports its tag. A dev build also prints a one-line banner to stderr
+  above each run; a release stays silent.
+- **Output that suits where it is going.** The listing and diagnostics are
+  coloured and column-aligned on a terminal, and fall back to exactly the plain
+  text they always were on a pipe, in a CI log, under `NO_COLOR`, or with
+  `--no-color`. Widths are counted in display cells, so a task name outside ASCII
+  does not push the descriptions out of column. A task's OWN output is never
+  touched — child processes write straight to the same stdout, so their colours,
+  ordering and progress bars arrive verbatim.
+- **A name resolves where it is written.** A `- task:` step or `deps:` entry is
+  relative to its own file, so `- task: deps` means that file's `deps`, never a root
+  task of the same name; a leading colon (`:build`) escapes to the root. An
+  include's `vars:` are rendered in the file that WROTE them, so
+  `IP: '{{.POSTGRES_IP}}'` means the parent's value. And an included task runs at
+  the project root unless its include says `dir:` — `{{.TASKFILE_DIR}}` is how you
+  ask for the file's own directory.
+- **Variables you type outrank the file, everywhere in the run.** `chore down
+  CONFIG=mail1` reaches the tasks that `down` calls, not just `down`. Values a
+  parent passes explicitly to a child still win, so a task that brings up two
+  servers by naming each is not collapsed into one.
+- **`inherit: true` on an include** brings the including file's variables in, as a
+  layer below the file's own. Off by default: an include sees the outside world and
+  what was mapped to it, and nothing else.
+- **`dotenv:` on a task** replaces its file's, and `dotenv: []` declines it — for a
+  task whose job is to hand off to another project that owns its own config.
 - **No multi-target invocation.** `chore a b` does not mean "run a then b"; that is
   `chore a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
@@ -200,14 +231,15 @@ byte differs.
 
 The feature set was measured against a real 3,131-line Taskfile rather than
 guessed: `desc`, `cmds` (strings, `- task:` references, multi-line blocks),
-`vars` (including `sh:`), `deps` (concurrent), `env`, `dotenv`, `includes`
-(`taskfile`/`dir`/`vars`/`optional`/`flatten`), `silent`, `internal`, `dir`,
+`vars` (including `sh:`), `deps` (concurrent), `env`, `dotenv` (per file OR per
+task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
+`silent`, `internal`, `dir`,
 `run: once`, `defer`, `status`, `sources`/`generates` (content-hash up-to-date
 checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
 
 Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,
-`interactive`, output styles, v2 schema, Windows. See [SPEC.md](SPEC.md).
+`interactive`, output styles (go-task's group/prefixed task output), v2 schema, Windows. See [SPEC.md](SPEC.md).
 
 ## Build
 

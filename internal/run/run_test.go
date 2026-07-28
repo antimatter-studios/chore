@@ -979,3 +979,415 @@ func TestTaskDir(t *testing.T) {
 		}
 	})
 }
+
+// TestEnv covers `env:`, which was accepted by the schema, listed as supported in
+// the README and SPEC, and never reached the shell at all — so rest-mail's
+// `docker build … >$OUTPUT 2>&1`, whose OUTPUT is a file-level `env:` with `sh:`,
+// died with "ambiguous redirect" on every task that builds an image.
+func TestEnv(t *testing.T) {
+	// Both spellings, both levels, and the value has to arrive as a shell variable
+	// AND as a template variable: this project uses `>$OUTPUT` in commands and
+	// `{{.OUTPUT}}` nowhere, but go-task exposes env: to templates and a file
+	// written for one runner is read by the other.
+	t.Run("file-level, literal and sh:", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Env: map[string]chorefile.Var{
+			"PLAIN": {Value: "literal"},
+			"VIASH": {Sh: "echo computed"},
+		}}, map[string]*chorefile.Task{
+			"show": {Cmds: []chorefile.Cmd{{Cmd: `echo "shell=[$PLAIN/$VIASH] tmpl=[{{.PLAIN}}/{{.VIASH}}]" > out.txt`}}},
+		})
+		f.mustRun("show", nil, nil)
+		if got := f.read("out.txt"); got != "shell=[literal/computed] tmpl=[literal/computed]\n" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("task-level overrides file-level", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Env: map[string]chorefile.Var{"WHO": {Value: "file"}}},
+			map[string]*chorefile.Task{
+				"show": {
+					Env:  map[string]chorefile.Var{"WHO": {Value: "task"}},
+					Cmds: []chorefile.Cmd{{Cmd: `echo "$WHO" > out.txt`}},
+				},
+			})
+		f.mustRun("show", nil, nil)
+		if got := f.read("out.txt"); got != "task\n" {
+			t.Errorf("task env did not override file env: %q", got)
+		}
+	})
+
+	// An empty redirect target is exactly the failure this fixes: bash reports
+	// "ambiguous redirect" and the task fails, which is how the bug surfaced.
+	t.Run("usable as a redirect target", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Env: map[string]chorefile.Var{
+			"OUTPUT": {Sh: `[ -n "$VERBOSE" ] && echo /dev/stdout || echo /dev/null`},
+		}}, map[string]*chorefile.Task{
+			"build": {Cmds: []chorefile.Cmd{
+				{Cmd: `echo noise >$OUTPUT 2>&1`},
+				{Cmd: `echo ran > out.txt`},
+			}},
+		})
+		f.mustRun("build", nil, nil)
+		if got := f.read("out.txt"); got != "ran\n" {
+			t.Errorf("task did not complete: %q", got)
+		}
+	})
+
+	// A caller has to be able to win: the whole point of OUTPUT is flipping it
+	// per-invocation, and `chore up VERBOSE=1` must reach the sh: that reads it.
+	t.Run("a call var beats file env", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Env: map[string]chorefile.Var{"WHO": {Value: "file"}}},
+			map[string]*chorefile.Task{
+				"show": {Cmds: []chorefile.Cmd{{Cmd: `echo "$WHO" > out.txt`}}},
+			})
+		f.mustRun("show", nil, map[string]string{"WHO": "caller"})
+		if got := f.read("out.txt"); got != "caller\n" {
+			t.Errorf("caller did not override file env: %q", got)
+		}
+	})
+
+	// env: is read by the sh: of another env entry, which is what a toggle looks
+	// like: VERBOSE from the environment decides what OUTPUT becomes.
+	t.Run("sh: sees the process environment", func(t *testing.T) {
+		t.Setenv("VERBOSE", "1")
+		f := newFixture(t, &chorefile.File{Env: map[string]chorefile.Var{
+			"OUTPUT": {Sh: `[ -n "$VERBOSE" ] && echo verbose || echo quiet`},
+		}}, map[string]*chorefile.Task{
+			"show": {Cmds: []chorefile.Cmd{{Cmd: `echo "$OUTPUT" > out.txt`}}},
+		})
+		f.mustRun("show", nil, nil)
+		if got := f.read("out.txt"); got != "verbose\n" {
+			t.Errorf("sh: did not see VERBOSE: %q", got)
+		}
+	})
+}
+
+// TestIncludedTaskWorkingDirectory pins where an included task RUNS.
+//
+// go-task keeps the working directory at the ROOT taskfile's directory for a
+// plain include, and only moves it when the include declares `dir:`. That is
+// exactly why it also offers {{.TASKFILE_DIR}} — you ask for the file's own
+// directory when you want it. chore ran every included task in the file's own
+// directory instead, so in rest-mail `-v $(pwd):/app` bind-mounted tasks/ as the
+// application, and the api container restarted forever on
+// "open .air.toml: no such file or directory". `docker build … -f Dockerfile .`
+// in the same file was pointed at the wrong context for the same reason.
+func TestIncludedTaskWorkingDirectory(t *testing.T) {
+	// project builds what the loader would produce for
+	// `includes: {sub: {taskfile: ./nested/sub.yml[, dir: …]}}`. includeDir is the
+	// include's `dir:`; empty means the plain case.
+	project := func(t *testing.T, includeDir string) (*fixture, string) {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root := &chorefile.File{Path: filepath.Join(dir, "Taskfile.yml"), Dir: dir}
+		sub := &chorefile.File{Path: filepath.Join(dir, "nested", "sub.yml")}
+		// The loader sets Dir to the include's `dir:` when it has one, and to the
+		// file's own directory otherwise.
+		sub.Dir = filepath.Dir(sub.Path)
+		if includeDir != "" {
+			sub.Dir = filepath.Join(dir, includeDir)
+			sub.WorkDir = sub.Dir
+		}
+		task := &chorefile.Task{Name: "sub:where", File: sub,
+			Cmds: []chorefile.Cmd{{Cmd: `pwd > "$MARKER"`}}}
+		sub.Tasks = map[string]*chorefile.Task{"sub:where": task}
+		tasks := map[string]*chorefile.Task{"sub:where": task}
+		out, errOut := &syncBuf{}, &syncBuf{}
+		p := &chorefile.Project{Root: root, Tasks: tasks, RootDir: dir}
+		f := &fixture{t: t, dir: dir, file: sub, r: New(p, out, errOut), out: out, err: errOut}
+		return f, dir
+	}
+
+	// An absolute marker path, because the point of the test is that the task's own
+	// working directory is not where we think it is.
+	t.Run("plain include runs in the root directory", func(t *testing.T) {
+		f, dir := project(t, "")
+		marker := filepath.Join(dir, "where.txt")
+		t.Setenv("MARKER", marker)
+		f.mustRun("sub:where", nil, nil)
+		if got, want := ranIn(t, marker), resolve(t, dir); got != want {
+			t.Errorf("ran in %q, want the root %q", got, want)
+		}
+	})
+
+	t.Run("an include's dir: is honoured", func(t *testing.T) {
+		f, dir := project(t, "nested")
+		marker := filepath.Join(dir, "where.txt")
+		t.Setenv("MARKER", marker)
+		f.mustRun("sub:where", nil, nil)
+		if got, want := ranIn(t, marker), resolve(t, filepath.Join(dir, "nested")); got != want {
+			t.Errorf("ran in %q, want the include's dir %q", got, want)
+		}
+	})
+}
+
+// ranIn reads a marker holding a `pwd`, resolved through symlinks.
+func ranIn(t *testing.T, marker string) string {
+	t.Helper()
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolve(t, strings.TrimSpace(string(b)))
+}
+
+// resolve follows symlinks before comparing paths. On macOS t.TempDir() hands back
+// /var/folders/… while `pwd` in the shell reports the physical
+// /private/var/folders/… — the same directory, and comparing the strings fails.
+func resolve(t *testing.T, path string) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestTaskReferenceIsRelativeToItsFile pins how a name written INSIDE a taskfile
+// resolves. Every case here was checked against go-task first.
+//
+// `- task: deps` in tasks/webmail.yml means webmail's own deps. chore resolved
+// these globally, so `chore instance:up` stopped with `no task "deps"` after
+// bringing up nine containers, while go-task ran the same file.
+func TestTaskReferenceIsRelativeToItsFile(t *testing.T) {
+	// build makes a project with a root file and one included file under the
+	// namespace "sub", both able to hold tasks, plus a marker each task writes.
+	build := func(t *testing.T, rootTasks, subTasks map[string]string, caller string, ref string) (*fixture, error) {
+		t.Helper()
+		dir := t.TempDir()
+		root := &chorefile.File{Path: filepath.Join(dir, "Taskfile.yml"), Dir: dir}
+		sub := &chorefile.File{Path: filepath.Join(dir, "sub.yml"), Dir: dir, Namespace: "sub"}
+		tasks := map[string]*chorefile.Task{}
+		add := func(f *chorefile.File, name, marker string) {
+			full := name
+			if f.Namespace != "" {
+				full = f.Namespace + ":" + name
+			}
+			tasks[full] = &chorefile.Task{Name: full, File: f,
+				Cmds: []chorefile.Cmd{{Cmd: "echo " + marker + " > out.txt"}}}
+		}
+		for name, marker := range rootTasks {
+			add(root, name, marker)
+		}
+		for name, marker := range subTasks {
+			add(sub, name, marker)
+		}
+		// The caller lives in the included file and references `ref`.
+		tasks[caller] = &chorefile.Task{Name: caller, File: sub,
+			Cmds: []chorefile.Cmd{{Task: ref}}}
+		out, errOut := &syncBuf{}, &syncBuf{}
+		p := &chorefile.Project{Root: root, Tasks: tasks, RootDir: dir}
+		f := &fixture{t: t, dir: dir, file: sub, r: New(p, out, errOut), out: out, err: errOut}
+		return f, f.run(caller, nil, nil)
+	}
+
+	t.Run("a sibling wins over a root task of the same name", func(t *testing.T) {
+		f, err := build(t,
+			map[string]string{"deps": "ROOT"},
+			map[string]string{"deps": "SIBLING"},
+			"sub:caller", "deps")
+		if err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, f.err)
+		}
+		if got := strings.TrimSpace(f.read("out.txt")); got != "SIBLING" {
+			t.Errorf("ran the %s task; a reference is relative to its own file", got)
+		}
+	})
+
+	t.Run("a reference keeps a colon it already has", func(t *testing.T) {
+		// tasks/monitoring.yml defines a task named "prometheus:up" and refers to it
+		// as `- task: prometheus:up`, which is monitoring:prometheus:up.
+		f, err := build(t, nil,
+			map[string]string{"prometheus:up": "NESTED"},
+			"sub:up", "prometheus:up")
+		if err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, f.err)
+		}
+		if got := strings.TrimSpace(f.read("out.txt")); got != "NESTED" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("a leading colon escapes to the root", func(t *testing.T) {
+		f, err := build(t,
+			map[string]string{"build": "ROOT"},
+			map[string]string{"build": "SIBLING"},
+			"sub:caller", ":build")
+		if err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, f.err)
+		}
+		if got := strings.TrimSpace(f.read("out.txt")); got != "ROOT" {
+			t.Errorf("`:build` ran %q; a leading colon means the root namespace", got)
+		}
+	})
+
+	// No falling back to the root when the sibling is missing: go-task reports
+	// `Task "sub:rootonly" does not exist`, and quietly running a different task
+	// than go-task would is worse than an error.
+	t.Run("a missing sibling is an error, named as written", func(t *testing.T) {
+		_, err := build(t,
+			map[string]string{"rootonly": "ROOT"},
+			nil,
+			"sub:caller", "rootonly")
+		if err == nil {
+			t.Fatal("referencing a root task by bare name from an include should fail")
+		}
+		if !strings.Contains(err.Error(), "sub:rootonly") {
+			t.Errorf("error %q does not name the task it looked for (sub:rootonly)", err)
+		}
+	})
+
+	t.Run("deps resolve the same way", func(t *testing.T) {
+		dir := t.TempDir()
+		root := &chorefile.File{Path: filepath.Join(dir, "Taskfile.yml"), Dir: dir}
+		sub := &chorefile.File{Path: filepath.Join(dir, "sub.yml"), Dir: dir, Namespace: "sub"}
+		tasks := map[string]*chorefile.Task{
+			"helper": {Name: "helper", File: root, Cmds: []chorefile.Cmd{{Cmd: "echo ROOT > out.txt"}}},
+			"sub:helper": {Name: "sub:helper", File: sub,
+				Cmds: []chorefile.Cmd{{Cmd: "echo SIBLING > out.txt"}}},
+			"sub:caller": {Name: "sub:caller", File: sub, Deps: chorefile.Deps{{Task: "helper"}}},
+		}
+		out, errOut := &syncBuf{}, &syncBuf{}
+		p := &chorefile.Project{Root: root, Tasks: tasks, RootDir: dir}
+		f := &fixture{t: t, dir: dir, file: sub, r: New(p, out, errOut), out: out, err: errOut}
+		f.mustRun("sub:caller", nil, nil)
+		if got := strings.TrimSpace(f.read("out.txt")); got != "SIBLING" {
+			t.Errorf("a dep resolved to %q, not the sibling", got)
+		}
+	})
+}
+
+// TestTaskDotenvOverride: a task that drives ANOTHER project must be able to
+// decline this one's environment. rest-mail's root file requires a config's
+// config.env — correct for every task that operates on a config, wrong for
+// `instance:up --type reference`, whose whole job is to hand off to a peer
+// repository that owns its own configs. Without this, that task fails with
+// "no environment loaded" before it can delegate anything.
+func TestTaskDotenvOverride(t *testing.T) {
+	t.Run("dotenv: [] declines the file's", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Dotenv: []string{"missing.env"}},
+			map[string]*chorefile.Task{
+				"delegate": {Dotenv: []string{}, Cmds: []chorefile.Cmd{{Cmd: "echo ran > out.txt"}}},
+			})
+		f.mustRun("delegate", nil, nil)
+		if got := f.read("out.txt"); got != "ran\n" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("a task's own dotenv replaces the file's", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Dotenv: []string{"missing.env"}},
+			map[string]*chorefile.Task{
+				"own": {Dotenv: []string{"mine.env"}, Cmds: []chorefile.Cmd{{Cmd: `echo "$WHO" > out.txt`}}},
+			})
+		f.write("mine.env", "WHO=mine\n")
+		f.mustRun("own", nil, nil)
+		if got := f.read("out.txt"); got != "mine\n" {
+			t.Errorf("got %q, want the task's own dotenv", got)
+		}
+	})
+
+	// Not declaring one still inherits, which is what nearly every task wants —
+	// and a genuinely missing file is still an error, not a silent default.
+	t.Run("not declaring one inherits, and a miss still fails", func(t *testing.T) {
+		f := newFixture(t, &chorefile.File{Dotenv: []string{"missing.env"}},
+			map[string]*chorefile.Task{
+				"inherits": {Cmds: []chorefile.Cmd{{Cmd: "echo ran > out.txt"}}},
+			})
+		if err := f.run("inherits", nil, nil); err == nil {
+			t.Fatal("a missing inherited dotenv should fail")
+		}
+	})
+}
+
+// TestIncludeScoping covers what an included file may see: the mapping is
+// rendered where it was WRITTEN, `inherit:` opts into the parent's variables, and
+// without it nothing bleeds through.
+func TestIncludeScoping(t *testing.T) {
+	// build wires what the loader produces for an include of kid.yml, with or
+	// without `inherit:`. The name HORSE is deliberately silly: nothing in chore
+	// knows any particular variable name, and a test using WORKSPACE would hide a
+	// special case if one ever crept in.
+	build := func(t *testing.T, inherit bool) *fixture {
+		t.Helper()
+		dir := t.TempDir()
+		root := &chorefile.File{
+			Path: filepath.Join(dir, "chores.yml"), Dir: dir,
+			Vars: map[string]chorefile.Var{
+				"HORSE":  {Value: ".workspace"},
+				"GLOBAL": {Value: "global-config"},
+				"OWN":    {Value: "parent-own"},
+			},
+		}
+		kid := &chorefile.File{
+			Path: filepath.Join(dir, "kid.yml"), Dir: dir, Namespace: "kid",
+			Parent: root, Inherit: inherit,
+			Vars:        map[string]chorefile.Var{"OWN": {Value: "kid-own"}},
+			IncludeVars: map[string]chorefile.Var{"MAPPED": {Value: "via-{{.HORSE}}"}},
+		}
+		task := &chorefile.Task{Name: "kid:show", File: kid, Cmds: []chorefile.Cmd{
+			{Cmd: `echo "[{{.HORSE}}][{{.GLOBAL}}][{{.OWN}}][{{.MAPPED}}]" > out.txt`},
+		}}
+		kid.Tasks = map[string]*chorefile.Task{"kid:show": task}
+		out, errOut := &syncBuf{}, &syncBuf{}
+		p := &chorefile.Project{Root: root, Tasks: kid.Tasks, RootDir: dir}
+		return &fixture{t: t, dir: dir, file: kid, r: New(p, out, errOut), out: out, err: errOut}
+	}
+
+	t.Run("default sees only what was mapped", func(t *testing.T) {
+		f := build(t, false)
+		f.mustRun("kid:show", nil, nil)
+		// The mapping resolved against the PARENT's HORSE even though the child
+		// cannot see HORSE itself — that is the distinction being tested.
+		if got, want := strings.TrimSpace(f.read("out.txt")), "[][][kid-own][via-.workspace]"; got != want {
+			t.Errorf("got %s, want %s", got, want)
+		}
+	})
+
+	t.Run("inherit brings the parent's variables, below the file's own", func(t *testing.T) {
+		f := build(t, true)
+		f.mustRun("kid:show", nil, nil)
+		if got, want := strings.TrimSpace(f.read("out.txt")), "[.workspace][global-config][kid-own][via-.workspace]"; got != want {
+			t.Errorf("got %s, want %s — OWN must stay the child's", got, want)
+		}
+	})
+}
+
+// TestRootDotenvReachesIncludes pins the behaviour a change of mine broke.
+//
+// Scoping dotenv per file reads better than it works: rest-mail's root maps
+// `POSTGRES_IP: '{{.MAIL3_POSTGRES_IP}}'` into an include, and that name comes from
+// the ROOT's config.env — so a child's mapping depends on the parent's dotenv.
+// Loading only the task's own file left the IP empty and `docker run --ip ""`
+// failed with exit 125, taking the stack down.
+//
+// A task that must not require the root's environment says so with `dotenv: []`
+// (see TestTaskDotenvOverride), which is how a hand-off to a peer project works.
+func TestRootDotenvReachesIncludes(t *testing.T) {
+	dir := t.TempDir()
+	root := &chorefile.File{
+		Path: filepath.Join(dir, "chores.yml"), Dir: dir,
+		Dotenv: []string{"root.env"},
+	}
+	kid := &chorefile.File{
+		Path: filepath.Join(dir, "kid.yml"), Dir: dir, Namespace: "kid", Parent: root,
+		IncludeVars: map[string]chorefile.Var{"MAPPED": {Value: "{{.FROM_ROOT_ENV}}"}},
+	}
+	kid.Tasks = map[string]*chorefile.Task{
+		"kid:go": {Name: "kid:go", File: kid,
+			Cmds: []chorefile.Cmd{{Cmd: `echo "[{{.MAPPED}}]" > out.txt`}}},
+	}
+	out, errOut := &syncBuf{}, &syncBuf{}
+	f := &fixture{t: t, dir: dir, file: kid,
+		r:   New(&chorefile.Project{Root: root, Tasks: kid.Tasks, RootDir: dir}, out, errOut),
+		out: out, err: errOut}
+	f.write("root.env", "FROM_ROOT_ENV=10.99.0.43\n")
+
+	f.mustRun("kid:go", nil, nil)
+	if got := strings.TrimSpace(f.read("out.txt")); got != "[10.99.0.43]" {
+		t.Errorf("got %s — a mapping must see the root's dotenv", got)
+	}
+}
