@@ -75,7 +75,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		out.SetPlain(true)
 		errUI.SetPlain(true)
 	}
-	if opts.help {
+	// --help is global and answers about what the command line NAMES: the program
+	// when no task is given, that task when one is. Recognised in either position,
+	// since `chore --help up` and `chore up --help` are the same question.
+	if opts.help && len(rest) == 0 {
 		out.Raw(usage)
 		return 0
 	}
@@ -145,6 +148,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// before `dotenv:` is resolved, so `chore config:check CONFIG=mail4.test` acts
 	// on mail4.test. Task accepts the NAME=value syntax but resolves dotenv while
 	// parsing, before CLI variables exist, so it silently used the default.
+	// `chore <task> --help` describes the TASK, and never runs it. Everything after
+	// a task name is otherwise the task's data, so --help was binding as a
+	// positional argument and `chore instance:up --help` STARTED a stack. A flag
+	// that reads as "tell me about this" must never do anything. Text after `--` is
+	// left alone, so a task that genuinely needs to pass --help along still can.
+	if opts.help || wantsHelp(rest[1:]) {
+		taskHelp(out, project, rest[0])
+		return 0
+	}
+
 	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
 	if err != nil {
 		errUI.Errorf("%v", err)
@@ -488,4 +501,91 @@ func foundTaskfile(flag string) string {
 		return ""
 	}
 	return path
+}
+
+// wantsHelp reports whether -h/--help appears among a task's words, before any `--`
+// that hands the rest to the task verbatim.
+func wantsHelp(words []string) bool {
+	for _, w := range words {
+		if w == "--" {
+			return false
+		}
+		if w == "-h" || w == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDefault reports whether a parameter has a value to fall back on: in the task's
+// own vars, or in the vars of the file it is written in, under either spelling.
+func hasDefault(t *chorefile.Task, name string) bool {
+	for _, vars := range []map[string]chorefile.Var{t.Vars, fileVars(t)} {
+		for _, n := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+			if _, ok := vars[n]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fileVars(t *chorefile.Task) map[string]chorefile.Var {
+	if t.File == nil {
+		return nil
+	}
+	return t.File.Vars
+}
+
+// taskHelp prints what a task takes, from its own declarations — the desc, its
+// parameters with their types and descriptions, and the ways it can be called.
+func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
+	t, ok := p.Tasks[name]
+	if !ok {
+		u.Errorf("no task %q", name)
+		return
+	}
+	u.Title("chore "+name, "")
+	if t.Desc != "" {
+		u.Dim("%s", "  "+t.Desc)
+	}
+	if len(t.Args) == 0 {
+		u.Dim("\n  takes no arguments")
+		return
+	}
+
+	rows := make([][2]string, 0, len(t.Args))
+	for _, a := range t.Args {
+		kind := a.Type
+		if kind == "" {
+			kind = "string"
+		}
+		// Whether a parameter is optional follows from the declaration rather than
+		// from a marker: a default anywhere in scope makes it optional. The task's
+		// own vars are not enough — this project defaults CONFIG at the FILE level,
+		// so reading only t.Vars called it required while its description says
+		// otherwise.
+		req := "required"
+		if hasDefault(t, a.Name) {
+			req = "optional"
+		}
+		desc := a.Desc
+		if desc == "" {
+			desc = "(no description)"
+		}
+		rows = append(rows, [2]string{a.Name, fmt.Sprintf("%s, %s — %s", kind, req, desc)})
+	}
+	u.Raw("\n")
+	u.Dim("  arguments:")
+	u.Detail(rows)
+
+	first := t.Args[0].Name
+	u.Raw("\n")
+	u.Dim("  called as:")
+	u.Detail([][2]string{
+		{"positional", fmt.Sprintf("chore %s <%s>", name, first)},
+		{"flag", fmt.Sprintf("chore %s --%s <value>", name, first)},
+		{"variable", fmt.Sprintf("chore %s %s=<value>", name, strings.ToUpper(first))},
+		{"passthrough", fmt.Sprintf("chore %s -- <words for {{.CLI_ARGS}}>", name)},
+	})
 }
