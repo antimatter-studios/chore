@@ -75,7 +75,13 @@ jobs:
           #                  read out of the binary
           #   CGO_ENABLED=0  no host C toolchain in the output
           #   GOTOOLCHAIN    the exact compiler
-          go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=${VER}" -o chore .
+          # The COMMIT's date, never the clock. Both this build and the
+          # reproduction below derive it the same way from the same checkout, so a
+          # rebuild of this source produces identical bytes — which is the property
+          # the reproduction step exists to prove. `date` here would break it.
+          BUILD_DATE="$(git log -1 --format=%cI)"
+          go build -buildvcs=false -trimpath \
+            -ldflags "-s -w -X main.version=${VER} -X main.buildDate=${BUILD_DATE}" -o chore .
 
           # Verify the stamp on the ONE target this runner can execute. The others
           # are cross-builds — a linux host cannot run a darwin binary — and they
@@ -171,12 +177,15 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
+          # Same derivation as the build step, from the same commit.
+          BUILD_DATE="$(git log -1 --format=%cI)"
           while read -r want name; do
             os=$(echo "$name" | sed -E "s/^chore-${VER}-([a-z]+)-.*/\1/")
             arch=$(echo "$name" | sed -E "s/^chore-${VER}-[a-z]+-(.*)/\1/")
             case "$arch" in x86_64) goarch=amd64 ;; *) goarch="$arch" ;; esac
             GOOS="$os" GOARCH="$goarch" go build -buildvcs=false -trimpath \
-              -ldflags "-s -w -X main.version=${VER}" -o "rebuilt-${os}-${arch}"
+              -ldflags "-s -w -X main.version=${VER} -X main.buildDate=${BUILD_DATE}" \
+              -o "rebuilt-${os}-${arch}"
             got=$(sha256sum "rebuilt-${os}-${arch}" | cut -d" " -f1)
             if [ "$got" = "$want" ]; then
               echo "  ${os}/${arch}: reproduced"

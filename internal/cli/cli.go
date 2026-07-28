@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/antimatter-studios/chore/internal/buildinfo"
 	"github.com/antimatter-studios/chore/internal/chorefile"
@@ -25,6 +26,10 @@ import (
 // Version is the build's version string, set by main. Exported rather than
 // linker-stamped here so the binary has one obvious place it comes from.
 var Version = "dev"
+
+// BuildDate is the commit date the release stamped in, empty for a build from
+// source (where the toolchain's own vcs.time is used instead).
+var BuildDate = ""
 
 const usage = `chore — run tasks from a chores.yml
 
@@ -75,13 +80,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if opts.version {
-		info := buildinfo.Get(Version)
+		info := buildinfo.Get(Version, BuildDate)
 		// stdout stays EXACTLY the bare version: the Homebrew formula matches on
 		// this output, and anything scripted reads the first thing it prints. The
 		// context goes to stderr, where it cannot break a pipeline.
 		out.Raw(info.Version + "\n")
 		errUI.Detail([][2]string{
 			{"commit", commitOf(info)},
+			{"dated", dated(info.Date)},
 			{"built", info.Go + " " + info.Platform},
 			{"file", foundTaskfile(opts.file)},
 		})
@@ -89,7 +95,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Say so when this is not the installed release — see ui.Banner.
-	if info := buildinfo.Get(Version); info.Dev {
+	if info := buildinfo.Get(Version, BuildDate); info.Dev {
 		errUI.Banner("chore", info.Version)
 	}
 
@@ -120,7 +126,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// the same answer, so `chore` on its own is never a mystery.
 	if len(rest) == 1 && rest[0] == "version" {
 		if _, ok := project.Tasks["version"]; !ok {
-			out.Raw(buildinfo.Get(Version).Version + "\n")
+			out.Raw(buildinfo.Get(Version, BuildDate).Version + "\n")
 			return 0
 		}
 	}
@@ -414,6 +420,44 @@ func listing(p *chorefile.Project) []ui.Group {
 		out = append(out, ui.Group{Name: ns, Tasks: tasks})
 	}
 	return out
+}
+
+// dated renders the commit date with its age, which is the question someone
+// actually has: not "what is the timestamp" but "how old is this". The age is
+// computed at RUN time — only the stamp has to be fixed for a rebuild to produce
+// identical bytes.
+func dated(iso string) string {
+	if iso == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	return fmt.Sprintf("%s (%s)", t.Format("2006-01-02 15:04 MST"), age(time.Since(t)))
+}
+
+// age says roughly how long ago, in the largest unit that is still informative.
+func age(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return plural(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return plural(int(d.Hours()), "hour")
+	case d < 60*24*time.Hour:
+		return plural(int(d.Hours()/24), "day")
+	default:
+		return plural(int(d.Hours()/24/30), "month")
+	}
+}
+
+func plural(n int, unit string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s ago", unit)
+	}
+	return fmt.Sprintf("%d %ss ago", n, unit)
 }
 
 // commitOf renders the revision for the --version block, marking a tree that had
