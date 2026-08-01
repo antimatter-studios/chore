@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.2
 
 - **Release pipeline fix (follow-up to v0.2.1).** The reproduce step downloaded the
   goreleaser binary, tarball and checksums into the repo root; goreleaser reads that
