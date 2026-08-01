@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1
 
 - **Release pipeline fix.** The "reproduce the release" step failed with
   `goreleaser: command not found`. goreleaser-action installs goreleaser for its
