@@ -59,6 +59,16 @@ Special variables: `.ROOT_DIR` (27 uses), `.CLI_ARGS` (2). Also provided:
 Cheap additions, included because they are a few lines each: `aliases`,
 `ignore_error`, `requires`, `platforms`, `summary`.
 
+**chore-only extension — `lifecycle:`**: a top-level block with `before_all`,
+`after_all` and `on_error`, run once around the invoked task, not per task. Task
+has no equivalent. The point is setup/teardown that does not have to be wired into
+every task as a dependency — and, unlike a `deps:` entry, it runs even when the
+task it wraps is up to date, because it is not that task's prerequisite.
+`before_all` is a gate (its failure stops the run); `after_all` runs on the way
+out once the task has been entered; `on_error` runs on any non-zero. Skipped for
+`--list`/`--help`/`version`; off with `--no-lifecycle`; `{{.TASK}}` is the invoked
+task. Canonical use: a self-installing repo guard, `before_all: [{task: hooks:ensure}]`.
+
 **Explicitly not supported**: remote/git includes, `watch`, `for:`/matrix
 expansion, `prompt`, `interactive`, output styles (group/prefixed),
 `set`/`shopt`, v2 schema, shell completions, Windows.

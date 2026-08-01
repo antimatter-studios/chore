@@ -141,6 +141,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 	r := run.New(project, stdout, stderr)
 	r.DryRun, r.Force, r.Verbose = opts.dry, opts.force, opts.verbose
+	r.NoLifecycle = opts.noLifecycle
 	r.CLIArgs = strings.Join(opts.cliArgs, " ")
 
 	// Words after the task name are its positional arguments, except NAME=value
@@ -169,7 +170,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// `- task: postgres:down` inside `down`.
 	r.CLIVars = callVars
 
-	if err := r.Run(context.Background(), rest[0], args, callVars); err != nil {
+	if err := r.Invoke(context.Background(), rest[0], args, callVars); err != nil {
 		errUI.Errorf("%v", err)
 		return run.ExitCode(err)
 	}
@@ -177,9 +178,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 }
 
 type options struct {
-	dir, file                                         string
-	list, dry, force, verbose, help, version, noColor bool
-	cliArgs                                           []string
+	dir, file                                                      string
+	list, dry, force, verbose, help, version, noColor, noLifecycle bool
+	cliArgs                                                        []string
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.
@@ -233,6 +234,8 @@ func parseFlags(args []string) (options, []string, error) {
 			o.force = true
 		case "v", "verbose":
 			o.verbose = true
+		case "no-lifecycle":
+			o.noLifecycle = true
 		case "h", "help":
 			o.help = true
 		case "version", "V":
