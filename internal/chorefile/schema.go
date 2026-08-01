@@ -22,13 +22,14 @@ type Project struct {
 
 // File is one Taskfile on disk.
 type File struct {
-	Version  string              `yaml:"version"`
-	Silent   bool                `yaml:"silent"`
-	Dotenv   []string            `yaml:"dotenv"`
-	Includes map[string]*Include `yaml:"includes"`
-	Vars     map[string]Var      `yaml:"vars"`
-	Env      map[string]Var      `yaml:"env"`
-	Tasks    map[string]*Task    `yaml:"tasks"`
+	Version   string              `yaml:"version"`
+	Silent    bool                `yaml:"silent"`
+	Dotenv    []string            `yaml:"dotenv"`
+	Includes  map[string]*Include `yaml:"includes"`
+	Vars      map[string]Var      `yaml:"vars"`
+	Env       map[string]Var      `yaml:"env"`
+	Tasks     map[string]*Task    `yaml:"tasks"`
+	Lifecycle *Lifecycle          `yaml:"lifecycle"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -64,6 +65,36 @@ type File struct {
 	// so a global config can be declared once at the root without every include
 	// listing every name, and a file still wins on any name it defines itself.
 	Inherit bool `yaml:"-"`
+}
+
+// Lifecycle declares hooks that run AROUND a whole `chore` invocation, once —
+// not per task. This is chore's own extension (Task has no equivalent): it lets a
+// project run setup and teardown for the run without wiring a dependency into
+// every task by hand, and — unlike a `deps:` entry — it runs even when the task
+// it wraps is up to date, because it is not that task's prerequisite.
+//
+// The canonical use is a self-installing guard: `before_all: [{task: hooks:ensure}]`
+// activates a repo's git hooks the first time anyone runs any task, with no
+// per-task boilerplate.
+//
+// Ordering, for the one task named on the command line:
+//
+//		before_all → <task> → after_all
+//
+//	  - before_all runs first, once. If it FAILS, the task does not run and neither
+//	    does after_all — a setup gate that did not pass must not let work proceed.
+//	  - after_all runs on the way out once the task has been entered, whether the
+//	    task succeeded or not, so it can tear down what before_all set up.
+//	  - on_error runs when before_all or the task returns non-zero.
+//
+// Hooks are skipped for `--list`, `--help` and `version` (which never run a task)
+// and can be turned off for a run with `--no-lifecycle`. Each hook is a list of
+// steps in the same shape as a task's `cmds:` — a shell line or `- task: name` —
+// and `{{.TASK}}` in a hook renders the name of the invoked task.
+type Lifecycle struct {
+	BeforeAll Cmds `yaml:"before_all"`
+	AfterAll  Cmds `yaml:"after_all"`
+	OnError   Cmds `yaml:"on_error"`
 }
 
 // Include pulls another Taskfile into a namespace.

@@ -39,7 +39,9 @@ type Runner struct {
 	DryRun  bool
 	Force   bool
 	Verbose bool
-	CLIArgs string // everything after `--`
+	// NoLifecycle turns off the file's `lifecycle:` hooks for this run (--no-lifecycle).
+	NoLifecycle bool
+	CLIArgs     string // everything after `--`
 
 	// CLIVars are the NAME=value pairs typed on the command line.
 	//
@@ -75,6 +77,91 @@ func New(p *chorefile.Project, out, errOut io.Writer) *Runner {
 		Err:     errOut,
 		once:    map[string]*onceEntry{},
 		warned:  map[string]bool{},
+	}
+}
+
+// Invoke is the top-level entry for the one task named on the command line. It
+// runs the file's lifecycle hooks around that task — before_all before it,
+// after_all/on_error after — then defers to Run for the task itself. Sub-tasks
+// (deps and `- task:` steps) go through Run directly and are NOT re-wrapped, so
+// the hooks fire exactly once per `chore` invocation.
+//
+// Backward compatible: with no `lifecycle:` block (or --no-lifecycle) this is
+// just Run.
+func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVars map[string]string) (err error) {
+	lc := r.lifecycle()
+	if lc == nil {
+		return r.Run(ctx, name, args, callVars)
+	}
+
+	// on_error fires for a failure of EITHER before_all or the task, so register it
+	// first (outermost defer) against the named return value.
+	defer func() {
+		if err != nil {
+			r.runHookBestEffort(ctx, "on_error", lc.OnError, name)
+		}
+	}()
+
+	if e := r.runHook(ctx, "before_all", lc.BeforeAll, name); e != nil {
+		// A setup gate that did not pass stops the run — the task never starts and
+		// there is nothing for after_all to tear down.
+		err = fmt.Errorf("before_all: %w", e)
+		return err
+	}
+	// Now that the run has been entered, after_all is a trap: it runs on the way
+	// out whether the task succeeds or fails.
+	defer r.runHookBestEffort(ctx, "after_all", lc.AfterAll, name)
+
+	err = r.Run(ctx, name, args, callVars)
+	return err
+}
+
+// lifecycle returns the file's lifecycle hooks, or nil when there are none or the
+// run opted out with --no-lifecycle.
+func (r *Runner) lifecycle() *chorefile.Lifecycle {
+	if r.NoLifecycle || r.Project == nil || r.Project.Root == nil {
+		return nil
+	}
+	return r.Project.Root.Lifecycle
+}
+
+// runHook runs one lifecycle hook — a list of steps (shell lines or `- task:`
+// calls) — as if it were a tiny internal task of the root file. trigger is the
+// name of the invoked task, exposed to the hook as {{.TASK}}. An empty hook is a
+// no-op. A step failure is returned so before_all can gate the run.
+func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) error {
+	if len(cmds) == 0 {
+		return nil
+	}
+	t := &chorefile.Task{
+		Name:     "lifecycle:" + hook,
+		Cmds:     cmds,
+		Internal: true,
+		File:     r.Project.Root,
+	}
+	// {{.TASK}} in a hook is the task the run is about, not the synthetic hook task,
+	// so callers can log or branch on it. CLIVars ride along like any other run.
+	cv := map[string]string{"TASK": trigger}
+	for k, v := range r.CLIVars {
+		if k != "TASK" {
+			cv[k] = v
+		}
+	}
+	scope, err := r.scope(ctx, t, nil, cv)
+	if err != nil {
+		return fmt.Errorf("lifecycle %s: %w", hook, err)
+	}
+	if err := r.execute(ctx, t, scope); err != nil {
+		return fmt.Errorf("lifecycle %s: %w", hook, err)
+	}
+	return nil
+}
+
+// runHookBestEffort runs a teardown/notify hook whose own failure must not mask
+// the run's outcome; it only reports the failure.
+func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) {
+	if err := r.runHook(ctx, hook, cmds, trigger); err != nil {
+		fmt.Fprintf(r.Err, "chore: %v\n", err)
 	}
 }
 

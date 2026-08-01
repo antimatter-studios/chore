@@ -149,6 +149,14 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
+- **`lifecycle:` hooks run once around a whole invocation**, not per task —
+  `before_all`, `after_all`, `on_error`. One block covers every task instead of
+  wiring a `deps:` entry into each, and it fires even when the task it wraps is up
+  to date (a dependency would be skipped along with the task). `before_all` is a
+  gate — if it fails, the task never starts. The use it was built for: a repo that
+  installs its own git hooks the first time anyone runs any task,
+  `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a run
+  with `--no-lifecycle`; never runs for `--list`/`--help`.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
 - **`chore <task> --help` describes the task and runs nothing.** Built from the

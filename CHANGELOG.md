@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **New: `lifecycle:` hooks.** A top-level block with `before_all`, `after_all`
+  and `on_error`, run once *around* the task named on the command line — chore's
+  own extension, with no Task equivalent. It lets a project run setup/teardown for
+  a run without wiring a dependency into every task, and — the reason it beats a
+  `deps:` entry — it fires even when the task it wraps is up to date, because it is
+  not that task's prerequisite (a dep would be skipped along with the task).
+  `before_all` is a gate: if it fails, the task does not run and neither does
+  `after_all`. Hooks are skipped for `--list`/`--help`/`version` (which run no
+  task) and can be turned off for a run with `--no-lifecycle`. `{{.TASK}}` inside a
+  hook is the invoked task's name. Built for self-installing repo guards:
+  `before_all: [{task: hooks:ensure}]` activates a repo's git hooks the first time
+  anyone runs any task.
+
 - The release is built by goreleaser instead of a hand-written build matrix. Same
   four artifacts under the same names, the same pinned toolchain and flags, and the
   release still rebuilds every target afterwards and fails if a byte differs. Two
