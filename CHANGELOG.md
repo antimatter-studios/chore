@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Release pipeline fix (follow-up to v0.2.1).** The reproduce step downloaded the
+  goreleaser binary, tarball and checksums into the repo root; goreleaser reads that
+  as a dirty git state and refuses to build ("git is in a dirty state"). They are
+  now fetched and unpacked in a temp dir outside the working tree — `dist/` and
+  `binaries.txt` are already gitignored, these were not. (v0.2.1 fixed the PATH
+  lookup but introduced this; the release still published — only the self-check
+  failed. Verified locally: the reproduction now rebuilds all four published
+  binaries byte-for-byte from a clean tree.)
+
 ## v0.2.1
 
 - **Release pipeline fix.** The "reproduce the release" step failed with
