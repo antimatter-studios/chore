@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0
 
 - **New: `lifecycle:` hooks.** A top-level block with `before_all`, `after_all`
   and `on_error`, run once *around* the task named on the command line — chore's
