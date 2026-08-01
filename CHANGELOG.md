@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Release pipeline fix.** The "reproduce the release" step failed with
+  `goreleaser: command not found`. goreleaser-action installs goreleaser for its
+  own step but does not leave it on PATH for later steps — and once GitHub
+  force-migrated the pinned (Node 20) action onto Node 24, that PATH export stopped
+  persisting. The step now fetches the same pinned goreleaser **release binary**
+  (checksum-verified against goreleaser's own `checksums.txt`) and runs that, so it
+  no longer depends on the action's PATH. A prebuilt binary rather than
+  `go run …goreleaser@ver`, because compiling goreleaser needs a newer Go than the
+  `GOTOOLCHAIN` this step pins to reproduce the chore binaries byte-for-byte. The
+  goreleaser version is now held once in a job-level `GORELEASER_VERSION` so the
+  publish and reproduce steps can never drift onto different versions. (The publish
+  itself was unaffected; only the self-check step broke.)
+
 ## v0.2.0
 
 - **New: `lifecycle:` hooks.** A top-level block with `before_all`, `after_all`
