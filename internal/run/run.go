@@ -716,9 +716,15 @@ func checkFlagShaped(t *chorefile.Task, value string) error {
 	if !strings.HasPrefix(value, "--") || len(value) <= 2 {
 		return nil
 	}
+	// Named back in the spelling a caller would type: hyphens fold onto the
+	// declared underscores, so --dry-run is what to suggest for `dry_run`.
+	spellings := make([]string, len(t.Args))
+	for i, a := range t.Args {
+		spellings[i] = "--" + strings.ReplaceAll(a.Name, "_", "-")
+	}
 	return fmt.Errorf(
 		"task %s: %s is not one of its parameters (%s); to pass it along as data instead: chore %s -- %s",
-		t.Name, value, "--"+strings.Join(t.Args.Names(), ", --"), t.Name, value)
+		t.Name, value, strings.Join(spellings, ", "), t.Name, value)
 }
 
 // checkArgType rejects a value the parameter cannot mean. Only int is checked:

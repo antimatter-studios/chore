@@ -1165,6 +1165,24 @@ func TestUnknownFlagAfterTheTaskNameIsAUsageError(t *testing.T) {
 	checkContains(t, got, "stderr", got.stderr, `--not-a-flag`)
 	// and it must say what the task DOES take, so the typo is fixable
 	checkContains(t, got, "stderr", got.stderr, `--live`)
+
+	t.Run("the suggestion is spelled the way a caller would type it", func(t *testing.T) {
+		// The declaration is `dry_run` because it has to be usable as
+		// {{.DRY_RUN}}, but --dry-run is what anyone types, and since both now
+		// reach it, echoing the underscore teaches the wrong spelling.
+		root := writeTree(t, map[string]string{
+			"chores.yml": "version: '3'\n" +
+				"tasks:\n" +
+				"  tick:\n" +
+				"    args:\n" +
+				"      - {name: dry_run, type: bool}\n" +
+				"    cmds: ['echo dry=[{{.DRY_RUN}}]']\n",
+		})
+		got := runMain(t, root, "--dry", "tick", "--total-nonsense")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "--dry-run")
+		checkNotContains(t, got, "stderr", got.stderr, "--dry_run")
+	})
 	// and it must NOT have quietly become the value of `live`
 	checkNotContains(t, got, "stdout", got.stdout, "live=[true]")
 }
