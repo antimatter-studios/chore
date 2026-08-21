@@ -225,8 +225,13 @@ type Args []Arg
 // consuming its value. An explicit type also lets `--help` say what a task takes.
 type Arg struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // "" or "string" (default), "bool", "int"
-	Desc string `yaml:"desc"`
+	// Short is a single-letter alias, so `-f` can mean `--force`. Opt-in per
+	// parameter, because a single-dash word is otherwise DATA — `chore logs -f
+	// api` passes -f to the task — and deriving shorts automatically would
+	// silently change what every existing file does.
+	Short string `yaml:"short"`
+	Type  string `yaml:"type"` // "" or "string" (default), "bool", "int"
+	Desc  string `yaml:"desc"`
 }
 
 // IsBool reports whether the parameter is a flag: present or absent, no value.
@@ -246,6 +251,28 @@ func (as Args) Names() []string {
 		out[i] = a.Name
 	}
 	return out
+}
+
+// Shorts returns the declared short flags, dash included, in declared order.
+func (as Args) Shorts() []string {
+	var out []string
+	for _, a := range as {
+		if a.Short != "" {
+			out = append(out, "-"+a.Short)
+		}
+	}
+	return out
+}
+
+// ValidShort reports whether s can be a short flag: exactly one ASCII letter.
+// Digits are excluded because `-5` is a negative number reaching an int
+// parameter, and that has to stay data.
+func ValidShort(s string) bool {
+	if len(s) != 1 {
+		return false
+	}
+	c := s[0]
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 // Find returns the declaration for a name, matched case-insensitively because a

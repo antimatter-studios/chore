@@ -1211,6 +1211,92 @@ func TestSplitArgsFoldsHyphensOntoDeclaredUnderscores(t *testing.T) {
 	}
 }
 
+// TestShortFlags: `-f` meaning `--force`, opt-in per parameter with `short:`.
+//
+// Opt-in and not derived from the name, because a single-dash word is otherwise
+// DATA — `chore logs -f api` passes -f to the task — so deriving shorts would
+// silently change what every existing file does, and two parameters starting
+// with the same letter would have no answer at all.
+func TestShortFlags(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\n" +
+			"tasks:\n" +
+			"  logs:\n" +
+			"    args:\n" +
+			"      - {name: service, short: s}\n" +
+			"      - {name: follow, short: f, type: bool}\n" +
+			"      - {name: all, short: a, type: bool}\n" +
+			"      - {name: brief, short: b, type: bool}\n" +
+			"    vars: {service: \"\", follow: false, all: false, brief: false}\n" +
+			"    cmds: ['echo svc=[{{.SERVICE}}] f=[{{.FOLLOW}}] a=[{{.ALL}}] b=[{{.BRIEF}}]']\n" +
+			"  plain:\n" +
+			"    args: [follow, service]\n" +
+			"    cmds: ['echo docker logs {{.FOLLOW}} {{.SERVICE}}']\n",
+	})
+
+	for _, c := range []struct {
+		name  string
+		words []string
+		want  string
+	}{
+		{"a bool short is its own value", []string{"-f"}, "svc=[] f=[true] a=[] b=[]"},
+		{"a value short takes the next word", []string{"-s", "api"}, "svc=[api] f=[] a=[] b=[]"},
+		{"or an attached value", []string{"-s=api"}, "svc=[api] f=[] a=[] b=[]"},
+		{"several, separately", []string{"-f", "-a", "-b"}, "svc=[] f=[true] a=[true] b=[true]"},
+		{"bundled, in any order", []string{"-bfa"}, "svc=[] f=[true] a=[true] b=[true]"},
+		{"mixed with a value short", []string{"-fa", "-s", "api"}, "svc=[api] f=[true] a=[true] b=[]"},
+		{"mixed with the long form", []string{"-f", "--all"}, "svc=[] f=[true] a=[true] b=[]"},
+		{"a bool short does not eat the next word", []string{"-f", "api"}, "svc=[api] f=[true] a=[] b=[]"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := runMain(t, root, append([]string{"--dry", "logs"}, c.words...)...)
+			checkCode(t, got, 0)
+			checkContains(t, got, "stdout", got.stdout, c.want)
+		})
+	}
+
+	t.Run("a bundle holding a value parameter is refused, not guessed", func(t *testing.T) {
+		// -sfa could be `-s -f -a` or an -s whose value is "fa". Guessing either
+		// way is how a flag ends up set to a filename.
+		got := runMain(t, root, "--dry", "logs", "-sfa")
+		checkCode(t, got, 2)
+		checkContains(t, got, "stderr", got.stderr, "-s takes a value", "cannot be bundled")
+	})
+
+	t.Run("a value short with nothing after it", func(t *testing.T) {
+		got := runMain(t, root, "--dry", "logs", "-s")
+		checkCode(t, got, 2)
+		checkContains(t, got, "stderr", got.stderr, "-s needs a value")
+	})
+
+	t.Run("an explicit non-boolean is refused here too", func(t *testing.T) {
+		got := runMain(t, root, "--dry", "logs", "-f=maybe")
+		checkCode(t, got, 2)
+		checkContains(t, got, "stderr", got.stderr, "-f must be true or false")
+	})
+
+	t.Run("an undeclared letter is named against the ones that exist", func(t *testing.T) {
+		got := runMain(t, root, "--dry", "logs", "-z")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "-z is not one of its short flags", "-s, -f, -a, -b")
+	})
+
+	t.Run("a file that declares no shorts is untouched", func(t *testing.T) {
+		// The documented reason single-dash words are data in the first place.
+		got := runMain(t, root, "--dry", "plain", "-f", "api")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "docker logs -f api")
+	})
+
+	t.Run("help shows the short, and a bool takes no value", func(t *testing.T) {
+		got := runMain(t, root, "logs", "--help")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "service (-s)", "follow (-f)", "chore logs -s <value>")
+		// the flag form for a bool must not suggest a value, which is now an error
+		checkNotContains(t, got, "stdout", got.stdout, "--follow <value>")
+	})
+}
+
 // TestABoolParameterOnlyTakesABoolean: `type: bool` was the one declared type
 // nothing validated. checkArgType rejects a non-numeric int, but returned nil
 // for a bool, and NormalizeBool reads everything outside

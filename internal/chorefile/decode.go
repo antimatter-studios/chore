@@ -53,6 +53,7 @@ func Decode(data []byte) (*File, error) {
 			f.Tasks[name] = &Task{}
 			continue
 		}
+		shorts := map[string]string{}
 		for i, arg := range t.Args {
 			if !validParamName(arg.Name) {
 				return nil, fmt.Errorf("taskfile: task %q: args entry %d is %s, which cannot be used as a variable —"+
@@ -65,6 +66,27 @@ func Decode(data []byte) (*File, error) {
 				return nil, fmt.Errorf("taskfile: task %q: parameter %q has type %q; expected %s, %s or %s",
 					name, arg.Name, arg.Type, TypeString, TypeBool, TypeInt)
 			}
+			if arg.Short == "" {
+				continue
+			}
+			if !ValidShort(arg.Short) {
+				return nil, fmt.Errorf("taskfile: task %q: parameter %q declares short %q;"+
+					" a short flag is a single letter, as in `short: f` for -f",
+					name, arg.Name, arg.Short)
+			}
+			// -h and --help are answered before a task is invoked, so a parameter
+			// claiming h could never be reached: a declaration that cannot work is
+			// refused where it is written rather than ignored at the call.
+			if strings.EqualFold(arg.Short, "h") {
+				return nil, fmt.Errorf("taskfile: task %q: parameter %q cannot use short %q:"+
+					" -h is chore's help flag and is answered before the task runs,"+
+					" so the parameter would be unreachable", name, arg.Name, arg.Short)
+			}
+			if other, dup := shorts[arg.Short]; dup {
+				return nil, fmt.Errorf("taskfile: task %q: parameters %q and %q both declare short %q;"+
+					" one letter cannot mean two things", name, other, arg.Name, arg.Short)
+			}
+			shorts[arg.Short] = arg.Name
 		}
 	}
 	return &f, nil
@@ -229,7 +251,7 @@ func (d *Dep) UnmarshalYAML(n *yaml.Node) error {
 //
 //	args:
 //	  - config
-//	  - {name: follow, type: bool, desc: keep streaming}
+//	  - {name: follow, short: f, type: bool, desc: keep streaming}
 func (a *Arg) UnmarshalYAML(n *yaml.Node) error {
 	switch n.Kind {
 	case yaml.ScalarNode:
@@ -240,13 +262,14 @@ func (a *Arg) UnmarshalYAML(n *yaml.Node) error {
 		a.Name = s
 		return nil
 	case yaml.MappingNode:
-		if err := knownFields(n, "a parameter", "name", "type", "desc"); err != nil {
+		if err := knownFields(n, "a parameter", "name", "short", "type", "desc"); err != nil {
 			return err
 		}
 		type raw struct {
-			Name string `yaml:"name"`
-			Type string `yaml:"type"`
-			Desc string `yaml:"desc"`
+			Name  string `yaml:"name"`
+			Short string `yaml:"short"`
+			Type  string `yaml:"type"`
+			Desc  string `yaml:"desc"`
 		}
 		var r raw
 		if err := n.Decode(&r); err != nil {
@@ -255,7 +278,7 @@ func (a *Arg) UnmarshalYAML(n *yaml.Node) error {
 		if r.Name == "" {
 			return fmt.Errorf("line %d: a parameter needs `name`", n.Line)
 		}
-		a.Name, a.Type, a.Desc = r.Name, r.Type, r.Desc
+		a.Name, a.Short, a.Type, a.Desc = r.Name, r.Short, r.Type, r.Desc
 		return nil
 	default:
 		return fmt.Errorf("line %d: a parameter must be a name or a mapping", n.Line)

@@ -99,7 +99,28 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
        chore up                       # default from vars
        chore up mail4.test            # positional, in declared order
        chore up --config mail4.test   # named, for a declared parameter
+       chore up -c mail4.test         # short, if the parameter declares one
        chore up CONFIG=mail4.test     # Task's spelling, still accepted
+
+   A parameter opts into a single-letter alias with `short:`:
+
+       args:
+         - {name: config, short: c}
+         - {name: follow, short: f, type: bool}
+
+   Opt-in rather than derived from the name, because a single-dash word is
+   otherwise DATA — that is what makes `chore logs -f api` work — so deriving
+   `-f` from `follow` would silently change what every existing file does, and
+   two parameters starting with the same letter would have no answer. A short
+   that cannot work is refused at decode time: more than one letter, a digit
+   (`-5` is a negative number reaching an int), two parameters claiming the same
+   letter, or `h`, which chore answers as help before a task is invoked.
+
+   Bools bundle, `-fab`, and only bools: if a letter in a bundle takes a value
+   the bundle is refused rather than split one of the two ways it could be read.
+   A task that declares any short has opted into short parsing, so a single-dash
+   letter it does not know is an error naming the ones it has; a task that
+   declares none keeps the data behaviour unchanged.
 
    Whether a parameter is required follows from the declaration, with no marker
    needed in the common cases:

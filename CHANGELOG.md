@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Short flags: `-f` can mean `--force`.** A parameter opts in with `short:`:
+
+      args:
+        - {name: service, short: s}
+        - {name: follow, short: f, type: bool}
+        - {name: all, short: a, type: bool}
+
+      chore logs -f              # a bool short is its own value
+      chore logs -s api          # or -s=api
+      chore logs -fa -s api      # bools bundle
+      chore logs --follow        # unchanged
+
+  Opt-in rather than derived from the name. A single-dash word is otherwise
+  DATA — that is the whole reason `chore logs -f api` renders `docker logs -f
+  api` — so deriving `-f` from `follow` would silently change what every
+  existing file does, and `args: [force, follow]` would have no answer for `-f`
+  at all. A file that declares no `short:` behaves exactly as before.
+
+  Refused at decode time, where the mistake is written rather than at some later
+  call: a short of more than one letter, a digit (`-5` is a negative number
+  reaching an `int`), two parameters claiming the same letter, and `h` — chore
+  answers `-h` as help before a task is invoked, so the parameter would be
+  unreachable.
+
+  Only bools bundle. `-sfa`, where `-s` takes a value, is refused rather than
+  read as either `-s -f -a` or an `-s` whose value is "fa" — guessing is how a
+  flag ends up set to a filename. And a task that declares any short has opted
+  into short parsing, so a single-dash letter it does not know is an error
+  naming the ones it has, instead of silently becoming a positional value.
+
+- `chore <task> --help` no longer offers `--flag <value>` for a bool, which is
+  now an error, and spells the flag the way a caller types it. It shows the
+  short alias in both the parameter list and the call forms:
+
+      arguments:
+      dry_run (-d)  bool, optional — decide and journal, but place no order
+
+      called as:
+      flag         chore tick --dry-run
+      short flag   chore tick -d
+
 - **A `type: bool` parameter now only takes a boolean.** It was the one declared
   type nothing validated: `checkArgType` rejects a non-numeric `int`, but
   returned nil for a bool, and `NormalizeBool` reads everything outside
