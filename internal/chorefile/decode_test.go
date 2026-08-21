@@ -782,6 +782,63 @@ func TestDecodeRejectsUnusableParameterNames(t *testing.T) {
 	}
 }
 
+// A `short:` that cannot work is refused where it is written. Each of these is
+// silent otherwise: a multi-letter short never matches, two parameters sharing a
+// letter means one of them can never be reached, and `short: h` is shadowed by
+// chore's own -h, which is answered before a task is invoked.
+func TestDecodeRejectsUnusableShortFlags(t *testing.T) {
+	for _, tt := range []struct{ name, yaml, want string }{
+		{
+			name: "more than one letter",
+			yaml: "version: '3'\ntasks:\n  up:\n    args:\n      - {name: force, short: fo}\n",
+			want: "a short flag is a single letter",
+		},
+		{
+			name: "a digit would collide with a negative number",
+			yaml: "version: '3'\ntasks:\n  up:\n    args:\n      - {name: force, short: '5'}\n",
+			want: "a short flag is a single letter",
+		},
+		{
+			name: "two parameters cannot share a letter",
+			yaml: "version: '3'\ntasks:\n  up:\n    args:\n      - {name: force, short: f}\n      - {name: follow, short: f}\n",
+			want: "both declare short",
+		},
+		{
+			name: "h is chore's help flag",
+			yaml: "version: '3'\ntasks:\n  up:\n    args:\n      - {name: halt, short: h}\n",
+			want: "unreachable",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("Decode = nil error, want the bad short rejected")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// A usable short decodes, and case distinguishes two of them: -v and -V are
+// different flags everywhere else, so they are here too.
+func TestDecodeAcceptsShortFlags(t *testing.T) {
+	f, err := Decode([]byte("version: '3'\ntasks:\n  up:\n    args:\n" +
+		"      - {name: verbose, short: v, type: bool}\n" +
+		"      - {name: version, short: V}\n"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	args := f.Tasks["up"].Args
+	if got := args.Shorts(); !reflect.DeepEqual(got, []string{"-v", "-V"}) {
+		t.Errorf("Shorts() = %q, want [-v -V]", got)
+	}
+	if !args[0].IsBool() || args[1].IsBool() {
+		t.Errorf("types did not survive alongside short: %+v", args)
+	}
+}
+
 // A well-formed list is unaffected by that check.
 func TestDecodeListsWithoutNullsStillDecode(t *testing.T) {
 	f, err := Decode([]byte("version: '3'\ntasks:\n  t:\n    deps:\n      - build\n    cmds:\n      - echo hi\n"))

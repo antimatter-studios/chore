@@ -136,9 +136,10 @@ real shell — with real `pipefail` — possible.
 ## What it does differently
 
 - **`args:` on a task** declares its parameters — `- config` for a plain one, or
-  `{name: follow, type: bool, desc: …}` when it is a flag, takes an int, or wants
-  a description. One declaration, four call forms:
-  `chore up`, `chore up mail4.test`, `chore up --config mail4.test`, `chore up CONFIG=mail4.test`.
+  `{name: follow, short: f, type: bool, desc: …}` when it is a flag, takes an
+  int, wants a short alias, or wants a description. One declaration, five call
+  forms: `chore up`, `chore up mail4.test`, `chore up --config mail4.test`,
+  `chore up -c mail4.test`, `chore up CONFIG=mail4.test`. Bools bundle: `-fab`.
   A two-word parameter is `train_bars` in the file and `--train-bars` or
   `--train_bars` on the command line. A `--flag` the task does not declare is a
   usage error naming the ones it does, so a typo cannot quietly become the value

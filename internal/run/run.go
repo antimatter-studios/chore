@@ -713,6 +713,18 @@ func checkArgs(t *chorefile.Task, args []string, callVars map[string]string, sco
 // means "run logs with -f and api", and `--` still hands everything after it
 // to the command verbatim.
 func checkFlagShaped(t *chorefile.Task, value string) error {
+	// A task that declares `short:` anywhere has opted into short-flag parsing,
+	// so a single-dash letter it does not know is a typo, whatever the parameter
+	// it would land on: with a string first, `-z` would silently BE the value.
+	// Files that declare no shorts keep the data behaviour entirely — that is
+	// what `chore logs -f api` relies on — and a bundle or a negative number is
+	// left alone either way.
+	if len(value) == 2 && value[0] == '-' && chorefile.ValidShort(value[1:]) {
+		if shorts := t.Args.Shorts(); len(shorts) > 0 {
+			return fmt.Errorf("task %s: %s is not one of its short flags (%s)",
+				t.Name, value, strings.Join(shorts, ", "))
+		}
+	}
 	if !strings.HasPrefix(value, "--") || len(value) <= 2 {
 		return nil
 	}

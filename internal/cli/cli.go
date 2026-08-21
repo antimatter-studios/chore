@@ -265,7 +265,14 @@ func declaredParams(p *chorefile.Project, task string) map[string]param {
 	}
 	out := make(map[string]param, len(t.Args))
 	for _, a := range t.Args {
-		out[paramKey(a.Name)] = param{name: a.Name, boolean: a.IsBool()}
+		p := param{name: a.Name, boolean: a.IsBool()}
+		out[paramKey(a.Name)] = p
+		if a.Short != "" {
+			// Keyed WITH its dash. A parameter name cannot contain one (it has to
+			// be usable as {{.Name}}), so a short can never collide with a name,
+			// and one map answers both lookups.
+			out["-"+a.Short] = p
+		}
 	}
 	return out
 }
@@ -275,6 +282,12 @@ func declaredParams(p *chorefile.Project, task string) map[string]param {
 type param struct {
 	name    string
 	boolean bool
+}
+
+// flagSpelling renders a parameter name the way a caller types it: hyphens where
+// the declaration must use underscores.
+func flagSpelling(name string) string {
+	return strings.ReplaceAll(name, "_", "-")
 }
 
 // paramKey normalises a parameter spelling for matching: case-folded, with `-`
@@ -342,6 +355,44 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 			}
 		}
 
+		// A short flag, but only one a parameter opted into with `short:`. An
+		// undeclared single-dash word stays data, which is what keeps `chore logs
+		// -f api` and `tar -xzf` working in files that declare no shorts.
+		if strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && len(w) > 1 {
+			letters, value, hasValue := strings.Cut(w[1:], "=")
+
+			if len(letters) == 1 {
+				if declared, ok := params["-"+letters]; ok {
+					switch {
+					case declared.boolean:
+						if hasValue && !chorefile.BoolLiteral(value) {
+							return nil, nil, fmt.Errorf("-%s must be true or false, got %q", letters, value)
+						}
+						value = chorefile.NormalizeBool(valueOr(value, hasValue, "true"))
+					case !hasValue:
+						if i+1 >= len(words) {
+							return nil, nil, fmt.Errorf("-%s needs a value", letters)
+						}
+						i++
+						value = words[i]
+					}
+					setParam(vars, declared.name, value)
+					continue
+				}
+			} else if !hasValue {
+				bundled, err := bundledShorts(letters, params)
+				if err != nil {
+					return nil, nil, err
+				}
+				if bundled != nil {
+					for _, declared := range bundled {
+						setParam(vars, declared.name, "true")
+					}
+					continue
+				}
+			}
+		}
+
 		if name, value, ok := strings.Cut(w, "="); ok && isVarName(name) {
 			vars[name] = value
 			// If it names a declared parameter, set the declared spelling too, so
@@ -366,6 +417,31 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 		return args, nil, nil
 	}
 	return args, vars, nil
+}
+
+// bundledShorts resolves `-abc` into the parameters those letters name.
+//
+// It returns nil (and no error) unless EVERY letter is a declared short, because
+// a word chore does not recognise has to stay data — `tar -xzf archive` is not
+// its business. When every letter is declared but one of them takes a value, the
+// bundle is refused instead of guessed: `-abo file` could reasonably mean either
+// `-a -b -o file` or an -o whose value is the letters after it, and picking one
+// silently is how a flag ends up set to a filename.
+func bundledShorts(letters string, params map[string]param) ([]param, error) {
+	out := make([]param, 0, len(letters))
+	for _, c := range letters {
+		declared, ok := params["-"+string(c)]
+		if !ok {
+			return nil, nil
+		}
+		if !declared.boolean {
+			return nil, fmt.Errorf(
+				"-%s takes a value, so it cannot be bundled in -%s; write it on its own",
+				string(c), letters)
+		}
+		out = append(out, declared)
+	}
+	return out, nil
 }
 
 // setParam records a parameter under the declared spelling and its uppercase
@@ -608,19 +684,42 @@ func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
 		if desc == "" {
 			desc = "(no description)"
 		}
-		rows = append(rows, [2]string{a.Name, fmt.Sprintf("%s, %s — %s", kind, req, desc)})
+		label := a.Name
+		if a.Short != "" {
+			label += " (-" + a.Short + ")"
+		}
+		rows = append(rows, [2]string{label, fmt.Sprintf("%s, %s — %s", kind, req, desc)})
 	}
 	u.Raw("\n")
 	u.Dim("  arguments:")
 	u.Detail(rows)
 
-	first := t.Args[0].Name
+	first := t.Args[0]
+	// A bool is complete on its own, so showing it as `--flag <value>` taught the
+	// one spelling that is now an error; and the flag form is hyphenated, which is
+	// what a caller types even though the declaration cannot be.
+	positional := fmt.Sprintf("chore %s <%s>", name, first.Name)
+	flag := fmt.Sprintf("chore %s --%s <value>", name, flagSpelling(first.Name))
+	if first.IsBool() {
+		positional = fmt.Sprintf("chore %s <true|false>", name)
+		flag = fmt.Sprintf("chore %s --%s", name, flagSpelling(first.Name))
+	}
+	forms := [][2]string{
+		{"positional", positional},
+		{"flag", flag},
+	}
+	if first.Short != "" {
+		short := fmt.Sprintf("chore %s -%s <value>", name, first.Short)
+		if first.IsBool() {
+			short = fmt.Sprintf("chore %s -%s", name, first.Short)
+		}
+		forms = append(forms, [2]string{"short flag", short})
+	}
+	forms = append(forms,
+		[2]string{"variable", fmt.Sprintf("chore %s %s=<value>", name, strings.ToUpper(first.Name))},
+		[2]string{"passthrough", fmt.Sprintf("chore %s -- <words for {{.CLI_ARGS}}>", name)},
+	)
 	u.Raw("\n")
 	u.Dim("  called as:")
-	u.Detail([][2]string{
-		{"positional", fmt.Sprintf("chore %s <%s>", name, first)},
-		{"flag", fmt.Sprintf("chore %s --%s <value>", name, first)},
-		{"variable", fmt.Sprintf("chore %s %s=<value>", name, strings.ToUpper(first))},
-		{"passthrough", fmt.Sprintf("chore %s -- <words for {{.CLI_ARGS}}>", name)},
-	})
+	u.Detail(forms)
 }
