@@ -839,6 +839,71 @@ func TestDecodeAcceptsShortFlags(t *testing.T) {
 	}
 }
 
+// chore_min_version has to be a version, checked where it is written. A floor
+// nobody can compare is worse than none: it reads as a guarantee and enforces
+// nothing.
+func TestDecodeRejectsAMalformedVersionFloor(t *testing.T) {
+	for _, bad := range []string{"banana", "0.4", "0.4.0.1", "0.4.0-rc1", "latest", ""} {
+		yml := "version: '3'\nchore_min_version: '" + bad + "'\ntasks:\n  t:\n    cmds: [echo hi]\n"
+		f, err := Decode([]byte(yml))
+		if bad == "" {
+			// absent and empty both mean "no restriction"
+			if err != nil {
+				t.Errorf("empty floor: Decode = %v, want it accepted as no restriction", err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("chore_min_version %q was accepted; want it rejected", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not a version") {
+			t.Errorf("floor %q: error = %q, want it to say it is not a version", bad, err)
+		}
+		_ = f
+	}
+}
+
+// ParseSemver must compare NUMERICALLY. As strings, "0.10.0" < "0.4.0", which
+// would reject a newer chore than the floor asks for.
+func TestParseSemverAndOrdering(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want [3]int
+		ok   bool
+	}{
+		{"0.4.0", [3]int{0, 4, 0}, true},
+		{"v0.4.0", [3]int{0, 4, 0}, true},
+		{" 0.4.0 ", [3]int{0, 4, 0}, true},
+		{"0.10.0", [3]int{0, 10, 0}, true},
+		{"1.2.3", [3]int{1, 2, 3}, true},
+		// chore's own dev stamp is deliberately NOT a version
+		{"dev", [3]int{}, false},
+		{"dev+a581449", [3]int{}, false},
+		{"dev+a581449-dirty", [3]int{}, false},
+		{"0.4", [3]int{}, false},
+		{"0.4.x", [3]int{}, false},
+		{"", [3]int{}, false},
+	} {
+		got, ok := ParseSemver(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("ParseSemver(%q) = %v, %v; want %v, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+
+	older, _ := ParseSemver("0.4.0")
+	newer, _ := ParseSemver("0.10.0")
+	if !SemverLess(older, newer) {
+		t.Error("0.4.0 must sort before 0.10.0 — string comparison gets this backwards")
+	}
+	if SemverLess(newer, older) {
+		t.Error("0.10.0 must not sort before 0.4.0")
+	}
+	if SemverLess(older, older) {
+		t.Error("equal versions: neither is less, so an equal version satisfies a floor")
+	}
+}
+
 // A well-formed list is unaffected by that check.
 func TestDecodeListsWithoutNullsStillDecode(t *testing.T) {
 	f, err := Decode([]byte("version: '3'\ntasks:\n  t:\n    deps:\n      - build\n    cmds:\n      - echo hi\n"))

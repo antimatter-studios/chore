@@ -18,6 +18,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/antimatter-studios/chore/internal/buildinfo"
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1209,6 +1212,125 @@ func TestSplitArgsFoldsHyphensOntoDeclaredUnderscores(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChoreMinVersion: a file states the oldest chore that may run it.
+//
+// The need is not hypothetical. A Taskfile driving money declared every
+// dangerous flag as a string compared to "true" for one reason only — chore
+// < 0.4.0 bound an unknown --flag positionally and let a bool take any value, so
+// `--robot-name x` set an unrelated flag and spent a one-shot resource. Stating
+// the floor is what lets the file drop the workaround instead of carrying it
+// forever.
+func TestChoreMinVersion(t *testing.T) {
+	project := func(floor string) *chorefile.Project {
+		return &chorefile.Project{
+			Root:  &chorefile.File{ChoreMinVersion: floor, Path: "/w/chores.yml"},
+			Tasks: map[string]*chorefile.Task{},
+		}
+	}
+
+	for _, c := range []struct {
+		name    string
+		floor   string
+		running buildinfo.Info
+		wantErr string
+	}{
+		{"older is refused", "0.4.0", buildinfo.Info{Version: "0.3.0"}, "too old"},
+		{"much older is refused", "0.4.0", buildinfo.Info{Version: "0.2.2"}, "too old"},
+		{"the exact version satisfies it", "0.4.0", buildinfo.Info{Version: "0.4.0"}, ""},
+		{"a newer patch satisfies it", "0.4.0", buildinfo.Info{Version: "0.4.1"}, ""},
+		// 0.10.0 sorts BEFORE 0.4.0 as a string; numerically it is newer
+		{"a two-digit minor is newer, not older", "0.4.0", buildinfo.Info{Version: "0.10.0"}, ""},
+		{"a new major satisfies it", "0.4.0", buildinfo.Info{Version: "1.0.0"}, ""},
+		{"no floor means no restriction", "", buildinfo.Info{Version: "0.1.0"}, ""},
+		// a dev build has no version to judge, and already banners itself
+		{"a dev build is exempt", "0.4.0", buildinfo.Info{Version: "dev+abc1234", Dev: true}, ""},
+		{"an unjudgeable non-dev build is refused", "0.4.0", buildinfo.Info{Version: "?"}, "refusing rather than assuming"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkChoreVersion(project(c.floor), c.running)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkChoreVersion = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("checkChoreVersion = nil, want an error containing %q", c.wantErr)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err, c.wantErr)
+			}
+			// it must name both versions and the file, or it is not actionable
+			for _, want := range []string{c.running.Version, c.floor, "/w/chores.yml"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+
+	t.Run("the strictest floor across included files wins", func(t *testing.T) {
+		// A floor belongs to the file that needs it, but the tasks it contributes
+		// are still run by this one binary.
+		p := project("0.4.0")
+		p.Tasks["fromInclude"] = &chorefile.Task{
+			Name: "fromInclude",
+			File: &chorefile.File{ChoreMinVersion: "0.9.0", Path: "/w/inc/chores.yml"},
+		}
+		err := checkChoreVersion(p, buildinfo.Info{Version: "0.5.0"})
+		if err == nil {
+			t.Fatal("a 0.9.0 floor in an included file was ignored")
+		}
+		if !strings.Contains(err.Error(), "0.9.0") || !strings.Contains(err.Error(), "/w/inc/chores.yml") {
+			t.Errorf("error = %q, want it to name the include's floor and file", err)
+		}
+	})
+
+	t.Run("end to end, and inspection still works", func(t *testing.T) {
+		// Proves the wiring, which a direct call cannot: that Main consults the
+		// floor before running, and does not block reading the file.
+		root := writeTree(t, map[string]string{
+			"chores.yml": "version: '3'\n" +
+				"chore_min_version: 0.4.0\n" +
+				"tasks:\n  t:\n    cmds: ['echo ran']\n",
+		})
+		saved := Version
+		Version = "0.3.0"
+		defer func() { Version = saved }()
+
+		got := runMain(t, root, "--dry", "t")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "too old", "0.3.0", "0.4.0")
+		checkNotContains(t, got, "stdout", got.stdout, "echo ran")
+
+		// --list is inspection: someone staring at that refusal has to be able to
+		// read what the file contains.
+		got = runMain(t, root, "--list")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "t")
+	})
+}
+
+// {{.CHORE_EXE}} is the binary actually running, not whatever PATH answers to
+// "chore". A launchd plist needs an absolute ProgramArguments path, and baking in
+// the installed copy while a different binary is running the task is how a
+// scheduled job silently drifts from the one being tested.
+func TestChoreExeAndVersionAreAvailableToTasks(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\ntasks:\n  who:\n    cmds: ['echo exe=[{{.CHORE_EXE}}] v=[{{.CHORE_VERSION}}]']\n",
+	})
+	got := runMain(t, root, "--dry", "who")
+	checkCode(t, got, 0)
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable: %v", err)
+	}
+	checkContains(t, got, "stdout", got.stdout, "exe=["+exe+"]")
+	// never empty: an empty {{.CHORE_EXE}} would silently run the next word
+	checkNotContains(t, got, "stdout", got.stdout, "exe=[]")
 }
 
 // TestShortFlags: `-f` meaning `--force`, opt-in per parameter with `short:`.

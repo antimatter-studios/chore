@@ -46,6 +46,12 @@ func Decode(data []byte) (*File, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, readable(err)
 	}
+	if f.ChoreMinVersion != "" {
+		if _, ok := ParseSemver(f.ChoreMinVersion); !ok {
+			return nil, fmt.Errorf("taskfile: chore_min_version is %q, which is not a version"+
+				" — write it as MAJOR.MINOR.PATCH, as in 0.4.0", f.ChoreMinVersion)
+		}
+	}
 	for name, t := range f.Tasks {
 		if t == nil {
 			// `foo:` with an empty body is legal and means "a task that does

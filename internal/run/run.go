@@ -43,6 +43,21 @@ type Runner struct {
 	NoLifecycle bool
 	CLIArgs     string // everything after `--`
 
+	// ChoreExe and ChoreVersion describe the binary actually running, published
+	// to tasks as {{.CHORE_EXE}} and {{.CHORE_VERSION}}.
+	//
+	// Not {{.CHORE}}: that name is already the ENV var set to 1 so a Taskfile can
+	// tell this runner from go-task.
+	//
+	// A task that has to invoke chore — a launchd plist needing an absolute
+	// ProgramArguments path, a wrapper, a self-check — otherwise resolves the word
+	// `chore` through PATH, which answers "the one I would get if I typed it",
+	// not "the one running me". Those differ exactly when it matters: a file whose
+	// env: pins PATH, or a dev binary run from a checkout, silently writes the
+	// installed copy into the plist instead of itself.
+	ChoreExe     string
+	ChoreVersion string
+
 	// CLIVars are the NAME=value pairs typed on the command line.
 	//
 	// They are global to the RUN, not to the task named, and they outrank anything
@@ -342,6 +357,8 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	base.Set("ROOT_DIR", r.Project.RootDir)
 	base.Set("TASK", t.Name)
 	base.Set("CLI_ARGS", r.CLIArgs)
+	base.Set("CHORE_EXE", r.ChoreExe)
+	base.Set("CHORE_VERSION", r.ChoreVersion)
 	if wd, err := os.Getwd(); err == nil {
 		base.Set("USER_WORKING_DIR", wd)
 	}
