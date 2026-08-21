@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0
 
 - **`chore_min_version`: a file can state the oldest chore that may run it.**
 
