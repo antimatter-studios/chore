@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.3.0
+
+- **A mistyped `--flag` no longer switches on a different one.** A `--word` that
+  named no declared parameter fell through the lookup in `splitArgs` and was
+  appended as a POSITIONAL, so it bound to whatever the task declares first — and
+  for a `type: bool` parameter `NormalizeBool` reads anything outside
+  `{"", "0", "false", "no", "off"}` as true, the flag's own text included.
+  Measured on a Taskfile driving a trading platform: `chore tick
+  --total-nonsense` rendered a live `tick`, and `chore backtest --robot-name x`
+  set BOTH `holdout` and `force`, where holdout spends a one-shot resource. It is
+  the same failure that once made `chore instance:up --help` START a stack, fixed
+  then for `--help` alone; this generalises it. Such a word is now refused when it
+  is bound, naming the parameters the task does declare:
+
+      chore: backtest: task backtest: --robot-name is not one of its parameters
+        (--holdout, --force); to pass it along as data instead:
+        chore backtest -- --robot-name
+
+  Deliberately narrow, so the two things that relied on the old rule still work:
+  single-dash words are untouched (`chore logs -f api` passes `-f` to the task,
+  and its unit test pins that), and `--` still hands everything after it over as
+  `CLI_ARGS`. Only a leftover long flag — the shape that is a typo essentially
+  every time — is refused. Exit 1, a task-level error like any other bad
+  argument; 2 remains chore's own flag parsing.
+
+- **`--train-bars` now reaches a parameter declared `train_bars`.** A declared
+  name cannot contain a hyphen — it has to be usable as `{{.train_bars}}`, and the
+  loader rejects one that is not — so a two-word parameter is always underscored
+  in the file, while the command line convention is the opposite. The lookup was
+  `strings.ToLower(name)` with no folding, so `--train-bars` matched nothing and
+  (before the fix above) became a positional: with `type: int` that surfaced as
+  `train_bars must be a whole number, got "--train-bars"`, and for a string or
+  bool it bound silently. Hyphens now fold onto underscores, in any casing, so
+  `--train-bars`, `--train_bars` and `--TRAIN-BARS` all reach the parameter.
+
 ## v0.2.2
 
 - **Release pipeline fix (follow-up to v0.2.1).** The reproduce step downloaded the

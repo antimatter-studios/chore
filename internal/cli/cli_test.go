@@ -1123,3 +1123,99 @@ tasks:
 		}
 	})
 }
+
+// ─── unknown flags after the task name ──────────────────────────────────────
+
+// TestUnknownFlagAfterTheTaskNameIsAUsageError: the mirror of
+// TestUnknownFlagIsAUsageError, on the other side of the task name.
+//
+// `chore --forse build` is already a usage error. `chore build --forse` is not:
+// the word falls through splitArgs' declared-parameter lookup and is appended
+// as a POSITIONAL, so it binds to whatever the task declares first. When that
+// first parameter is a bool, NormalizeBool turns the flag's own text into
+// "true" — anything outside {"", "0", "false", "no", "off"} is true — and a
+// typo silently sets an unrelated flag.
+//
+// Measured against a real Taskfile driving a trading platform: `chore tick
+// --total-nonsense` rendered `main.py tick --dry-run`, and `chore backtest
+// --robot-name x` set BOTH holdout and force, where holdout spends a one-shot
+// resource. A task runner that reinterprets a mistyped flag as a different one
+// cannot safely drive anything that spends money.
+//
+// The refusal is at BINDING, not in splitArgs: an undeclared long flag still
+// falls through as a positional word (TestSplitArgsNamedParameters pins that,
+// and `chore logs -f api` depends on the same rule), and is refused only when
+// it would become the value of a declared parameter. So the exit code is 1, a
+// task-level error like any other bad argument — 2 stays chore's own
+// flag-parsing code, as `chore --forse build` uses.
+func TestUnknownFlagAfterTheTaskNameIsAUsageError(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\n" +
+			"tasks:\n" +
+			"  deploy:\n" +
+			"    args:\n" +
+			"      - {name: live, type: bool}\n" +
+			"    vars:\n" +
+			"      live: false\n" +
+			"    cmds: ['echo live=[{{.LIVE}}]']\n",
+	})
+	got := runMain(t, root, "--dry", "deploy", "--not-a-flag")
+
+	checkCode(t, got, 1)
+	checkContains(t, got, "stderr", got.stderr, `--not-a-flag`)
+	// and it must say what the task DOES take, so the typo is fixable
+	checkContains(t, got, "stderr", got.stderr, `--live`)
+	// and it must NOT have quietly become the value of `live`
+	checkNotContains(t, got, "stdout", got.stdout, "live=[true]")
+}
+
+// A declared name is always underscored (the loader requires a usable variable
+// name), so the hyphenated spelling a human types has to be folded onto it, in
+// any case. The underscore spelling keeps working — Taskfiles and scripts are
+// written with it.
+func TestSplitArgsFoldsHyphensOntoDeclaredUnderscores(t *testing.T) {
+	params := map[string]param{"train_bars": {name: "train_bars"}}
+
+	for _, spelling := range []string{"--train-bars", "--train_bars", "--TRAIN-BARS", "--Train-Bars"} {
+		t.Run(spelling, func(t *testing.T) {
+			args, vars, err := splitArgs([]string{spelling, "504"}, params)
+			if err != nil {
+				t.Fatalf("splitArgs(%q): %v", spelling, err)
+			}
+			if len(args) != 0 {
+				t.Errorf("args = %q, want none: the flag was not recognised", args)
+			}
+			want := map[string]string{"train_bars": "504", "TRAIN_BARS": "504"}
+			if !reflect.DeepEqual(vars, want) {
+				t.Errorf("vars = %v, want %v", vars, want)
+			}
+		})
+	}
+}
+
+// TestHyphenatedSpellingOfAMultiWordParameter: `args: [{name: train_bars}]`
+// declares a parameter no hyphenated flag can reach, because the lookup is
+// strings.ToLower(name) with no dash-to-underscore mapping. A human types
+// --train-bars; chore matches only --train_bars.
+//
+// The failure is not a clean rejection. For an int the value is at least
+// type-checked ("must be a whole number, got \"--train-bars\""), but for a
+// string or bool it binds silently.
+func TestHyphenatedSpellingOfAMultiWordParameter(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\n" +
+			"tasks:\n" +
+			"  probe:\n" +
+			"    args:\n" +
+			"      - {name: train_bars, type: int}\n" +
+			"    vars:\n" +
+			"      train_bars: 250\n" +
+			"    cmds: ['echo bars=[{{.TRAIN_BARS}}]']\n",
+	})
+	got := runMain(t, root, "--dry", "probe", "--train-bars", "504")
+
+	// Either spelling reaching the parameter is fine; silently doing something
+	// else is not.
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "bars=[504]")
+}

@@ -127,7 +127,16 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    A value binds under the declared name AND its uppercase form, because Taskfile
    convention is uppercase and a case mismatch would silently interpolate nothing.
    A flag is consumed only if it names a declared parameter, so `chore logs -f api`
-   still passes `-f` to the task. Too many arguments is an error; a parameter with
+   still passes `-f` to the task. A declared name cannot contain a hyphen (it has
+   to be a usable variable name), so a two-word parameter is `train_bars` in the
+   file and `--train-bars`, `--train_bars` or any casing of either on the command
+   line — the hyphen folds onto the underscore, because nobody types the
+   underscore. A leftover `--word` that named no parameter is refused rather than
+   bound: it is a typo, and binding it would make it the value of an unrelated
+   parameter — for a `type: bool` that value reads as true, so a mistyped flag
+   would switch on a flag nobody named. `chore t -- --word` still hands it over as
+   data. Single-dash words are untouched, which is what keeps `-f` above working.
+   Too many arguments is an error; a parameter with
    neither argument nor default is an error, not a blank. Bare words are never
    additional task names — multi-target invocation does not exist. Running several
    tasks is `chore a && chore b`, which is what everyone types anyway.

@@ -639,6 +639,9 @@ func bindArgs(t *chorefile.Task, args []string) (map[string]string, error) {
 	for i, value := range args {
 		spec := t.Args[i]
 		name := spec.Name
+		if err := checkFlagShaped(t, value); err != nil {
+			return nil, err
+		}
 		if err := checkArgType(t, spec, value); err != nil {
 			return nil, err
 		}
@@ -692,6 +695,30 @@ func checkArgs(t *chorefile.Task, args []string, callVars map[string]string, sco
 			strings.Join(missing, ", "), t.Name, missing[0], strings.ToUpper(missing[0]))
 	}
 	return nil
+}
+
+// checkFlagShaped refuses a positional argument spelled like a long flag.
+//
+// A --word that reaches binding named no parameter the task declares — the
+// lookup in splitArgs already had its chance — so it is a mistake, and binding
+// it is the worst available answer: it becomes the value of an unrelated
+// parameter, and for a bool NormalizeBool reads anything outside
+// {"", "0", "false", "no", "off"} as "true". Measured on a Taskfile driving a
+// trading platform, `chore tick --total-nonsense` rendered a live `tick`, and
+// `chore backtest --robot-name x` set both holdout and force — a mistyped flag
+// turning on flags nobody named. It is the same failure that once made
+// `chore instance:up --help` START a stack, generalised past --help.
+//
+// Single-dash words are deliberately left alone, because `chore logs -f api`
+// means "run logs with -f and api", and `--` still hands everything after it
+// to the command verbatim.
+func checkFlagShaped(t *chorefile.Task, value string) error {
+	if !strings.HasPrefix(value, "--") || len(value) <= 2 {
+		return nil
+	}
+	return fmt.Errorf(
+		"task %s: %s is not one of its parameters (%s); to pass it along as data instead: chore %s -- %s",
+		t.Name, value, "--"+strings.Join(t.Args.Names(), ", --"), t.Name, value)
 }
 
 // checkArgType rejects a value the parameter cannot mean. Only int is checked:

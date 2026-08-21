@@ -139,6 +139,10 @@ real shell — with real `pipefail` — possible.
   `{name: follow, type: bool, desc: …}` when it is a flag, takes an int, or wants
   a description. One declaration, four call forms:
   `chore up`, `chore up mail4.test`, `chore up --config mail4.test`, `chore up CONFIG=mail4.test`.
+  A two-word parameter is `train_bars` in the file and `--train-bars` or
+  `--train_bars` on the command line. A `--flag` the task does not declare is a
+  usage error naming the ones it does, so a typo cannot quietly become the value
+  of another parameter; `chore up -- --raw` still passes words through verbatim.
   Required-ness follows from the declaration — no default means required, a default
   in `vars:` means optional, and `vars: {x: ""}` means optional with empty being
   meaningful. No marker syntax: the default says it.
