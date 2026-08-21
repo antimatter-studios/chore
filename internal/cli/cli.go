@@ -265,7 +265,7 @@ func declaredParams(p *chorefile.Project, task string) map[string]param {
 	}
 	out := make(map[string]param, len(t.Args))
 	for _, a := range t.Args {
-		out[strings.ToLower(a.Name)] = param{name: a.Name, boolean: a.IsBool()}
+		out[paramKey(a.Name)] = param{name: a.Name, boolean: a.IsBool()}
 	}
 	return out
 }
@@ -275,6 +275,19 @@ func declaredParams(p *chorefile.Project, task string) map[string]param {
 type param struct {
 	name    string
 	boolean bool
+}
+
+// paramKey normalises a parameter spelling for matching: case-folded, with `-`
+// folded onto `_`.
+//
+// A declared name cannot contain a hyphen — it has to be a usable variable
+// name, and the loader rejects `args: [train-bars]` for that reason — so a
+// two-word parameter is always `train_bars` in the file. On the command line
+// the convention is the opposite: nobody types --train_bars. Without this fold
+// the underscore spelling is the only one that reaches the parameter, and
+// --train-bars silently becomes a positional instead.
+func paramKey(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
 }
 
 // splitArgs sorts the words after a task name into positional arguments and
@@ -287,6 +300,12 @@ type param struct {
 // A flag is only consumed when it names a DECLARED parameter; anything else
 // stays a positional word and reaches the task, so `chore logs -f api` still
 // passes -f to the task rather than being rejected here.
+//
+// Nothing is rejected HERE, but a word left over that is spelled like a long
+// flag is refused when it is bound (see bindArgs): reaching that point means it
+// names no parameter the task has, which makes it a typo, and binding it anyway
+// is silent — for a bool parameter NormalizeBool reads the flag's own text as
+// "true".
 func splitArgs(words []string, params map[string]param) ([]string, map[string]string, error) {
 	var args []string
 	vars := map[string]string{}
@@ -296,7 +315,7 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 
 		if strings.HasPrefix(w, "--") && len(w) > 2 {
 			name, value, hasValue := strings.Cut(w[2:], "=")
-			if declared, ok := params[strings.ToLower(name)]; ok {
+			if declared, ok := params[paramKey(name)]; ok {
 				switch {
 				case declared.boolean:
 					// Presence is the value. Crucially it must not eat the next
@@ -319,7 +338,7 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 			// If it names a declared parameter, set the declared spelling too, so
 			// {{.config}} and {{.CONFIG}} cannot disagree inside one task — a
 			// supplied value must beat the default in BOTH cases.
-			if declared, isParam := params[strings.ToLower(name)]; isParam {
+			if declared, isParam := params[paramKey(name)]; isParam {
 				if declared.boolean {
 					value = chorefile.NormalizeBool(value)
 				}
