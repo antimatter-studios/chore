@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- The refusal message now suggests parameters in the spelling a caller would
+  type — `--dry-run` for a `dry_run`, since v0.3.0 made both reach it — rather
+  than echoing the underscored declaration.
+- Corrected the v0.3.0 note below: it cited a `--robot-name` typo as setting
+  `holdout` and `force`. Re-measured against that file, it bound the literal
+  string `--robot-name` to `robot`. The mechanism and the danger are unchanged —
+  a typo silently satisfies whichever parameter comes first — but the example
+  was not reproducible as written.
+
 ## v0.3.0
 
 - **A mistyped `--flag` no longer switches on a different one.** A `--word` that
@@ -7,12 +18,15 @@
   appended as a POSITIONAL, so it bound to whatever the task declares first — and
   for a `type: bool` parameter `NormalizeBool` reads anything outside
   `{"", "0", "false", "no", "off"}` as true, the flag's own text included.
-  Measured on a Taskfile driving a trading platform: `chore tick
-  --total-nonsense` rendered a live `tick`, and `chore backtest --robot-name x`
-  set BOTH `holdout` and `force`, where holdout spends a one-shot resource. It is
-  the same failure that once made `chore instance:up --help` START a stack, fixed
-  then for `--help` alone; this generalises it. Such a word is now refused when it
-  is bound, naming the parameters the task does declare:
+  Measured on a Taskfile driving a trading platform, whose `tick` declares
+  `dry_run` then `force`: `chore tick --total-nonsense` rendered `main.py tick
+  --dry-run`, a flag nobody asked for, and the same file's `backtest` bound the
+  literal string `--robot-name` to its `robot` parameter. Which parameter gets
+  hit is just declaration order, so the same typo lands on a `live` or a
+  `holdout` in any file that declares one first. It is the same failure that once
+  made `chore instance:up --help` START a stack, fixed then for `--help` alone;
+  this generalises it. Such a word is now refused when it is bound, naming the
+  parameters the task does declare:
 
       chore: backtest: task backtest: --robot-name is not one of its parameters
         (--holdout, --force); to pass it along as data instead:
