@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **A `type: bool` parameter now only takes a boolean.** It was the one declared
+  type nothing validated: `checkArgType` rejects a non-numeric `int`, but
+  returned nil for a bool, and `NormalizeBool` reads everything outside
+  `{"", "0", "false", "no", "off"}` as true. So any word bound to a bool set it —
+  `chore deploy typo` switched on `live`, and so did `chore deploy -x`,
+  `--live=maybe` and `LIVE=maybe`.
+
+  This is what made single-dash flags appear to work. chore has no short-flag
+  syntax, so `-f` is data, and data binds by POSITION: with `args: [f, a, b, c]`
+  all bool, `chore t -f -a -b -c` set all four — but so did `-c -b -a -f`, and
+  `-c` alone set `f`. The letters were never read; coercion hid it by answering
+  true either way.
+
+  Non-boolean values are now refused, naming the flag spelling to use instead,
+  and saying why a single-dash word did not do what it looked like:
+
+      task deploy: live must be true or false, got "-x"; a flag is supplied as
+        --live (a single-dash word is data, and binds by position, not by letter)
+
+  Checked where each value still exists as text: positionals in `checkArgType`
+  (exit 1, beside the int check), and `--live=X` / `LIVE=X` in `splitArgs` before
+  `NormalizeBool` collapses them (exit 2, with the other usage errors). The
+  accepted vocabulary is `1 true yes on` / `0 false no off`, empty, any casing.
+  Untouched: `--live` on its own, a bool's default from `vars:`, and single-dash
+  words reaching an untyped parameter — `chore logs -f api` still renders
+  `docker logs -f api`.
+
 - The refusal message now suggests parameters in the spelling a caller would
   type — `--dry-run` for a `dry_run`, since v0.3.0 made both reach it — rather
   than echoing the underscored declaration.

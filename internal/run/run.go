@@ -731,6 +731,24 @@ func checkFlagShaped(t *chorefile.Task, value string) error {
 // a string takes anything, and a bool is set by presence rather than by a value
 // the caller types.
 func checkArgType(t *chorefile.Task, spec chorefile.Arg, value string) error {
+	if spec.IsBool() {
+		if chorefile.BoolLiteral(value) {
+			return nil
+		}
+		// A bool was the one declared type nothing validated, so any word bound
+		// to it became "true".
+		hint := ""
+		if strings.HasPrefix(value, "-") {
+			// The single-dash case earns the longer explanation: it binds by
+			// POSITION, not by letter, so `chore t -c` set the FIRST parameter
+			// whatever letter was typed — and coercion hid it by making the
+			// answer "true" either way.
+			hint = " (a single-dash word is data, and binds by position, not by letter)"
+		}
+		return fmt.Errorf(
+			"task %s: %s must be true or false, got %q; a flag is supplied as --%s%s",
+			t.Name, spec.Name, value, strings.ReplaceAll(spec.Name, "_", "-"), hint)
+	}
 	if spec.Type != chorefile.TypeInt {
 		return nil
 	}
