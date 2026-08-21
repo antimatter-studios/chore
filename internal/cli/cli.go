@@ -141,6 +141,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 
 	r := run.New(project, stdout, stderr)
 	r.DryRun, r.Force, r.Verbose = opts.dry, opts.force, opts.verbose
+	r.ChoreExe, r.ChoreVersion = choreExe(), buildinfo.Get(Version, BuildDate).Version
 	r.NoLifecycle = opts.noLifecycle
 	r.CLIArgs = strings.Join(opts.cliArgs, " ")
 
@@ -157,6 +158,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if opts.help || wantsHelp(rest[1:]) {
 		taskHelp(out, project, rest[0])
 		return 0
+	}
+
+	// Checked here, not at load: --list and --help are inspection, and someone
+	// staring at a version refusal needs to be able to read the file that caused
+	// it. Everything that RUNS passes through this point.
+	if err := checkChoreVersion(project, buildinfo.Get(Version, BuildDate)); err != nil {
+		errUI.Errorf("%v", err)
+		return 1
 	}
 
 	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
@@ -253,6 +262,72 @@ func parseFlags(args []string) (options, []string, error) {
 		rest = append(rest, args[i])
 	}
 	return o, rest, nil
+}
+
+// choreExe is the path of the running binary, for {{.CHORE_EXE}}. It falls back to
+// the bare name: on the rare platform where the path cannot be determined,
+// letting PATH answer is better than interpolating an empty string, which would
+// silently produce a command that runs the next word instead.
+func choreExe() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "chore"
+}
+
+// checkChoreVersion enforces `chore_min_version`, which a file uses to say what
+// it is written against.
+//
+// The need is real: a Taskfile's safety can rest on the RUNNER. One driving
+// money declared every dangerous flag as a string compared to "true" purely
+// because chore < 0.4.0 bound an unknown --flag positionally and let a bool take
+// any value, so `--robot-name x` set an unrelated flag and spent a one-shot
+// resource. With the floor stated, the file can drop the workaround.
+//
+// A dev build is exempt. It is built from source, has no version to compare, and
+// already announces itself with a banner on every run — judging it against a
+// floor would only stop chore from running its own Taskfile.
+func checkChoreVersion(p *chorefile.Project, info buildinfo.Info) error {
+	need, from := choreVersionFloor(p)
+	if need == "" || info.Dev {
+		return nil
+	}
+	want, _ := chorefile.ParseSemver(need) // decode rejected anything else
+	have, ok := chorefile.ParseSemver(info.Version)
+	if !ok {
+		// Not a release and not flagged dev: nothing to compare, so refuse rather
+		// than assume, the same way the rest of this program treats unknown.
+		return fmt.Errorf("%s requires chore_min_version %s, and this build reports"+
+			" %q, which is not a version — refusing rather than assuming", from, need, info.Version)
+	}
+	if chorefile.SemverLess(have, want) {
+		return fmt.Errorf("chore %s is too old: %s requires chore_min_version %s.\n"+
+			"  Upgrade with `brew upgrade chore`, or run an older copy of the file.",
+			info.Version, from, need)
+	}
+	return nil
+}
+
+// choreVersionFloor returns the strictest floor any loaded file declares, and
+// the file that declared it. Includes are covered: a floor belongs to the file
+// that needs it, and the tasks it contributes are still run by this binary.
+func choreVersionFloor(p *chorefile.Project) (need, from string) {
+	var best [3]int
+	consider := func(f *chorefile.File) {
+		if f == nil || f.ChoreMinVersion == "" {
+			return
+		}
+		v, ok := chorefile.ParseSemver(f.ChoreMinVersion)
+		if !ok || !chorefile.SemverLess(best, v) {
+			return
+		}
+		best, need, from = v, f.ChoreMinVersion, f.Path
+	}
+	consider(p.Root)
+	for _, t := range p.Tasks {
+		consider(t.File)
+	}
+	return need, from
 }
 
 // declaredParams returns the parameter names a task declares, lowercased for

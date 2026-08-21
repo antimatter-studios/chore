@@ -54,7 +54,29 @@ Templating: Go `text/template`, with `if`/`else`/`range` (native) and exactly on
 function — `default`, used 216 times. No sprig.
 
 Special variables: `.ROOT_DIR` (27 uses), `.CLI_ARGS` (2). Also provided:
-`.TASK`, `.TASKFILE_DIR`, `.USER_WORKING_DIR`.
+`.TASK`, `.TASKFILE_DIR`, `.USER_WORKING_DIR`, `.CHORE_EXE`, `.CHORE_VERSION`.
+
+`.CHORE_EXE` is the path of the binary actually running — not what PATH answers
+to `chore`. A task that must invoke chore (a launchd plist needs an absolute
+`ProgramArguments` path) otherwise bakes in whichever copy PATH finds, which is
+a different file exactly when it matters: a file whose `env:` pins PATH, or a
+binary run from a checkout. (`CHORE=1` remains an environment variable, so a
+Taskfile can tell this runner from go-task; that is a different thing.)
+
+A file may also state the oldest chore that may run it:
+
+    chore_min_version: 0.4.0
+
+Optional — absent means no restriction, which is what nearly every file wants.
+It exists because a file's safety can depend on the RUNNER, not only on what the
+file says: a Taskfile driving money declared its dangerous flags as strings
+compared to `"true"` for one reason, that chore < 0.4.0 bound an unknown
+`--flag` positionally and let a bool take any value. Stating the floor is what
+lets such a file drop the workaround rather than carry it forever. The strictest
+floor among the loaded files wins, includes included; a dev build is exempt,
+having no version to judge and a banner that already says so; and a chore too
+old to know the field refuses the file anyway, because an unknown top-level key
+is an error — so the floor fails closed even against versions that predate it.
 
 Cheap additions, included because they are a few lines each: `aliases`,
 `ignore_error`, `requires`, `platforms`, `summary`.

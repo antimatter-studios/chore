@@ -8,7 +8,10 @@
 // interactive tasks, output styles — is deliberately absent.
 package chorefile
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Project is a loaded Taskfile and everything it includes, with tasks
 // flattened into one namespaced map (`postgres:up`, `instance:down`).
@@ -22,14 +25,29 @@ type Project struct {
 
 // File is one Taskfile on disk.
 type File struct {
-	Version   string              `yaml:"version"`
-	Silent    bool                `yaml:"silent"`
-	Dotenv    []string            `yaml:"dotenv"`
-	Includes  map[string]*Include `yaml:"includes"`
-	Vars      map[string]Var      `yaml:"vars"`
-	Env       map[string]Var      `yaml:"env"`
-	Tasks     map[string]*Task    `yaml:"tasks"`
-	Lifecycle *Lifecycle          `yaml:"lifecycle"`
+	Version string `yaml:"version"`
+	// ChoreMinVersion is the oldest chore that may run this file. Optional: with
+	// no value there is no restriction, which is what every existing file wants.
+	//
+	// It exists because a file's safety can depend on the RUNNER, not only on
+	// what the file says. A Taskfile driving money declared its dangerous flags
+	// as strings compared to "true" for exactly one reason — chore < 0.4.0 bound
+	// an unknown --flag positionally and let a bool take any value, so a typo set
+	// another flag. Once that is fixed the file can say what it is written
+	// against, instead of carrying the workaround forever.
+	//
+	// A chore too old to know this field refuses the file anyway: unknown
+	// top-level keys are an error, so the floor fails closed even against
+	// versions that predate it. This only replaces a confusing message with an
+	// actionable one.
+	ChoreMinVersion string              `yaml:"chore_min_version"`
+	Silent          bool                `yaml:"silent"`
+	Dotenv          []string            `yaml:"dotenv"`
+	Includes        map[string]*Include `yaml:"includes"`
+	Vars            map[string]Var      `yaml:"vars"`
+	Env             map[string]Var      `yaml:"env"`
+	Tasks           map[string]*Task    `yaml:"tasks"`
+	Lifecycle       *Lifecycle          `yaml:"lifecycle"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -262,6 +280,40 @@ func (as Args) Shorts() []string {
 		}
 	}
 	return out
+}
+
+// ParseSemver reads MAJOR.MINOR.PATCH, with an optional leading v, into
+// comparable parts. ok is false for anything else — including chore's own
+// "dev+a581449", which is deliberately not a version and must not be treated as
+// one.
+func ParseSemver(s string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(s), "v"), ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		if p == "" {
+			return out, false
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// SemverLess compares parts numerically, so 0.10.0 is newer than 0.4.0 — which a
+// string comparison gets backwards.
+func SemverLess(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
 }
 
 // ValidShort reports whether s can be a short flag: exactly one ASCII letter.

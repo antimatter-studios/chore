@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+- **`chore_min_version`: a file can state the oldest chore that may run it.**
+
+      version: '3'
+      chore_min_version: 0.4.0
+
+  Optional — absent means no restriction. It exists because a file's safety can
+  rest on the RUNNER and not only on what the file says. A Taskfile driving a
+  trading platform declared every dangerous flag as a string compared to
+  `"true"`, and ordered its parameters so a stray value landed on a harmless
+  one, for exactly one reason: chore < 0.4.0 bound an unknown `--flag`
+  positionally and let a bool take any value, so `chore backtest --robot-name x`
+  set `holdout=true` and spent a one-shot resource. Stating the floor is what
+  lets that file drop the workarounds instead of carrying them forever.
+
+      chore 0.3.0 is too old: /w/chores.yml requires chore_min_version 0.4.0.
+        Upgrade with `brew upgrade chore`, or run an older copy of the file.
+
+  Details: versions compare NUMERICALLY, so 0.10.0 satisfies a 0.4.0 floor —
+  a string comparison gets that backwards. The strictest floor among the loaded
+  files wins, includes included, and the message names which file asked. A dev
+  build is exempt: it has no version to judge and already banners itself on every
+  run. `--list` and `--help` still work, because someone staring at a refusal has
+  to be able to read the file that caused it. A floor that is not a version is
+  refused at decode time, where it is written.
+
+  A chore too old to know the field refuses the file anyway — an unknown
+  top-level key is an error — so this fails closed even against versions that
+  predate it. It replaces a confusing message with an actionable one.
+
+- **`{{.CHORE_EXE}}` and `{{.CHORE_VERSION}}`**: the binary actually running, and
+  its version. A task that has to invoke chore — a launchd plist needs an
+  absolute `ProgramArguments` path — otherwise resolves the word `chore` through
+  PATH, which answers "the one I would get if I typed it", not "the one running
+  me". Those are different files exactly when it matters: a file whose `env:`
+  pins PATH, or a binary run from a checkout, silently writes the installed copy
+  into the plist instead of itself. (Not `{{.CHORE}}` — that name is already the
+  environment variable set to `1` so a Taskfile can tell this runner from
+  go-task.)
+
 ## v0.4.0
 
 - **Short flags: `-f` can mean `--force`.** A parameter opts in with `short:`:

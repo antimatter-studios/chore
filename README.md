@@ -147,6 +147,10 @@ real shell — with real `pipefail` — possible.
   Required-ness follows from the declaration — no default means required, a default
   in `vars:` means optional, and `vars: {x: ""}` means optional with empty being
   meaningful. No marker syntax: the default says it.
+- **`chore_min_version:` on the file** states the oldest chore that may run it.
+  Optional; absent means no restriction. For a file whose safety depends on the
+  runner — chore < 0.4.0 rebound a mistyped flag onto another one — it is the
+  difference between carrying a workaround forever and saying what you need.
 - **One resolution order, evaluated once at invocation** — arguments, call vars,
   task vars, file vars, dotenv, environment — with arguments bound *before* dotenv
   paths are rendered, so `dotenv: ['config/{{.CONFIG}}/config.env']` works from
