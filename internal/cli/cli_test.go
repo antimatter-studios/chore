@@ -1211,6 +1211,112 @@ func TestSplitArgsFoldsHyphensOntoDeclaredUnderscores(t *testing.T) {
 	}
 }
 
+// TestABoolParameterOnlyTakesABoolean: `type: bool` was the one declared type
+// nothing validated. checkArgType rejects a non-numeric int, but returned nil
+// for a bool, and NormalizeBool reads everything outside
+// {"", "0", "false", "no", "off"} as true — so ANY word bound to a bool set it.
+//
+// That is what made single-dash flags look like they worked. chore has no short
+// flag syntax, so `-f` is data, and data binds by POSITION: given
+// `args: [f, a, b, c]` all bool, `chore t -f -a -b -c` set all four, and so did
+// `-c -b -a -f`, and `-c` alone set f. The letters were never read — coercion
+// hid it by making the answer true either way.
+func TestABoolParameterOnlyTakesABoolean(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\n" +
+			"tasks:\n" +
+			"  deploy:\n" +
+			"    args:\n" +
+			"      - {name: live, type: bool}\n" +
+			"    vars:\n" +
+			"      live: false\n" +
+			"    cmds: ['echo live=[{{.LIVE}}]']\n",
+	})
+
+	t.Run("a word that is not a boolean is refused, not coerced", func(t *testing.T) {
+		for _, value := range []string{"typo", "maybe", "-x", "-f"} {
+			got := runMain(t, root, "--dry", "deploy", value)
+			checkCode(t, got, 1)
+			checkContains(t, got, "stderr", got.stderr, "must be true or false", value)
+			// naming the flag spelling is the whole point: it is what to type instead
+			checkContains(t, got, "stderr", got.stderr, "--live")
+			checkNotContains(t, got, "stdout", got.stdout, "live=[true]")
+		}
+	})
+
+	t.Run("a single-dash value says why the letter did not matter", func(t *testing.T) {
+		got := runMain(t, root, "--dry", "deploy", "-x")
+		checkContains(t, got, "stderr", got.stderr, "binds by position, not by letter")
+
+		// and a plain word does not get that explanation, which would be noise
+		got = runMain(t, root, "--dry", "deploy", "typo")
+		checkNotContains(t, got, "stderr", got.stderr, "binds by position")
+	})
+
+	t.Run("an explicit non-boolean value is refused too", func(t *testing.T) {
+		// Both of these normalise inside splitArgs, so they are checked there —
+		// the only point the text still exists — and are usage errors, exit 2.
+		for _, words := range [][]string{{"--live=maybe"}, {"LIVE=maybe"}, {"--live=nonsense"}} {
+			got := runMain(t, root, append([]string{"--dry", "deploy"}, words...)...)
+			checkCode(t, got, 2)
+			checkContains(t, got, "stderr", got.stderr, "must be true or false")
+			checkNotContains(t, got, "stdout", got.stdout, "live=[true]")
+		}
+	})
+
+	t.Run("every spelling of an actual boolean still works", func(t *testing.T) {
+		for _, c := range []struct {
+			words []string
+			want  string
+		}{
+			{[]string{"--live"}, "live=[true]"},
+			{[]string{"--live=yes"}, "live=[true]"},
+			{[]string{"--live=1"}, "live=[true]"},
+			{[]string{"--live=on"}, "live=[true]"},
+			{[]string{"true"}, "live=[true]"},
+			{[]string{"--live=false"}, "live=[]"},
+			{[]string{"--live=off"}, "live=[]"},
+			{[]string{"false"}, "live=[]"},
+			{[]string{"0"}, "live=[]"},
+			{[]string{"no"}, "live=[]"},
+			{[]string{}, "live=[]"},
+		} {
+			got := runMain(t, root, append([]string{"--dry", "deploy"}, c.words...)...)
+			checkCode(t, got, 0)
+			checkContains(t, got, "stdout", got.stdout, c.want)
+		}
+	})
+}
+
+// A parameter with no declared type takes a single-dash word as DATA, which is
+// the documented reason `chore logs -f api` works, and validating bools must not
+// disturb it. An int keeps its own check, negative numbers included.
+func TestSingleDashDataIsUnaffectedByBoolValidation(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\n" +
+			"tasks:\n" +
+			"  logs:\n" +
+			"    args: [follow, service]\n" +
+			"    cmds: ['echo docker logs {{.FOLLOW}} {{.SERVICE}}']\n" +
+			"  scale:\n" +
+			"    args:\n" +
+			"      - {name: n, type: int}\n" +
+			"    cmds: ['echo n=[{{.N}}]']\n",
+	})
+
+	got := runMain(t, root, "--dry", "logs", "-f", "api")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "docker logs -f api")
+
+	got = runMain(t, root, "--dry", "scale", "-5")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "n=[-5]")
+
+	got = runMain(t, root, "--dry", "scale", "-x")
+	checkCode(t, got, 1)
+	checkContains(t, got, "stderr", got.stderr, "must be a whole number")
+}
+
 // TestHyphenatedSpellingOfAMultiWordParameter: `args: [{name: train_bars}]`
 // declares a parameter no hyphenated flag can reach, because the lookup is
 // strings.ToLower(name) with no dash-to-underscore mapping. A human types

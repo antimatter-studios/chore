@@ -296,5 +296,22 @@ func NormalizeBool(s string) string {
 	return "true"
 }
 
+// BoolLiteral reports whether s is a word NormalizeBool can READ as a boolean,
+// rather than one it merely coerces.
+//
+// NormalizeBool has to answer for every value a variable can arrive with —
+// defaults, dotenv, environment — so "anything not false is true" is the right
+// rule there. At the command line it is the wrong one: it makes every typo a
+// `true`. `chore deploy typo` set a `live` flag, and so did `-x`, because the
+// text was never a boolean and nothing said so. This is the vocabulary a caller
+// is allowed to type, and the caller-facing checks reject the rest.
+func BoolLiteral(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "0", "false", "no", "off", "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // RunOnce reports whether the task should execute at most once per invocation.
 func (t *Task) RunOnce() bool { return t.Run == "once" }

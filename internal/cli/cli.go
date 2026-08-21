@@ -320,6 +320,15 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 				case declared.boolean:
 					// Presence is the value. Crucially it must not eat the next
 					// word: `chore logs --follow api` leaves api as a positional.
+					//
+					// Checked before normalising, which is the only point the
+					// text still exists: NormalizeBool would have turned
+					// --live=maybe into "true" and nothing downstream could
+					// tell it from --live=yes.
+					if hasValue && !chorefile.BoolLiteral(value) {
+						return nil, nil, fmt.Errorf(
+							"--%s must be true or false, got %q", name, value)
+					}
 					value = chorefile.NormalizeBool(valueOr(value, hasValue, "true"))
 				case !hasValue:
 					if i+1 >= len(words) {
@@ -340,6 +349,10 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 			// supplied value must beat the default in BOTH cases.
 			if declared, isParam := params[paramKey(name)]; isParam {
 				if declared.boolean {
+					if !chorefile.BoolLiteral(value) {
+						return nil, nil, fmt.Errorf(
+							"%s must be true or false, got %q", name, value)
+					}
 					value = chorefile.NormalizeBool(value)
 				}
 				setParam(vars, declared.name, value)
