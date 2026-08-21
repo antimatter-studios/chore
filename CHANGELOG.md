@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
 
 - **Short flags: `-f` can mean `--force`.** A parameter opts in with `short:`:
 
