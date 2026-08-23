@@ -208,6 +208,25 @@ real shell — with real `pipefail` — possible.
   `chore a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
 
+## Reuse without new features
+
+A `chores.yml` grows by copy-paste: across five real files, 12–28% of the
+non-comment lines sit inside a run of three or more that appears somewhere else
+in the same project. The tools to stop that are already in the format, and which
+one you want turns on a single question — **does the repeated thing need the
+caller's shell?**
+
+| what repeats | reach for |
+|---|---|
+| a sequence of commands, self-contained | a task, called with `- task:` and `vars:` |
+| a **value** — a flag string, a status, a path | a helper task called through `{{.CHORE_EXE}}` |
+| shell **state** — a variable, a `trap`, a `cd` | a var holding a shell fragment |
+
+A called task runs in a fresh process, so it cannot install a `trap` or set a
+variable the caller will read; a var is interpolated as text, so it can do both
+and cannot return a value. [PATTERNS.md](PATTERNS.md) works each one through with
+a runnable example, and says what none of them fix.
+
 ## Verifying a release
 
 Every release is **reproducible**: the same source, compiler and flags produce
