@@ -1599,6 +1599,22 @@ tasks:
 		checkNotContains(t, got, "stdout", got.stdout, "prepared")
 	})
 
+	t.Run("chore calling itself may run it", func(t *testing.T) {
+		// The value-capture pattern: a `- task:` step returns nothing, so a helper
+		// that produces a STRING is invoked as `{{.CHORE_EXE}} _helper` from inside
+		// a task and its stdout captured by an `sh:` var. That is a command line,
+		// so a naive refusal breaks the one thing an internal helper is most useful
+		// for — and it broke it silently, as a var that would not resolve.
+		//
+		// CHORE=1 is exported to every task script, so its presence means chore is
+		// the caller rather than a person at a prompt.
+		t.Setenv("CHORE", "1")
+		root := writeTree(t, files)
+		got := runMain(t, root, "_prepare")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
 	t.Run("another task may still call it", func(t *testing.T) {
 		root := writeTree(t, files)
 		got := runMain(t, root, "build")

@@ -42,6 +42,15 @@
   through. An alias of an internal task is refused too; the rule cannot depend on
   how the name was typed.
 
+  **One exception, and it is the reason internal helpers are useful for anything
+  but side effects.** A `- task:` step returns nothing, so a helper that produces
+  a *value* is invoked as `{{.CHORE_EXE}} _helper` from inside a task and its
+  stdout captured by an `sh:` var. That is a command line, and refusing it broke
+  the pattern silently — as a variable that would not resolve. `CHORE=1` is
+  already exported to every task script, so its presence distinguishes chore
+  calling itself from a person at a prompt. The rule is **callable by chore, not
+  by a person**.
+
 ## v0.5.0
 
 - **`chore_min_version`: a file can state the oldest chore that may run it.**

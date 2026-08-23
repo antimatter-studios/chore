@@ -53,9 +53,12 @@ following: `--list` hides the task but `chore --help` and an error message will
 still print the name, and a reader wants to know at a glance that they were not
 meant to type it.
 
-`internal:` is enforced, not merely advisory: `chore _dart_defines` is refused,
-and so is any alias of it. `deps:` and `- task:` are untouched — the ban is on
-the command line, not on the task.
+`internal:` is enforced, not merely advisory: `chore _dart_defines` typed at a
+prompt is refused, and so is any alias of it. `deps:` and `- task:` are
+untouched, and so is a nested `{{.CHORE_EXE}} _dart_defines` from inside a task —
+see the next section, which depends on it. The rule is **callable by chore, not
+by a person**, and chore tells the difference by the `CHORE=1` it exports to
+every task script.
 
 ## Calling a helper as a subroutine
 
@@ -123,6 +126,11 @@ flutter run --dart-define=seed=true --dart-define=tab=calendar
 
 Four things make this work, and each is worth knowing:
 
+- **An `internal:` helper is still callable here.** This is a command line, so it
+  looks like the thing `internal:` forbids. It is allowed because `CHORE=1` is in
+  the environment, which means chore is the caller. Enforcing `internal:` without
+  that exception breaks this pattern *silently* — as an `sh:` var that will not
+  resolve.
 - **`.CHORE_EXE`, never a bare `chore`.** It is the binary actually running, not
   whatever PATH answers to — which is a different file exactly when it matters,
   under a `env:` block that pins PATH, or when running a build from a checkout.

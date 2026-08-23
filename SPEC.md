@@ -46,7 +46,7 @@ Exactly what rest-mail uses, plus what is nearly free. Measured, not guessed:
 | `dir:` | 2 | |
 | `dotenv` | 1 | |
 | `includes` (`taskfile`, `dir`, `vars`, `optional`, `flatten`) | 1 | |
-| `internal` | 1 | hidden from `--list`, and refused from the command line |
+| `internal` | 1 | hidden from `--list`; refused from the command line, but callable by chore |
 | `run: once` | 1 | |
 | `defer` | 1 | runs on task exit, in reverse order |
 

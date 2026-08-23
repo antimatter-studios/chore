@@ -114,8 +114,15 @@ func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVar
 	//
 	// Refused before before_all, because a run that will not happen should not run
 	// a setup gate for it.
-	if t, ok := r.Project.Tasks[name]; ok && t.Internal {
-		return fmt.Errorf("%s is internal: another task can call it with deps: or `- task:`, but it cannot be run from the command line", name)
+	// EXCEPT when chore is the caller. CHORE=1 is exported to every task script
+	// (see shell()), so a nested `{{.CHORE_EXE}} _helper` reaching this point is
+	// chore calling itself from inside a run — which is the documented way to
+	// capture a helper's VALUE, since a `- task:` step returns nothing. Refusing
+	// it would have broken the one pattern that makes an internal helper useful
+	// for anything but side effects. The rule is "callable by chore, not by a
+	// person", and this is chore.
+	if t, ok := r.Project.Tasks[name]; ok && t.Internal && os.Getenv("CHORE") == "" {
+		return fmt.Errorf("%s is internal: a task can call it with deps:, `- task:`, or `{{.CHORE_EXE}} %s` — but it cannot be run from the command line", name, name)
 	}
 
 	lc := r.lifecycle()
