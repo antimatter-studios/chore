@@ -166,6 +166,13 @@ real shell — with real `pipefail` — possible.
   installs its own git hooks the first time anyone runs any task,
   `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a run
   with `--no-lifecycle`; never runs for `--list`/`--help`.
+- **Ctrl-C stops the task, not just chore.** A script runs in its own process
+  group, which is what lets cancellation kill what the script started rather than
+  only the shell — but the terminal signals the foreground group, which is chore.
+  SIGINT and SIGTERM cancel the run and take the group with them, so `chore
+  app:run` cannot exit and leave `flutter run` behind. Exit is 128+signal, and
+  teardown (`defer:`, `after_all`) still runs on a bounded budget. A second Ctrl-C
+  is not caught.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
 - **`chore <task> --help` describes the task and runs nothing.** Built from the
@@ -207,6 +214,25 @@ real shell — with real `pipefail` — possible.
 - **No multi-target invocation.** `chore a b` does not mean "run a then b"; that is
   `chore a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
+
+## Reuse without new features
+
+A `chores.yml` grows by copy-paste: across five real files, 12–28% of the
+non-comment lines sit inside a run of three or more that appears somewhere else
+in the same project. The tools to stop that are already in the format, and which
+one you want turns on a single question — **does the repeated thing need the
+caller's shell?**
+
+| what repeats | reach for |
+|---|---|
+| a sequence of commands, self-contained | a task, called with `- task:` and `vars:` |
+| a **value** — a flag string, a status, a path | a helper task called through `{{.CHORE_EXE}}` |
+| shell **state** — a variable, a `trap`, a `cd` | a var holding a shell fragment |
+
+A called task runs in a fresh process, so it cannot install a `trap` or set a
+variable the caller will read; a var is interpolated as text, so it can do both
+and cannot return a value. [PATTERNS.md](PATTERNS.md) works each one through with
+a runnable example, and says what none of them fix.
 
 ## Verifying a release
 

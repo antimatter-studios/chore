@@ -12,8 +12,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/antimatter-studios/chore/internal/buildinfo"
@@ -179,11 +183,73 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// `- task: postgres:down` inside `down`.
 	r.CLIVars = callVars
 
-	if err := r.Invoke(context.Background(), rest[0], args, callVars); err != nil {
+	ctx, stopSignals, interruptedBy := signalContext()
+	defer stopSignals()
+
+	if err := r.Invoke(ctx, rest[0], args, callVars); err != nil {
+		// An interrupted run is not a failed one, and the error it produced is
+		// "context canceled" — true and useless. Report the interrupt, and exit
+		// 128+signal, which is what every shell reports for a signalled command
+		// and what a caller checking $? already knows how to read.
+		if sig := interruptedBy(); sig != 0 {
+			verb := "interrupted"
+			if sig == syscall.SIGTERM {
+				verb = "terminated"
+			}
+			errUI.Errorf("%s: stopped %s and anything it started", verb, rest[0])
+			return 128 + int(sig)
+		}
 		errUI.Errorf("%v", err)
 		return run.ExitCode(err)
 	}
 	return 0
+}
+
+// signalContext returns a context cancelled by SIGINT or SIGTERM, a function to
+// release the handler, and one reporting which signal arrived (0 if none).
+//
+// Without this, Ctrl-C left processes running. A task's script runs in its OWN
+// process group (see internal/shell), so the terminal's SIGINT — which reaches
+// only the foreground process group — never touches it; chore died instantly
+// from the default action, and the Cancel hook that would have killed the
+// group never fired because nothing ever cancelled the context. `chore app:run`
+// exited while `flutter run` carried on.
+//
+// A SECOND signal is deliberately not caught: someone pressing Ctrl-C twice has
+// stopped waiting for a tidy shutdown, and the default action takes over.
+func signalContext() (context.Context, func(), func() syscall.Signal) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	// done releases the waiter when the run ends without a signal. Without it the
+	// goroutine blocks on the channel forever — invisible in a CLI that is about
+	// to exit, but Main is called hundreds of times in one test binary.
+	var got atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		select {
+		case s := <-ch:
+			if sig, ok := s.(syscall.Signal); ok {
+				got.Store(int32(sig))
+			}
+			// Stop catching: a SECOND Ctrl-C means the person has stopped waiting
+			// for a tidy shutdown, and the default action should take over.
+			signal.Stop(ch)
+			cancel()
+		case <-done:
+		}
+	}()
+
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			signal.Stop(ch)
+			close(done)
+			cancel()
+		})
+	}
+	return ctx, stop, func() syscall.Signal { return syscall.Signal(got.Load()) }
 }
 
 type options struct {

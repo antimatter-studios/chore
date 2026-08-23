@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -104,6 +105,26 @@ func New(p *chorefile.Project, out, errOut io.Writer) *Runner {
 // Backward compatible: with no `lifecycle:` block (or --no-lifecycle) this is
 // just Run.
 func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVars map[string]string) (err error) {
+	// `internal: true` means "callable, but not by a person": a helper factored out
+	// of two tasks is part of their implementation, not part of the command
+	// surface. Hiding it from --list said that and did not enforce it, so the
+	// promise was documentation. Refusing it HERE and not in Run is the whole
+	// distinction — Invoke is the command line's entry point and has exactly one
+	// caller, while deps: and `- task:` steps go through Run, which is untouched.
+	//
+	// Refused before before_all, because a run that will not happen should not run
+	// a setup gate for it.
+	// EXCEPT when chore is the caller. CHORE=1 is exported to every task script
+	// (see shell()), so a nested `{{.CHORE_EXE}} _helper` reaching this point is
+	// chore calling itself from inside a run — which is the documented way to
+	// capture a helper's VALUE, since a `- task:` step returns nothing. Refusing
+	// it would have broken the one pattern that makes an internal helper useful
+	// for anything but side effects. The rule is "callable by chore, not by a
+	// person", and this is chore.
+	if t, ok := r.Project.Tasks[name]; ok && t.Internal && os.Getenv("CHORE") == "" {
+		return fmt.Errorf("%s is internal: a task can call it with deps:, `- task:`, or `{{.CHORE_EXE}} %s` — but it cannot be run from the command line", name, name)
+	}
+
 	lc := r.lifecycle()
 	if lc == nil {
 		return r.Run(ctx, name, args, callVars)
@@ -175,6 +196,10 @@ func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, 
 // runHookBestEffort runs a teardown/notify hook whose own failure must not mask
 // the run's outcome; it only reports the failure.
 func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) {
+	// after_all and on_error are teardown, so they run on the way out of an
+	// INTERRUPTED run too — the same reason deferred steps get a grace context.
+	ctx, done := cleanupContext(ctx)
+	defer done()
 	if err := r.runHook(ctx, hook, cmds, trigger); err != nil {
 		fmt.Fprintf(r.Err, "chore: %v\n", err)
 	}
@@ -261,10 +286,19 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 	}
 
+	// Teardown outlives an interrupt. Once the run's context is cancelled,
+	// exec.CommandContext refuses to START a process, so passing ctx straight
+	// through would silently skip every deferred step at the one moment they
+	// matter most: Ctrl-C on a task that brought a topology up. The grace budget
+	// is bounded so a hung teardown cannot wedge the tool — and a second Ctrl-C
+	// is not caught at all, so there is always a way out.
+	cleanupCtx, endCleanup := cleanupContext(ctx)
+	defer endCleanup()
+
 	for i := len(deferred) - 1; i >= 0; i-- {
 		// A deferred step runs even after a failure, and its own failure must not
 		// hide why the task failed in the first place.
-		if err := r.command(ctx, t, scope, sh, deferred[i]); err != nil {
+		if err := r.command(cleanupCtx, t, scope, sh, deferred[i]); err != nil {
 			fmt.Fprintf(r.Err, "task: %s: deferred step failed: %v\n", t.Name, err)
 			if runErr == nil {
 				runErr = err
@@ -281,6 +315,22 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 	}
 	return nil
+}
+
+// cleanupGrace bounds teardown that runs after the run's context is already
+// cancelled. Long enough for a `docker rm` or an `rm -f`, short enough that a
+// wedged teardown is not the thing keeping someone at the terminal.
+const cleanupGrace = 15 * time.Second
+
+// cleanupContext returns a context fit for teardown. While the run is healthy it
+// is the run's own context, so nothing changes. Once that context is cancelled —
+// an interrupt, or a deadline — it is a FRESH one with a bounded budget, because
+// teardown issued on a cancelled context never starts.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.Background(), cleanupGrace)
 }
 
 // deps runs a task's dependencies concurrently. The first failure cancels the

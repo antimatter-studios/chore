@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1550,4 +1551,111 @@ func TestHyphenatedSpellingOfAMultiWordParameter(t *testing.T) {
 	// else is not.
 	checkCode(t, got, 0)
 	checkContains(t, got, "stdout", got.stdout, "bars=[504]")
+}
+
+// TestInternalTaskNotRunnableFromCommandLine covers the half of `internal:` that
+// was missing: it hid a task from --list without refusing it, so the promise was
+// documentation. A helper factored out of two tasks is part of their
+// implementation — calling it directly skips whatever set its arguments up.
+//
+// The other half matters just as much: the ban is on the COMMAND LINE, not on the
+// task, so deps: and `- task:` must keep working. That is the whole reason the
+// check lives in Invoke rather than Run.
+func TestInternalTaskNotRunnableFromCommandLine(t *testing.T) {
+	files := map[string]string{
+		"Taskfile.yml": `version: '3'
+tasks:
+  _prepare:
+    internal: true
+    aliases: [prep]
+    cmds: ['echo prepared']
+  _dep:
+    internal: true
+    cmds: ['echo depended']
+  build:
+    deps: [_dep]
+    cmds:
+      - task: _prepare
+      - echo built
+`,
+	}
+
+	t.Run("running it directly is refused", func(t *testing.T) {
+		root := writeTree(t, files)
+		got := runMain(t, root, "_prepare")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "_prepare", "internal")
+		// The refusal has to happen before the task runs, not after.
+		checkNotContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
+	t.Run("an alias of an internal task is refused too", func(t *testing.T) {
+		// An alias is another spelling of the same task, so it cannot be a way
+		// around the rule — that would make the ban depend on how you typed it.
+		root := writeTree(t, files)
+		got := runMain(t, root, "prep")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "internal")
+		checkNotContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
+	t.Run("chore calling itself may run it", func(t *testing.T) {
+		// The value-capture pattern: a `- task:` step returns nothing, so a helper
+		// that produces a STRING is invoked as `{{.CHORE_EXE}} _helper` from inside
+		// a task and its stdout captured by an `sh:` var. That is a command line,
+		// so a naive refusal breaks the one thing an internal helper is most useful
+		// for — and it broke it silently, as a var that would not resolve.
+		//
+		// CHORE=1 is exported to every task script, so its presence means chore is
+		// the caller rather than a person at a prompt.
+		t.Setenv("CHORE", "1")
+		root := writeTree(t, files)
+		got := runMain(t, root, "_prepare")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
+	t.Run("another task may still call it", func(t *testing.T) {
+		root := writeTree(t, files)
+		got := runMain(t, root, "build")
+		checkCode(t, got, 0)
+		// Both call paths: a dependency and a `- task:` step.
+		checkContains(t, got, "stdout", got.stdout, "depended", "prepared", "built")
+	})
+}
+
+// TestSignalContextCancelsOnInterrupt is the regression test for Ctrl-C leaving
+// processes behind. The mechanism to kill a task's process group existed and was
+// correct; nothing ever triggered it, because chore installed no signal handler
+// and died from the default action instead. This is the missing trigger.
+//
+// It signals the test binary itself, which is safe only because signalContext
+// has already registered its handler by the time we call — that registration is
+// precisely what is under test. Before the fix there was no handler, and the
+// signal would have killed the run outright.
+func TestSignalContextCancelsOnInterrupt(t *testing.T) {
+	ctx, stop, interruptedBy := signalContext()
+	defer stop()
+
+	if ctx.Err() != nil {
+		t.Fatal("context is cancelled before any signal arrived")
+	}
+	if got := interruptedBy(); got != 0 {
+		t.Fatalf("interruptedBy = %v before any signal, want 0", got)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("raising SIGINT: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGINT did not cancel the run context: a task's process group would be left running")
+	}
+	// The signal is reported so the exit code can be 128+n, the convention every
+	// shell uses for a signalled command.
+	if got := interruptedBy(); got != syscall.SIGINT {
+		t.Errorf("interruptedBy = %v, want SIGINT — the exit code is derived from this", got)
+	}
 }

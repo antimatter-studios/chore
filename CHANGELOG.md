@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.6.0
+
+- **Ctrl-C now stops the task, not just chore.** A task's script runs in its own
+  process group (so that cancelling can kill what the script started, rather than
+  only the shell). The terminal delivers SIGINT to the FOREGROUND process group
+  only — which is chore, never the script — and chore installed no handler, so it
+  died instantly from the default action while everything it started carried on.
+  `chore app:run` exited and left `flutter run` holding the terminal; the same
+  went for an emulator, a `docker logs -f`, a `go run` server.
+
+  The machinery to stop them was already there and correct: `cmd.Cancel` kills the
+  whole process group. Nothing ever triggered it, because nothing cancelled the
+  context. Now SIGINT and SIGTERM do.
+
+      chore: interrupted: stopped app:run and anything it started
+
+  The exit code is 128+signal — 130 for Ctrl-C — which is what every shell reports
+  for a signalled command. A SECOND Ctrl-C is deliberately not caught: someone
+  pressing it twice has stopped waiting for a tidy shutdown.
+
+- **Teardown survives an interrupt.** `defer:` steps, and the `after_all` and
+  `on_error` lifecycle hooks, now run on a fresh context with a bounded budget
+  when the run's own has been cancelled. `exec.CommandContext` refuses to START a
+  process on a cancelled context, so passing it straight through would have
+  skipped every teardown step at the one moment they matter most — Ctrl-C on a
+  task that brought a topology up.
+
+- **`internal: true` now refuses to run from the command line.** It hid a task
+  from `--list` and stopped there, so the promise was documentation: `chore
+  _prepare` ran the helper anyway, skipping whatever set its arguments up. This
+  is parity with the format chore reads — go-task refuses an internal task too —
+  and it is what makes a helper safe to factor out of two tasks.
+
+      chore: _prepare is internal: another task can call it with deps: or
+             `- task:`, but it cannot be run from the command line
+
+  The ban is on the command line, not on the task: `deps:` entries and `- task:`
+  steps are untouched, which is why the check lives in `Invoke` — the one entry
+  point the CLI uses — rather than in `Run`, which every internal call goes
+  through. An alias of an internal task is refused too; the rule cannot depend on
+  how the name was typed.
+
+  **One exception, and it is the reason internal helpers are useful for anything
+  but side effects.** A `- task:` step returns nothing, so a helper that produces
+  a *value* is invoked as `{{.CHORE_EXE}} _helper` from inside a task and its
+  stdout captured by an `sh:` var. That is a command line, and refusing it broke
+  the pattern silently — as a variable that would not resolve. `CHORE=1` is
+  already exported to every task script, so its presence distinguishes chore
+  calling itself from a person at a prompt. The rule is **callable by chore, not
+  by a person**.
+
 ## v0.5.0
 
 - **`chore_min_version`: a file can state the oldest chore that may run it.**
