@@ -53,8 +53,9 @@ following: `--list` hides the task but `chore --help` and an error message will
 still print the name, and a reader wants to know at a glance that they were not
 meant to type it.
 
-**Today `internal:` hides a task without forbidding it** — `chore _dart_defines`
-still runs. Treat it as documentation of intent rather than a guarantee.
+`internal:` is enforced, not merely advisory: `chore _dart_defines` is refused,
+and so is any alias of it. `deps:` and `- task:` are untouched — the ban is on
+the command line, not on the task.
 
 ## Calling a helper as a subroutine
 

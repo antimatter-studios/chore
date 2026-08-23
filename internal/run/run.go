@@ -104,6 +104,19 @@ func New(p *chorefile.Project, out, errOut io.Writer) *Runner {
 // Backward compatible: with no `lifecycle:` block (or --no-lifecycle) this is
 // just Run.
 func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVars map[string]string) (err error) {
+	// `internal: true` means "callable, but not by a person": a helper factored out
+	// of two tasks is part of their implementation, not part of the command
+	// surface. Hiding it from --list said that and did not enforce it, so the
+	// promise was documentation. Refusing it HERE and not in Run is the whole
+	// distinction — Invoke is the command line's entry point and has exactly one
+	// caller, while deps: and `- task:` steps go through Run, which is untouched.
+	//
+	// Refused before before_all, because a run that will not happen should not run
+	// a setup gate for it.
+	if t, ok := r.Project.Tasks[name]; ok && t.Internal {
+		return fmt.Errorf("%s is internal: another task can call it with deps: or `- task:`, but it cannot be run from the command line", name)
+	}
+
 	lc := r.lifecycle()
 	if lc == nil {
 		return r.Run(ctx, name, args, callVars)

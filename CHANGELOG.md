@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **`internal: true` now refuses to run from the command line.** It hid a task
+  from `--list` and stopped there, so the promise was documentation: `chore
+  _prepare` ran the helper anyway, skipping whatever set its arguments up. This
+  is parity with the format chore reads — go-task refuses an internal task too —
+  and it is what makes a helper safe to factor out of two tasks.
+
+      chore: _prepare is internal: another task can call it with deps: or
+             `- task:`, but it cannot be run from the command line
+
+  The ban is on the command line, not on the task: `deps:` entries and `- task:`
+  steps are untouched, which is why the check lives in `Invoke` — the one entry
+  point the CLI uses — rather than in `Run`, which every internal call goes
+  through. An alias of an internal task is refused too; the rule cannot depend on
+  how the name was typed.
+
 ## v0.5.0
 
 - **`chore_min_version`: a file can state the oldest chore that may run it.**

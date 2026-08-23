@@ -1551,3 +1551,58 @@ func TestHyphenatedSpellingOfAMultiWordParameter(t *testing.T) {
 	checkCode(t, got, 0)
 	checkContains(t, got, "stdout", got.stdout, "bars=[504]")
 }
+
+// TestInternalTaskNotRunnableFromCommandLine covers the half of `internal:` that
+// was missing: it hid a task from --list without refusing it, so the promise was
+// documentation. A helper factored out of two tasks is part of their
+// implementation — calling it directly skips whatever set its arguments up.
+//
+// The other half matters just as much: the ban is on the COMMAND LINE, not on the
+// task, so deps: and `- task:` must keep working. That is the whole reason the
+// check lives in Invoke rather than Run.
+func TestInternalTaskNotRunnableFromCommandLine(t *testing.T) {
+	files := map[string]string{
+		"Taskfile.yml": `version: '3'
+tasks:
+  _prepare:
+    internal: true
+    aliases: [prep]
+    cmds: ['echo prepared']
+  _dep:
+    internal: true
+    cmds: ['echo depended']
+  build:
+    deps: [_dep]
+    cmds:
+      - task: _prepare
+      - echo built
+`,
+	}
+
+	t.Run("running it directly is refused", func(t *testing.T) {
+		root := writeTree(t, files)
+		got := runMain(t, root, "_prepare")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "_prepare", "internal")
+		// The refusal has to happen before the task runs, not after.
+		checkNotContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
+	t.Run("an alias of an internal task is refused too", func(t *testing.T) {
+		// An alias is another spelling of the same task, so it cannot be a way
+		// around the rule — that would make the ban depend on how you typed it.
+		root := writeTree(t, files)
+		got := runMain(t, root, "prep")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "internal")
+		checkNotContains(t, got, "stdout", got.stdout, "prepared")
+	})
+
+	t.Run("another task may still call it", func(t *testing.T) {
+		root := writeTree(t, files)
+		got := runMain(t, root, "build")
+		checkCode(t, got, 0)
+		// Both call paths: a dependency and a `- task:` step.
+		checkContains(t, got, "stdout", got.stdout, "depended", "prepared", "built")
+	})
+}
