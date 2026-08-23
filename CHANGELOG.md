@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.0
 
 - **Ctrl-C now stops the task, not just chore.** A task's script runs in its own
   process group (so that cancelling can kill what the script started, rather than
