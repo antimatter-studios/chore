@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -188,6 +189,10 @@ func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, 
 // runHookBestEffort runs a teardown/notify hook whose own failure must not mask
 // the run's outcome; it only reports the failure.
 func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) {
+	// after_all and on_error are teardown, so they run on the way out of an
+	// INTERRUPTED run too — the same reason deferred steps get a grace context.
+	ctx, done := cleanupContext(ctx)
+	defer done()
 	if err := r.runHook(ctx, hook, cmds, trigger); err != nil {
 		fmt.Fprintf(r.Err, "chore: %v\n", err)
 	}
@@ -274,10 +279,19 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 	}
 
+	// Teardown outlives an interrupt. Once the run's context is cancelled,
+	// exec.CommandContext refuses to START a process, so passing ctx straight
+	// through would silently skip every deferred step at the one moment they
+	// matter most: Ctrl-C on a task that brought a topology up. The grace budget
+	// is bounded so a hung teardown cannot wedge the tool — and a second Ctrl-C
+	// is not caught at all, so there is always a way out.
+	cleanupCtx, endCleanup := cleanupContext(ctx)
+	defer endCleanup()
+
 	for i := len(deferred) - 1; i >= 0; i-- {
 		// A deferred step runs even after a failure, and its own failure must not
 		// hide why the task failed in the first place.
-		if err := r.command(ctx, t, scope, sh, deferred[i]); err != nil {
+		if err := r.command(cleanupCtx, t, scope, sh, deferred[i]); err != nil {
 			fmt.Fprintf(r.Err, "task: %s: deferred step failed: %v\n", t.Name, err)
 			if runErr == nil {
 				runErr = err
@@ -294,6 +308,22 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 	}
 	return nil
+}
+
+// cleanupGrace bounds teardown that runs after the run's context is already
+// cancelled. Long enough for a `docker rm` or an `rm -f`, short enough that a
+// wedged teardown is not the thing keeping someone at the terminal.
+const cleanupGrace = 15 * time.Second
+
+// cleanupContext returns a context fit for teardown. While the run is healthy it
+// is the run's own context, so nothing changes. Once that context is cancelled —
+// an interrupt, or a deadline — it is a FRESH one with a bounded budget, because
+// teardown issued on a cancelled context never starts.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.Background(), cleanupGrace)
 }
 
 // deps runs a task's dependencies concurrently. The first failure cancels the

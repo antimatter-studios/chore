@@ -202,6 +202,11 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    variables, so the same task with different arguments runs twice.
 7. **Failures propagate.** A non-zero command fails the task and the run unless
    `ignore_error`, and the exit code is the command's.
+8. **An interrupt stops the whole task.** SIGINT and SIGTERM cancel the run, which
+   kills the script's process group — not just the shell — so Ctrl-C cannot leave
+   a `flutter run` or a `docker logs -f` behind. Exit is 128+signal. Teardown
+   (`defer:`, `after_all`, `on_error`) still runs, on a fresh bounded context,
+   because a cancelled one cannot start a process. A second signal is not caught.
 
 ## Package layout and contracts
 

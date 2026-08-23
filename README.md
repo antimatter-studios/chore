@@ -166,6 +166,13 @@ real shell — with real `pipefail` — possible.
   installs its own git hooks the first time anyone runs any task,
   `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a run
   with `--no-lifecycle`; never runs for `--list`/`--help`.
+- **Ctrl-C stops the task, not just chore.** A script runs in its own process
+  group, which is what lets cancellation kill what the script started rather than
+  only the shell — but the terminal signals the foreground group, which is chore.
+  SIGINT and SIGTERM cancel the run and take the group with them, so `chore
+  app:run` cannot exit and leave `flutter run` behind. Exit is 128+signal, and
+  teardown (`defer:`, `after_all`) still runs on a bounded budget. A second Ctrl-C
+  is not caught.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
 - **`chore <task> --help` describes the task and runs nothing.** Built from the

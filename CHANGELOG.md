@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Ctrl-C now stops the task, not just chore.** A task's script runs in its own
+  process group (so that cancelling can kill what the script started, rather than
+  only the shell). The terminal delivers SIGINT to the FOREGROUND process group
+  only — which is chore, never the script — and chore installed no handler, so it
+  died instantly from the default action while everything it started carried on.
+  `chore app:run` exited and left `flutter run` holding the terminal; the same
+  went for an emulator, a `docker logs -f`, a `go run` server.
+
+  The machinery to stop them was already there and correct: `cmd.Cancel` kills the
+  whole process group. Nothing ever triggered it, because nothing cancelled the
+  context. Now SIGINT and SIGTERM do.
+
+      chore: interrupted: stopped app:run and anything it started
+
+  The exit code is 128+signal — 130 for Ctrl-C — which is what every shell reports
+  for a signalled command. A SECOND Ctrl-C is deliberately not caught: someone
+  pressing it twice has stopped waiting for a tidy shutdown.
+
+- **Teardown survives an interrupt.** `defer:` steps, and the `after_all` and
+  `on_error` lifecycle hooks, now run on a fresh context with a bounded budget
+  when the run's own has been cancelled. `exec.CommandContext` refuses to START a
+  process on a cancelled context, so passing it straight through would have
+  skipped every teardown step at the one moment they matter most — Ctrl-C on a
+  task that brought a topology up.
+
 - **`internal: true` now refuses to run from the command line.** It hid a task
   from `--list` and stopped there, so the promise was documentation: `chore
   _prepare` ran the helper anyway, skipping whatever set its arguments up. This

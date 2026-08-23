@@ -1391,3 +1391,87 @@ func TestRootDotenvReachesIncludes(t *testing.T) {
 		t.Errorf("got %s — a mapping must see the root's dotenv", got)
 	}
 }
+
+// TestCancelKillsWhatTheScriptStarted is the regression test for the defect that
+// made Ctrl-C leave processes behind: a task's script runs in its OWN process
+// group, so the terminal's SIGINT — which reaches only the FOREGROUND process
+// group — never touched it. chore died from the default action and the Cancel
+// hook that kills the group never fired, because nothing cancelled the context.
+// `chore app:run` exited while `flutter run` carried on holding the terminal.
+//
+// Note what this does and does not prove. Cancelling has ALWAYS killed the group
+// — that half was built and correct. What was missing was anything to cancel the
+// context, which lives in internal/cli and is tested there. This test pins the
+// mechanism the fix depends on, so a later change to Setpgid or the Cancel hook
+// cannot quietly take the teeth out of the signal handler.
+func TestCancelKillsWhatTheScriptStarted(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		// The `&` and `wait` put the sleeper in a child of the shell, so a kill
+		// aimed only at the shell would leave it running — which is the bug.
+		"serve": {Cmds: []chorefile.Cmd{
+			{Cmd: "(sleep 3; printf survived > survived.txt) & wait"},
+		}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+
+	if err := f.r.Run(ctx, "serve", nil, nil); err == nil {
+		t.Fatal("run returned nil, want the cancellation error")
+	}
+
+	// Outlive the sleeper: if the group survived cancellation it writes the file
+	// while we wait here, and a passing test would only mean we did not look.
+	time.Sleep(4 * time.Second)
+	if _, err := os.Stat(filepath.Join(f.dir, "survived.txt")); err == nil {
+		t.Error("survived.txt exists: cancelling killed the shell but not the process it started")
+	}
+}
+
+// TestDeferredStepsStillRunAfterCancel guards the other half. exec.CommandContext
+// refuses to START a process on a cancelled context, so passing the run's context
+// straight through to teardown silently skipped every deferred step at the one
+// moment they matter most — Ctrl-C on a task that brought a topology up.
+func TestDeferredStepsStillRunAfterCancel(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"deploy": {Cmds: []chorefile.Cmd{
+			{Cmd: "printf down > teardown.txt", Defer: true},
+			{Cmd: "sleep 5"},
+		}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+
+	if err := f.r.Run(ctx, "deploy", nil, nil); err == nil {
+		t.Fatal("run returned nil, want the cancellation error")
+	}
+	if got := f.read("teardown.txt"); got != "down" {
+		t.Errorf("teardown.txt = %q, want %q — deferred teardown was skipped on cancel", got, "down")
+	}
+}
+
+// TestCleanupContextOnlyReplacesACancelledOne: teardown must not get a fresh
+// deadline while the run is healthy, or a `defer:` step in a long task would be
+// given a budget the task itself never had.
+func TestCleanupContextOnlyReplacesACancelledOne(t *testing.T) {
+	healthy, cancelHealthy := context.WithCancel(context.Background())
+	defer cancelHealthy()
+	if got, done := cleanupContext(healthy); got != healthy {
+		done()
+		t.Error("a healthy context was replaced; teardown should inherit the run's own")
+	} else {
+		done()
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, done := cleanupContext(cancelled)
+	defer done()
+	if got.Err() != nil {
+		t.Error("teardown context is already cancelled: no teardown could start")
+	}
+	if _, ok := got.Deadline(); !ok {
+		t.Error("teardown context has no deadline: a wedged teardown would hang the run")
+	}
+}

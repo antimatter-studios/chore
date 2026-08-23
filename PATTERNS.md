@@ -202,6 +202,9 @@ cmd ran, SCRIPTVAR=hello
 defer A - script var is []
 ```
 
+Deferred steps also run when the run is interrupted — Ctrl-C on a task that
+brought a topology up still tears it down, on a bounded budget.
+
 So: `defer:` for anything nameable from a chore var — a file at a known path, a
 container by name, a network. A shell `trap` for anything the script itself
 computed. Reach for `defer:` first; it is visible in the file as a step rather

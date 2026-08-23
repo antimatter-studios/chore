@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1605,4 +1606,40 @@ tasks:
 		// Both call paths: a dependency and a `- task:` step.
 		checkContains(t, got, "stdout", got.stdout, "depended", "prepared", "built")
 	})
+}
+
+// TestSignalContextCancelsOnInterrupt is the regression test for Ctrl-C leaving
+// processes behind. The mechanism to kill a task's process group existed and was
+// correct; nothing ever triggered it, because chore installed no signal handler
+// and died from the default action instead. This is the missing trigger.
+//
+// It signals the test binary itself, which is safe only because signalContext
+// has already registered its handler by the time we call — that registration is
+// precisely what is under test. Before the fix there was no handler, and the
+// signal would have killed the run outright.
+func TestSignalContextCancelsOnInterrupt(t *testing.T) {
+	ctx, stop, interruptedBy := signalContext()
+	defer stop()
+
+	if ctx.Err() != nil {
+		t.Fatal("context is cancelled before any signal arrived")
+	}
+	if got := interruptedBy(); got != 0 {
+		t.Fatalf("interruptedBy = %v before any signal, want 0", got)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("raising SIGINT: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGINT did not cancel the run context: a task's process group would be left running")
+	}
+	// The signal is reported so the exit code can be 128+n, the convention every
+	// shell uses for a signalled command.
+	if got := interruptedBy(); got != syscall.SIGINT {
+		t.Errorf("interruptedBy = %v, want SIGINT — the exit code is derived from this", got)
+	}
 }
