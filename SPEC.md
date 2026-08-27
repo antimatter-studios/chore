@@ -1,7 +1,8 @@
 # chore — spec
 
-A task runner that reads `chores.yml` — go-task's format under a name of its\nown — supports the features one real project
-uses, and fixes the semantics that make Task unusable as a control plane.
+A task runner that reads `chores.yml` — go-task's format under a name of its own
+— supports the features one real project uses, and fixes the semantics that make
+Task unusable as a control plane.
 
 Binary: `chore`. Platforms: macOS and Linux. No Windows, which is why this can stay
 small — the only reason Task embeds a shell interpreter is Windows support.
@@ -9,7 +10,8 @@ small — the only reason Task embeds a shell interpreter is Windows support.
 ## Why
 
 Measured against rest-mail's `Taskfile.yml` + `tasks/*.yml` (3,131 lines, 153
-tasks), three Task behaviours are not quirks but defects:
+tasks, as it stood on 2026-07-27), three Task behaviours are not quirks but
+defects:
 
 1. **A task cannot take an argument.** Bare words after a task name are more task
    names, so `chore up mail4.test` is impossible; the value must arrive as an
@@ -29,32 +31,46 @@ include `reference-mailserver` at all because of it, and has to shell out with
 
 ## Feature set
 
-Exactly what rest-mail uses, plus what is nearly free. Measured, not guessed:
+Exactly what rest-mail uses, plus what is nearly free. Measured, not guessed —
+**and a measurement of somebody else's repository is a dated reading, not a
+property of this one.** The first column is the 2026-07-27 survey the feature set
+was chosen from; the second is the same corpus re-counted on 2026-08-27, at
+rest-mail `373cf2a`, which has since migrated to `chores.yml` and grown to
+**3,351 lines and 159 tasks**. Both columns are kept because the design decision
+was made against the first and only the second is current.
 
-| feature | uses in rest-mail | notes |
-|---|---|---|
-| `desc` | 128 | `--list` |
-| `cmds` (string, `- task:` ref, `- \|` block) | 124 | |
-| `vars` | 32 | |
-| `deps` | 24 | run concurrently |
-| `silent` | 10 | file- and task-level |
-| `sources` | 9 | checksum up-to-date check |
-| `generates` | 8 | |
-| `sh:` dynamic vars | 4 | |
-| `env:` | 4 | |
-| `status` | 3 | shell exit code check |
-| `dir:` | 2 | |
-| `dotenv` | 1 | |
-| `includes` (`taskfile`, `dir`, `vars`, `optional`, `flatten`) | 1 | |
-| `internal` | 1 | hidden from `--list`; refused from the command line, but callable by chore |
-| `run: once` | 1 | |
-| `defer` | 1 | runs on task exit, in reverse order |
+| feature | 2026-07-27 | 2026-08-27 | notes |
+|---|---|---|---|
+| `desc` | 128 | 136 | `--list` |
+| `cmds` (string, `- task:` ref, `- \|` block) | 124 | 131 | |
+| `vars` | 32 | 39 | |
+| `deps` | 24 | 18 | run concurrently |
+| `silent` | 10 | 10 | file- and task-level |
+| `sources` | 9 | 9 | checksum up-to-date check |
+| `generates` | 8 | 8 | |
+| `sh:` dynamic vars | 4 | 6 | |
+| `env:` | 4 | 3 | |
+| `status` | 3 | 3 | shell exit code check |
+| `dir:` | 2 | 2 | |
+| `dotenv` | 1 | 8 | |
+| `includes` (`taskfile`, `dir`, `vars`, `optional`, `flatten`) | 1 | 1 | |
+| `internal` | 1 | 2 | hidden from `--list`; refused from the command line, but callable by chore |
+| `run: once` | 1 | **0** | no longer used there; kept because the semantics are load-bearing |
+| `defer` | 1 | 1 | positional; runs on task exit, in reverse order — see [Hooks](#hooks) |
+
+The re-count is `grep -cE '^[[:space:]]*<key>:'` over `chores.yml tasks/*.yml`,
+which is **not provably the method that produced the first column** — nine of the
+sixteen rows reproduce it exactly, which is corroboration rather than proof. Read
+a row that moved as "the corpus moved, or the method differs", and re-run the
+grep rather than believing either column.
 
 Templating: Go `text/template`, with `if`/`else`/`range` (native) and exactly one
-function — `default`, used 216 times. No sprig.
+function — `default`, used 216 times in the first survey and 220 in the second.
+No sprig.
 
-Special variables: `.ROOT_DIR` (27 uses), `.CLI_ARGS` (2). Also provided:
-`.TASK`, `.TASKFILE_DIR`, `.USER_WORKING_DIR`, `.CHORE_EXE`, `.CHORE_VERSION`.
+Special variables: `.ROOT_DIR` (27 uses), `.CLI_ARGS` (2) — both unchanged
+between the two surveys. Also provided: `.TASK`, `.TASKFILE_DIR`,
+`.USER_WORKING_DIR`, `.CHORE_EXE`, `.CHORE_VERSION`.
 
 `.CHORE_EXE` is the path of the binary actually running — not what PATH answers
 to `chore`. A task that must invoke chore (a launchd plist needs an absolute
@@ -83,17 +99,153 @@ Cheap additions, included because they are a few lines each: `aliases`,
 
 **chore-only extension — `lifecycle:`**: a top-level block with `before_all`,
 `after_all` and `on_error`, run once around the invoked task, not per task. Task
-has no equivalent. The point is setup/teardown that does not have to be wired into
-every task as a dependency — and, unlike a `deps:` entry, it runs even when the
-task it wraps is up to date, because it is not that task's prerequisite.
-`before_all` is a gate (its failure stops the run); `after_all` runs on the way
-out once the task has been entered; `on_error` runs on any non-zero. Skipped for
-`--list`/`--help`/`version`; off with `--no-lifecycle`; `{{.TASK}}` is the invoked
-task. Canonical use: a self-installing repo guard, `before_all: [{task: hooks:ensure}]`.
+has no equivalent. It is one of the program's four hooks, and the only one that
+is not written as a step; the family is specified together under
+[Hooks](#hooks), because looking for a hook and finding only `defer:` — filed
+under `cmds` as a step form — is how the other three go unfound.
 
 **Explicitly not supported**: remote/git includes, `watch`, `for:`/matrix
 expansion, `prompt`, `interactive`, output styles (group/prefixed),
 `set`/`shopt`, v2 schema, shell completions, Windows.
+
+## Hooks
+
+Four hooks, and they belong to two different families. **The distinction that
+decides which one you want is not what they do but WHEN they are scoped:**
+
+| hook | written as | scope | fires |
+|---|---|---|---|
+| `lifecycle.before_all` | a top-level block | once per **run** | before the invoked task, as a gate |
+| `lifecycle.after_all` | a top-level block | once per **run** | on the way out, success or failure |
+| `lifecycle.on_error` | a top-level block | once per **run** | on any non-zero |
+| `defer:` | a **step**, inside `cmds:` | once per **task** | when that task finishes, in reverse order |
+
+`defer:` is the odd one, and it is the reason this section exists: it is the only
+hook that is **positional**, so it is written where a step goes rather than where
+a setting goes, and anyone searching a `chores.yml` reference for "hooks" finds
+the other three and not it.
+
+### Why `defer:` cannot be a task field
+
+Because a hook that registers itself *at a point in the script* can say things an
+unconditional field cannot:
+
+```yaml
+cmds:
+  - docker compose up -d
+  - defer: docker compose down     # only registers if `up` was reached
+  - ./run-tests.sh
+```
+
+If `docker compose up` fails, the `defer:` is never reached, so `down` never
+registers and never runs — which is correct, because nothing came up. An
+`on_failure:` field on the task would have to run `down` against a stack that
+does not exist. Move the `defer:` above the `up` and `down` runs unconditionally;
+that choice is what the position is for.
+
+Measured, on 0.6.0:
+
+```
+defer registered BEFORE a failing step   -> it RUNS
+defer registered AFTER  a failing step   -> it does NOT run, and never registered
+```
+
+### `lifecycle:` — once around the whole run
+
+```yaml
+lifecycle:
+  before_all:
+    - task: hooks:ensure
+  after_all:
+    - echo "done with {{.TASK}}"
+  on_error:
+    - ./notify-failure.sh
+```
+
+- **`before_all` is a gate.** If it fails, the invoked task never starts,
+  `after_all` never runs, and the run exits with `before_all`'s status.
+  `on_error` still fires.
+- **`after_all` runs once the task has been entered**, whether the task
+  succeeded or not, so it can tear down what `before_all` set up.
+- **`on_error` fires for a non-zero from either `before_all` or the task.**
+- **They run even when the task they wrap is up to date**, which a `deps:` entry
+  could not: a dependency is skipped along with the task it gates, and a
+  lifecycle hook is not that task's prerequisite. This is the whole reason the
+  block exists — a self-installing repo guard has to run on
+  `chore build` when `build` has nothing to do.
+- **`{{.TASK}}` is the invoked task's name.**
+- **Only the ROOT file's block runs.** A `lifecycle:` in an included file is
+  ignored, silently — no warning, no error. Running `chore sub:hello` runs the
+  root's hooks and not the include's.
+- **Skipped entirely for `--list`, `--help`, `chore <task> --help` and
+  `--version`**, and for a whole run with `--no-lifecycle`.
+- **A MISTYPED task name still runs them.** Against a file whose task is `ok`,
+  `chore okk` runs `before_all`, fails with
+  `no task "okk" (did you mean: ok?)`, then runs `after_all` and `on_error`.
+  The name is resolved inside the run, not before it, so a `before_all` that
+  installs git hooks fires on a typo — harmless for a guard, and not harmless
+  for anything expensive.
+- **An `internal:` task typed at the prompt is refused BEFORE `before_all`**, so
+  that one case runs no hook at all, `on_error` included. A run that will not
+  happen does not run a setup gate for it.
+
+### `--no-lifecycle` turns off hooks, not dependencies
+
+It suppresses the three `lifecycle:` hooks and nothing else. `deps:` still run,
+and so do `defer:` steps — they are the task's own, not the file's.
+
+**As of 0.6.0 the flag works and `chore --help` does not list it**, so the only
+way to find it is this document. Measured: `chore --no-lifecycle <task>` skips
+the hooks and exits 0, while `chore --help` prints **nine** flags and this is not
+one of them. The block above is the CLI's real surface, `--help`'s is nine tenths
+of it.
+
+### What a failure in a hook costs
+
+This is the one place the two families genuinely disagree, and it is worth
+knowing before you put a `docker rm` in either.
+
+| the failing thing | the run's exit status |
+|---|---|
+| a `defer:`, in a task that otherwise succeeded | **the run FAILS**, with the defer's own status |
+| a `defer:`, in a task that had already failed | unchanged — the task's status wins, the defer is reported on stderr |
+| `after_all` | **unchanged** — reported on stderr, exit status untouched |
+
+So `defer:` failure is fatal and `after_all` failure is not. Either way the
+message names the task and unwinding **continues** — a defer that fails does not
+stop the ones registered before it:
+
+```
+task: greenbody: deferred step failed: greenbody: exit status 9
+```
+
+### Ordering, and what runs after an interrupt
+
+Registered `D1 D2 D3`, a task unwinds `D3 D2 D1`. Across the whole run the order
+on a failure is: the task's own defers (innermost first), then `after_all`, then
+`on_error`.
+
+**All of it survives Ctrl-C.** SIGINT and SIGTERM cancel the run and kill the
+script's process group, and teardown — `defer:`, `after_all`, `on_error` — then
+runs on a **fresh** context with a bounded grace budget, because a cancelled
+context cannot start a process. Exit is 128+signal. A second signal is not
+caught, so there is always a way out.
+
+### Two things `defer:` does not do
+
+- **It does not run for a task that was up to date.** `sources:`/`generates:` and
+  `status:` both short-circuit before the command list is entered, so nothing
+  registers — measured separately for each. `lifecycle:` hooks *do* still run in that case — the asymmetry is
+  deliberate and is the point of the block.
+- **It does not see the script's shell.** A deferred step runs in a fresh
+  process, so it reads chore's variables and none of the script's. Anything the
+  script itself computed needs a shell `trap`; see
+  [PATTERNS.md](PATTERNS.md#cleanup-defer-or-trap).
+
+**Not built, and not to be documented as if it were:** per-task `before`,
+`on_success`, `on_failure` and `after` fields, and a rename of `on_error` to
+`on_failure`. They are designed. As of 0.6.0 the four hooks above are all there
+is.
 
 ## Fixed semantics
 
@@ -115,8 +267,9 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
    rather than "false", because a Go template treats any non-empty string as true
    and the shell idiom is `[ -n "$FLAG" ]`.
 
-   One declaration, four call forms, all equivalent and all bound before dotenv
-   resolves:
+   One declaration, five call forms — the first takes the declared default, the
+   other four supply a value and are equivalent to each other. All are bound
+   before dotenv resolves:
 
        chore up                       # default from vars
        chore up mail4.test            # positional, in declared order
@@ -278,7 +431,7 @@ func (s *Scope) Set(k, v string)
 func (s *Scope) Get(k string) (string, bool)
 func (s *Scope) All() map[string]string
 func (s *Scope) Render(text string) (string, error) // text/template + `default`
-func (s *Scope) Resolve(ctx context.Context, vars map[string]taskfile.Var, sh Shell) (map[string]string, error)
+func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap Capturer) (map[string]string, error)
 ```
 
 `Resolve` renders each var's `Value` against the current scope, or runs `Sh` and
@@ -288,7 +441,7 @@ string (as Task does), but `requires:` can make it an error.
 ### internal/loader
 
 ```go
-func Load(path string) (*taskfile.Project, error)
+func Load(path string) (*chorefile.Project, error)
 ```
 
 Reads the root Taskfile, resolves `includes` recursively (relative to the
@@ -300,7 +453,7 @@ their include layer — not merged into the parent.
 ### internal/fingerprint
 
 ```go
-func UpToDate(ctx context.Context, t *taskfile.Task, sc *tmpl.Scope, sh shell.Shell, cacheDir string) (bool, error)
+func UpToDate(ctx context.Context, t *chorefile.Task, r Renderer, sh Runner, dir, cacheDir string) (bool, error)
 ```
 
 `status:` — every command exits zero → up to date. `sources:`/`generates:` —
@@ -312,10 +465,13 @@ missing generated file means not up to date.
 
 ```go
 type Runner struct {
-    Project *taskfile.Project
+    Project *chorefile.Project
     Out, Err io.Writer
-    DryRun, Force, Verbose bool
+    DryRun, Force, Verbose, NoLifecycle bool
+    CLIArgs string                      // everything after `--`
+    ChoreExe, ChoreVersion string        // {{.CHORE_EXE}}, {{.CHORE_VERSION}}
 }
+func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVars map[string]string) error
 func (r *Runner) Run(ctx context.Context, name string, args []string, callVars map[string]string) error
 ```
 
@@ -333,12 +489,16 @@ func Main(args []string, stdout, stderr io.Writer) int
 
 ```
 chore [flags] <task> [args...] [-- extra]
-  -C, --dir DIR     change to DIR before reading Taskfile.yml
-  -f, --file FILE   Taskfile to read (default Taskfile.yml, searched upward)
-  -l, --list        list tasks with descriptions, grouped by namespace
-      --dry         print commands without running them
-      --force       ignore up-to-date checks
-  -v, --verbose     echo commands before running
+  -C, --dir DIR       change to DIR before looking for the file
+  -f, --file FILE     file to read (default chores.yml, searched upward)
+  -l, --list          list tasks with descriptions, grouped by namespace
+      --dry           print commands without running them
+      --force         ignore up-to-date checks
+  -v, --verbose       echo commands even for silent tasks
+      --no-color      plain output (also: NO_COLOR, or a non-terminal)
+      --no-lifecycle  skip the file's lifecycle: hooks for this run
+  -h, --help          usage, or a task's own help when a task is named
+      --version       print the version
 ```
 
 Everything after `--` becomes `.CLI_ARGS`. Unknown task → error listing near
@@ -346,7 +506,12 @@ matches. No task → `--list`.
 
 ## Acceptance
 
-The binary must run rest-mail's Taskfile **unmodified**:
+The binary must run rest-mail's Taskfile **unmodified**. These are the criteria
+as written against that repository's 2026-07-27 state, and are kept in that tense:
+rest-mail has since adopted chore, so criterion 1 no longer has a matching pair
+to be true of — `chore --list` is now a **superset** of `task --list` there, by
+the two peer repositories go-task cannot reach. See README's Status section for
+the re-measurement.
 
 1. `chore --list` lists all 153 tasks, matching `task --list` modulo ordering.
 2. `chore status`, `chore ps`, `chore config:check` behave as their Task equivalents.

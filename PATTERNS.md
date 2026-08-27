@@ -7,6 +7,13 @@ deionizer — **12–28% of the non-comment lines sit inside a run of three or m
 lines that appears somewhere else in the same project**, and the ratio barely
 moves with the size of the file. rest-mail's 2,284 code lines carry 416 of them.
 
+That survey is from 2026-07-27. Re-checked on 2026-08-27 at rest-mail `373cf2a`:
+the **2,284** re-derives exactly (`cat chores.yml tasks/*.yml | grep -vE '^\s*(#|$)' | wc -l`),
+and an independent reimplementation of the run-of-three measure lands at
+**384–408** depending on whether indentation is compared — corroborating the 416
+without reproducing it, so the exact method is not recoverable from the figure.
+Treat the percentages as the right order of magnitude and not as a constant.
+
 Everything in this document works today and none of it needed a new feature. It
 is written because the pieces were already there and nobody could see them: the
 question "how do I stop repeating myself" had no answer in the README, so the
@@ -220,6 +227,41 @@ than buried in the middle of a heredoc.
 
 (YAML footnote: `- defer: echo "gone: yes"` fails to parse — the `: ` inside the
 scalar. Quote the whole value.)
+
+### Where you put it is the whole point
+
+`defer:` is a **hook**, and the only one written as a step rather than as a
+setting — which is why it is easy to reach for a task field that does not exist.
+[SPEC.md's Hooks section](SPEC.md#hooks) lists it beside `lifecycle:`'s
+`before_all`/`after_all`/`on_error`. Three consequences matter here, and all
+three fall out of it being positional:
+
+- **A `defer:` registers only when the step is reached**, so a cleanup written
+  *after* the thing it cleans up never fires if that thing failed:
+
+  ```yaml
+  cmds:
+    - docker compose up -d
+    - defer: docker compose down     # only registers if `up` was reached
+    - ./run-tests.sh
+  ```
+
+  Nothing came up, so nothing is torn down — which is correct, and is what no
+  unconditional field could express. Put the `defer:` above the `up` and you get
+  the other behaviour, unconditionally. That choice is the feature.
+- **A `defer:` that fails FAILS AN OTHERWISE-GREEN TASK**, with the deferred
+  step's own exit status. It does not mask a task that had already failed, and
+  either way unwinding continues — a failing step does not strand the ones
+  registered before it. (An `after_all` that fails only prints; cleanup written
+  as a `defer:` is load-bearing in a way cleanup written as a lifecycle hook is
+  not.)
+- **A task that was up to date runs no defers at all.** `sources:`/`generates:`
+  or `status:` short-circuit before the command list is entered, so nothing is
+  registered. `lifecycle:` hooks still run in that case; `defer:` does not.
+
+`defer:` is also scoped to **its own task**, not to the run: a `deps:` entry's
+defers fire when that dep finishes — before the depending task's body starts —
+and a `- task:` step's defers fire when that step returns, mid-parent.
 
 ## What none of this fixes
 

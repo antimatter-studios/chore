@@ -158,21 +158,39 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
-- **`lifecycle:` hooks run once around a whole invocation**, not per task —
-  `before_all`, `after_all`, `on_error`. One block covers every task instead of
-  wiring a `deps:` entry into each, and it fires even when the task it wraps is up
-  to date (a dependency would be skipped along with the task). `before_all` is a
-  gate — if it fails, the task never starts. The use it was built for: a repo that
-  installs its own git hooks the first time anyone runs any task,
-  `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a run
-  with `--no-lifecycle`; never runs for `--list`/`--help`.
+- **Four hooks, in two families** — and the second family is easy to miss because
+  it is not written as a setting. [SPEC.md's Hooks
+  section](SPEC.md#hooks) has all four together.
+  - **`lifecycle:` runs once around a whole invocation**, not per task —
+    `before_all`, `after_all`, `on_error`. One block covers every task instead of
+    wiring a `deps:` entry into each, and it fires even when the task it wraps is
+    up to date (a dependency would be skipped along with the task). `before_all`
+    is a gate — if it fails, the task never starts. The use it was built for: a
+    repo that installs its own git hooks the first time anyone runs any task,
+    `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a
+    run with `--no-lifecycle` — which turns off hooks and *not* `deps:`; never
+    runs for `--list`/`--help`/`--version`.
+  - **`defer:` runs once per task, and is POSITIONAL** — a step inside `cmds:`,
+    not a field on the task, because where you put it is information:
+
+    ```yaml
+    cmds:
+      - docker compose up -d
+      - defer: docker compose down     # only registers if `up` was reached
+      - ./run-tests.sh
+    ```
+
+    If `up` fails, `down` never registers and never runs — correct, because
+    nothing came up. An unconditional `on_failure:` field could not say that.
+    Deferred steps unwind in reverse order, and a `defer:` that fails **fails an
+    otherwise-green task** (an `after_all` that fails only prints).
 - **Ctrl-C stops the task, not just chore.** A script runs in its own process
   group, which is what lets cancellation kill what the script started rather than
   only the shell — but the terminal signals the foreground group, which is chore.
   SIGINT and SIGTERM cancel the run and take the group with them, so `chore
   app:run` cannot exit and leave `flutter run` behind. Exit is 128+signal, and
-  teardown (`defer:`, `after_all`) still runs on a bounded budget. A second Ctrl-C
-  is not caught.
+  teardown — `defer:`, `after_all` and `on_error` — still runs, on a fresh context
+  with a bounded budget. A second Ctrl-C is not caught.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
 - **`chore <task> --help` describes the task and runs nothing.** Built from the
@@ -244,6 +262,10 @@ byte-identical binaries, so you do not have to trust the pipeline that built the
 chore verify-release 0.1.0 darwin arm64
 ```
 
+(A task in this repository's own `chores.yml`, not a built-in subcommand — run it
+from a chore checkout. Outside one you get `no chores.yml here or in any parent
+directory`.)
+
 ```
   published: 9bc094c15e4286137a146e9e21501d9a2b2d28c4f241e785d53622a640dcd005
   rebuilt:   9bc094c15e4286137a146e9e21501d9a2b2d28c4f241e785d53622a640dcd005
@@ -312,8 +334,24 @@ go test ./...
 
 ## Status
 
-Early. It runs a real 153-task Taskfile unmodified — `chore --list` matches
-`task --list` exactly — including a 193-line shell body with nested template
-escaping, dependency fan-out, and `sources:`-gated builds. Two behaviour
+Early. It ran a real 153-task Taskfile unmodified on 2026-07-27, `chore --list`
+matching `task --list` exactly — including a 193-line shell body with nested
+template escaping, dependency fan-out, and `sources:`-gated builds. Two behaviour
 differences are documented in [SPEC.md](SPEC.md#deviations-found-while-running-rest-mails-taskfile);
 both come from using the real shell.
+
+**That corpus has since adopted chore, so the equality claim no longer has a
+matching pair to be true of.** Re-measured on 2026-08-27 at rest-mail `373cf2a`,
+which now ships `chores.yml` rather than `Taskfile.yml`:
+
+```
+chore --list                        159 tasks
+task -t chores.yml --list-all       134 tasks     (go-task 3.53.1)
+```
+
+Every one of go-task's 134 is in chore's 159. The 25 extra are two whole
+namespaces — `testbed:*` and `website:*` — included by **directory** rather than
+by filename, and both peers have themselves migrated to `chores.yml`. go-task's
+include wants a `Taskfile.yml`, does not find one, and (being `optional: true`)
+skips them in silence. That is the cross-repository composition in *Why not just*
+above, measured from the other side.
