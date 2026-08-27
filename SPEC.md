@@ -322,6 +322,12 @@ is.
 
    A value binds under the declared name AND its uppercase form, because Taskfile
    convention is uppercase and a case mismatch would silently interpolate nothing.
+   That applies to a value handed over by a `- task:` step or a `deps:` entry
+   exactly as it does to one typed at a prompt, and a spelling that differs only
+   in case names the same parameter — the two call paths fold identically, or a
+   caller's value reaches one spelling while the other keeps whatever a file var
+   or the environment said. One parameter given two different values under two
+   spellings is refused rather than ranked.
    A flag is consumed only if it names a declared parameter, so `chore logs -f api`
    still passes `-f` to the task. A declared name cannot contain a hyphen (it has
    to be a usable variable name), so a two-word parameter is `train_bars` in the
