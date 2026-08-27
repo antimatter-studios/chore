@@ -161,4 +161,7 @@ jobs:
       # goreleaser's `brews:` block would invert that, which is why it is not used.
       #
       # To publish this release to brew: run "Sync formulae from releases" in
-      # antimatter-studios/homebrew-tap, then merge the PR it opens.
+      # antimatter-studios/homebrew-tap. IT DOES NOT OPEN A PULL REQUEST — it
+      # pushes a `sync/formulae-<run-id>` branch and says so itself: "Open the
+      # PR yourself; this workflow will not." Open it, verify the formula's
+      # sha256s against this release's checksums.txt, and merge that.

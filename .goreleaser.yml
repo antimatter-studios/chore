@@ -75,4 +75,10 @@ release:
 # credential that can write there.
 #
 # To publish a release to brew: run "Sync formulae from releases" in
-# antimatter-studios/homebrew-tap, then merge the PR it opens.
+# antimatter-studios/homebrew-tap. IT DOES NOT OPEN A PULL REQUEST. It pushes a
+# `sync/formulae-<run-id>` branch and its last log line says so — "Open the PR
+# yourself; this workflow will not." Open it, check the formula's sha256s
+# against the release's own checksums.txt, and merge that.
+#
+# The workflow declines on purpose and this comment used to describe the
+# opposite, which costs whoever follows it a wait for a PR that never arrives.
