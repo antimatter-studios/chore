@@ -213,6 +213,13 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 		return fmt.Errorf("no task %q%s", name, r.suggest(name))
 	}
 
+	// Before anything reads them: a value handed over by a caller must answer to
+	// the same spellings as one typed at a prompt. See foldCallVars.
+	callVars, err := foldCallVars(t, callVars)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+
 	scope, err := r.scope(ctx, t, args, callVars)
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
@@ -310,7 +317,17 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	}
 
 	if len(t.Sources) > 0 || len(t.Generates) > 0 {
-		if err := fingerprint.Save(t, dir, r.cacheDir()); err != nil {
+		// SaveWith, with the SAME scope UpToDate was given. Saving without a
+		// renderer hashes `sources: ['src/*.{{.EXT}}']` verbatim, which matches
+		// nothing, so the recorded digest is the digest of the empty set — and it
+		// can never equal the digest of the rendered set the check computes. The
+		// task rebuilds on every invocation for ever and reports nothing; two
+		// tasks with different templated patterns even store the same hash,
+		// because both hashed nothing. `generates:` fails the same way, and
+		// worse: the raw pattern matches no file, so the recorded output list is
+		// EMPTY and the "every file the last run produced must still exist" check
+		// passes vacuously.
+		if err := fingerprint.SaveWith(t, scope, dir, r.cacheDir()); err != nil {
 			return fmt.Errorf("%s: recording fingerprint: %w", t.Name, err)
 		}
 	}
@@ -657,6 +674,76 @@ func checkArgConflicts(t *chorefile.Task, argVars, callVars map[string]string) e
 		}
 	}
 	return nil
+}
+
+// foldCallVars gives a value passed by a `- task:` or `deps:` reference exactly
+// the spellings the command line gives the same value.
+//
+// internal/cli's setParam writes a supplied parameter under BOTH the declared
+// spelling and its uppercase form, so `chore staticlib out=/p` reaches {{.out}}
+// and {{.OUT}} alike. A call var arrived under the one spelling the file happened
+// to write, and the mirror at the end of scope() only fills a spelling that is
+// currently EMPTY — so with an `OUT` defined anywhere lower (a file var, the
+// process environment, dotenv), `- task: staticlib` with `vars: {out: /right}`
+// left {{.OUT}} reading the OLD value. Not blank: wrong. The build lands in
+// another directory, exit 0, nothing on stderr. Measured on chore 0.6.0:
+//
+//	vars: {OUT: /wrong/dir} in the file
+//	- task: staticlib, vars: {out: /right/path}   ->  {{.OUT}} = /wrong/dir
+//	chore staticlib out=/right/path               ->  {{.OUT}} = /right/path
+//
+// Two call paths for one declaration is what made that possible, so the fix is
+// to fold in one place both paths reach rather than to teach the mirror another
+// case: Run is where every `- task:`, every `deps:` entry and the command line
+// itself arrive.
+//
+// Matching is case-insensitive, as Args.Find already is — `vars: {Out: …}`
+// against `args: [out]` was refused as a missing argument while the identical
+// command line bound it.
+//
+// Only DECLARED parameters are folded. An undeclared name is an ordinary
+// variable and is left exactly as written, which is what the command line does
+// with one too: `chore t out=x` invents no OUT either.
+func foldCallVars(t *chorefile.Task, callVars map[string]string) (map[string]string, error) {
+	if len(callVars) == 0 || len(t.Args) == 0 {
+		return callVars, nil
+	}
+	// Sorted, so an error names the same two spellings on every run rather than
+	// whichever two the map handed over first.
+	spellings := make([]string, 0, len(callVars))
+	for k := range callVars {
+		spellings = append(spellings, k)
+	}
+	sort.Strings(spellings)
+
+	out := maps.Clone(callVars)
+	for _, spec := range t.Args {
+		var given []string
+		for _, k := range spellings {
+			if strings.EqualFold(k, spec.Name) {
+				given = append(given, k)
+			}
+		}
+		if len(given) == 0 {
+			continue
+		}
+		// Folding must not pick a winner. One parameter carrying two different
+		// values under two spellings is the caller naming two things, which is the
+		// failure checkArgConflicts already refuses for the positional case.
+		value := callVars[given[0]]
+		for _, k := range given[1:] {
+			if callVars[k] != value {
+				return nil, fmt.Errorf("%s given twice: %q as %s and %q as %s",
+					spec.Name, value, given[0], callVars[k], k)
+			}
+		}
+		for _, want := range []string{spec.Name, strings.ToUpper(spec.Name)} {
+			if _, ok := out[want]; !ok {
+				out[want] = value
+			}
+		}
+	}
+	return out, nil
 }
 
 // parameterVars picks out the task vars that define defaults for declared
