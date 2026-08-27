@@ -1475,3 +1475,193 @@ func TestCleanupContextOnlyReplacesACancelledOne(t *testing.T) {
 		t.Error("teardown context has no deadline: a wedged teardown would hang the run")
 	}
 }
+
+// ---------- templated sources/generates ----------
+
+// fingerprints returns every fingerprint file the run recorded, concatenated.
+// The filenames carry a digest suffix, so the test globs rather than naming one
+// — and it reads the JSON rather than only re-running the task, because "ran
+// twice" and "recorded the wrong thing" are different failures with one symptom.
+func (f *fixture) fingerprints() string {
+	f.t.Helper()
+	paths, err := filepath.Glob(filepath.Join(f.dir, ".chore", "fingerprints", "*.json"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, p := range paths {
+		body, err := os.ReadFile(p)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		b.WriteString(filepath.Base(p))
+		b.WriteString("\n")
+		b.Write(body)
+	}
+	return b.String()
+}
+
+// A `sources:` pattern containing a template must be expanded before it is
+// hashed, on the SAVE side as well as on the check side. Saving the raw pattern
+// records the checksum of an empty file set, which can never equal the checksum
+// of the rendered one — so the task rebuilds on every invocation, for ever, and
+// nothing anywhere reports it.
+func TestTemplatedSourcesGoUpToDate(t *testing.T) {
+	f := newFixture(t, &chorefile.File{Vars: vars("EXT", "aaa")}, map[string]*chorefile.Task{
+		"build": {
+			Sources: []string{"src/*.{{.EXT}}"},
+			Cmds:    cmds("echo ran >> log.txt"),
+		},
+	})
+	f.write("src/a.aaa", "one")
+
+	f.mustRun("build", nil, nil)
+	f.mustRun("build", nil, nil)
+
+	if got := strings.Count(f.read("log.txt"), "ran"); got != 1 {
+		t.Errorf("build ran %d times, want 1: a templated sources: pattern never goes up to date", got)
+	}
+	// The direct evidence, and the reason a rerun count alone is not enough: the
+	// recorded fingerprint must name the file it hashed. An empty set records no
+	// sources at all, which reads as "nothing matched" rather than as a defect.
+	if fp := f.fingerprints(); !strings.Contains(fp, "src/a.aaa") {
+		t.Errorf("the stored fingerprint does not name the source it hashed:\n%s", fp)
+	}
+}
+
+// Two tasks whose templated patterns render to DIFFERENT file sets must not
+// store the same checksum. Hashing the patterns raw makes both match nothing, so
+// both store the digest of the empty set — identical, and identical for a reason
+// that has nothing to do with their contents.
+func TestTemplatedSourcesOfDifferentTasksDiffer(t *testing.T) {
+	f := newFixture(t, &chorefile.File{Vars: vars("EXT_A", "aaa", "EXT_B", "bbb")}, map[string]*chorefile.Task{
+		"ta": {Sources: []string{"src/*.{{.EXT_A}}"}, Cmds: cmds("echo a > out-a.txt")},
+		"tb": {Sources: []string{"src/*.{{.EXT_B}}"}, Cmds: cmds("echo b > out-b.txt")},
+	})
+	f.write("src/a.aaa", "one")
+	f.write("src/b.bbb", "two")
+
+	f.mustRun("ta", nil, nil)
+	f.mustRun("tb", nil, nil)
+
+	fp := f.fingerprints()
+	hashes := map[string]bool{}
+	for _, line := range strings.Split(fp, "\n") {
+		if strings.Contains(line, `"hash"`) {
+			hashes[strings.TrimSpace(line)] = true
+		}
+	}
+	if len(hashes) != 2 {
+		t.Errorf("two tasks over different source sets stored %d distinct hashes, want 2:\n%s", len(hashes), fp)
+	}
+}
+
+// `generates:` is templated on the same path and has the same failure: the raw
+// pattern is what gets recorded, so the next run stats a path with braces in it,
+// finds nothing, and rebuilds.
+func TestTemplatedGeneratesGoUpToDate(t *testing.T) {
+	f := newFixture(t, &chorefile.File{Vars: vars("NAME", "lib")}, map[string]*chorefile.Task{
+		"build": {
+			Sources:   []string{"src/a.c"},
+			Generates: []string{"out/{{.NAME}}.a"},
+			Cmds:      cmds("mkdir -p out && echo built > out/{{.NAME}}.a", "echo ran >> log.txt"),
+		},
+	})
+	f.write("src/a.c", "int main(){}")
+
+	f.mustRun("build", nil, nil)
+	f.mustRun("build", nil, nil)
+
+	if got := strings.Count(f.read("log.txt"), "ran"); got != 1 {
+		t.Errorf("build ran %d times, want 1: a templated generates: pattern never goes up to date", got)
+	}
+	if fp := f.fingerprints(); !strings.Contains(fp, "out/lib.a") || strings.Contains(fp, "{{") {
+		t.Errorf("the stored fingerprint recorded an unrendered generates pattern:\n%s", fp)
+	}
+}
+
+// ---------- call vars and parameter spelling ----------
+
+// A value typed on the command line binds under the declared spelling AND its
+// uppercase form (internal/cli's setParam). A value passed by a `- task:` or a
+// `deps:` reference did not, so `vars: {out: …}` against `args: [out]` reached
+// {{.out}} and not {{.OUT}} — and where anything lower in the scope defines OUT,
+// {{.OUT}} kept THAT value instead. The build lands in the wrong directory and
+// nothing is reported.
+func TestCallVarsBindUnderBothSpellings(t *testing.T) {
+	// A file var under the other spelling is what makes this silent rather than
+	// merely empty: the mirror in scope() only fills a spelling that is EMPTY.
+	file := &chorefile.File{Vars: vars("OUT", "/wrong/dir")}
+	f := newFixture(t, file, map[string]*chorefile.Task{
+		"staticlib": {
+			Args: chorefile.Args{{Name: "out"}},
+			Cmds: cmds(`echo "{{.OUT}}|{{.out}}" > seen.txt`),
+		},
+		"viaCmd":  {Cmds: []chorefile.Cmd{{Task: "staticlib", Vars: vars("out", "/right/path")}}},
+		"viaDeps": {Deps: []chorefile.Dep{{Task: "staticlib", Vars: vars("out", "/right/path")}}, Cmds: cmds("true")},
+	})
+
+	for _, caller := range []string{"viaCmd", "viaDeps"} {
+		f.mustRun(caller, nil, nil)
+		if got := strings.TrimSpace(f.read("seen.txt")); got != "/right/path|/right/path" {
+			t.Errorf("%s: {{.OUT}}|{{.out}} = %q, want %q", caller, got, "/right/path|/right/path")
+		}
+	}
+}
+
+// The same fold the command line applies: a spelling that differs only in case
+// from the declaration names that parameter. `chore staticlib Out=x` binds; a
+// `- task:` passing `vars: {Out: x}` was refused as a missing argument.
+func TestCallVarsAreMatchedCaseInsensitively(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"staticlib": {
+			Args: chorefile.Args{{Name: "out"}},
+			Cmds: cmds(`echo "{{.OUT}}|{{.out}}" > seen.txt`),
+		},
+		"build": {Cmds: []chorefile.Cmd{{Task: "staticlib", Vars: vars("Out", "/right/path")}}},
+	})
+	f.mustRun("build", nil, nil)
+	if got := strings.TrimSpace(f.read("seen.txt")); got != "/right/path|/right/path" {
+		t.Errorf("{{.OUT}}|{{.out}} = %q, want %q", got, "/right/path|/right/path")
+	}
+}
+
+// Folding must not silently pick a winner. One parameter given two different
+// values under two spellings is the caller naming two things, and it is the
+// same failure checkArgConflicts already refuses positionally.
+func TestCallVarsDisagreeingOnSpellingIsAnError(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"staticlib": {
+			Args: chorefile.Args{{Name: "out"}},
+			Cmds: cmds(`echo "{{.OUT}}" > seen.txt`),
+		},
+		"build": {Cmds: []chorefile.Cmd{{Task: "staticlib", Vars: vars("out", "/a", "OUT", "/b")}}},
+	})
+	err := f.mustFail("build", nil, nil)
+	mustContain(t, err.Error(), "given twice", "error")
+	if f.exists("seen.txt") {
+		t.Error("the task ran despite being given one parameter twice")
+	}
+}
+
+// A bool parameter passed as a call var is normalised the same way a flag typed
+// on the command line is, under both spellings — otherwise {{if .FORCE}} fires
+// on the string "false".
+func TestBoolCallVarNormalisedUnderBothSpellings(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"lib": {
+			Args: chorefile.Args{{Name: "force", Type: chorefile.TypeBool}},
+			Cmds: cmds(`echo "{{if .FORCE}}on{{else}}off{{end}}" > seen.txt`),
+		},
+		"off": {Cmds: []chorefile.Cmd{{Task: "lib", Vars: vars("force", "false")}}},
+		"on":  {Cmds: []chorefile.Cmd{{Task: "lib", Vars: vars("force", "true")}}},
+	})
+	f.mustRun("off", nil, nil)
+	if got := strings.TrimSpace(f.read("seen.txt")); got != "off" {
+		t.Errorf("force=false read as %q, want %q", got, "off")
+	}
+	f.mustRun("on", nil, nil)
+	if got := strings.TrimSpace(f.read("seen.txt")); got != "on" {
+		t.Errorf("force=true read as %q, want %q", got, "on")
+	}
+}

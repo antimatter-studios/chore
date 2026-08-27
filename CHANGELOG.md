@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased
+
+- **A templated `sources:` or `generates:` never went up to date.** The check
+  side rendered its patterns; the SAVE side did not. `sources: ['src/*.{{.EXT}}']`
+  was hashed with the braces still in it, so it matched no file and recorded the
+  checksum of the EMPTY SET — which can never equal the checksum of the rendered
+  set the next check computes. The task rebuilt on every invocation, for ever,
+  and nothing anywhere said so.
+
+      $ chore ta ; chore ta                    # 0.6.0
+      echo built-a > out-a.txt
+      echo built-a > out-a.txt                 # "is up to date" never appears
+
+      $ chore ta ; chore ta                    # fixed
+      echo built-a > out-a.txt
+      task: ta is up to date
+
+  Two tasks with DIFFERENT templated patterns stored the same hash, because both
+  hashed nothing. That empty-set digest is the tell:
+
+      0.6.0   ta  "hash": "4a45a2b2be26286502e3244aabe5757706383407ca0b46b957aac97e1acd4b9a"
+              tb  "hash": "4a45a2b2be26286502e3244aabe5757706383407ca0b46b957aac97e1acd4b9a"
+      fixed   ta  "hash": "33f764b7138f17cd62ed63b275b336fc8a98c7adee71f04d989d5d83d1049473"
+              tb  "hash": "b232ae5ae8eb81cd354ff8b76bb5c867b4d955e389544096df0d0b1ceebf888d"
+
+  `generates:` failed the same way and one step worse. A raw `out/{{.NAME}}.a`
+  has no glob metacharacters, so it was treated as a NAMED file, stat failed, and
+  the recorded output list came out empty — which made the "every file the last
+  run produced must still exist" check, the one that catches a deleted binary
+  under `generates: [bin/*]`, pass vacuously over nothing.
+
+  `SaveWith` already took a `Renderer`, and the package doc on `Save` already
+  warned about exactly this; `internal/run` was calling `Save`. It now passes the
+  same scope the up-to-date check is given.
+
+- **A value passed by `- task:` or `deps:` now binds under both spellings, as one
+  typed at a prompt always has.** `internal/cli` writes a supplied parameter
+  under the declared name AND its uppercase form. A call var did not, and the
+  mirror that fills the other spelling only fills one that is EMPTY — so with an
+  `OUT` defined anywhere lower (a file var, dotenv, the process environment) the
+  caller's value reached `{{.out}}` and `{{.OUT}}` kept the OLD one. Not blank:
+  wrong. The build lands in another directory, exit 0, nothing on stderr.
+
+      vars: {OUT: /wrong/dir}          # anywhere below the call
+      - task: staticlib
+        vars: {out: /right/path}
+
+      0.6.0   chore build                        {{.OUT}} = /wrong/dir
+              chore staticlib out=/right/path    {{.OUT}} = /right/path
+      fixed   both                               {{.OUT}} = /right/path
+
+  Matching is case-insensitive, as `Args.Find` already was: `vars: {Out: ...}`
+  against `args: [out]` was refused as a missing argument while the identical
+  command line bound it. Only DECLARED parameters fold — an undeclared name is an
+  ordinary variable and stays exactly as written, which is what the command line
+  does with one too.
+
+  One parameter given two different values under two spellings is now refused
+  rather than silently ranked, which is the same call `checkArgConflicts` already
+  made for the positional case:
+
+      chore: staticlib: out given twice: "/b" as OUT and "/a" as out
+
+  The fold happens in `Run`, the one point every `- task:` step, every `deps:`
+  entry and the command line all arrive at, rather than by teaching the mirror
+  another case — two call paths for one declaration is what allowed them to
+  disagree in the first place.
+
 ## v0.6.0
 
 - **Ctrl-C now stops the task, not just chore.** A task's script runs in its own
