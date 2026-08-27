@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.0
 
 - **A templated `sources:` or `generates:` never went up to date.** The check
   side rendered its patterns; the SAVE side did not. `sources: ['src/*.{{.EXT}}']`
