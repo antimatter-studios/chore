@@ -1,0 +1,21 @@
+$ chore build
+# first run: the task does the work
+echo before
+before
+cp src.txt out.txt
+echo built
+built
+echo cleanup
+cleanup
+echo after
+after
+exit 0
+
+$ chore build
+# second run: skipped, but the hooks still fire
+echo before
+before
+task: build is up to date
+echo after
+after
+exit 0

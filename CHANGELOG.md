@@ -1,5 +1,131 @@
 # Changelog
 
+## Unreleased
+
+- **A built-in manual, extracted from the source.**
+
+      chore help              a contents page of every topic
+      chore help hooks        read one
+
+  Topics are written as standalone `chore:manual` comment blocks sitting beside
+  the code that implements them:
+
+      // chore:manual hooks
+      // title: Hooks
+      // summary: before/on_success/on_failure/after, on a task or the whole run
+      // aliases: lifecycle-hooks, lifecycle
+      // order: 10
+      //
+      // # Hooks
+      // ...markdown...
+
+  `chore manual` regenerates `internal/manual/topics/*.md`, which are embedded
+  into the binary; CI regenerates and fails on a diff. That diff is the only
+  thing that actually keeps a document in sync with behaviour — beside the code
+  is not enough on its own, it just makes the drift a one-line fix instead of a
+  rewrite.
+
+  Eleven topics ship, covering the whole command surface: `invocation`, `flags`,
+  `arguments`, `variables`, `hooks`, `up-to-date`, `includes`, `dotenv`,
+  `versions`, `interrupts`, `manual`. Names accept hyphens or underscores
+  interchangeably, and carry aliases — `chore help sources`, `chore help args`,
+  `chore help ctrl-c` all land somewhere useful — because the reader types the
+  phrase they remember, not the one that was filed.
+
+  Two rules the format enforces rather than documents. A topic with no
+  `summary:` is refused, since it would be a blank line on the only page anyone
+  browses. And a `chore:manual` marker that is not the FIRST line of its comment
+  block is an error: written directly under an existing doc comment the two
+  merge, the marker stops being first, and the topic vanishes from the manual
+  without a word. That happened once, to `includes`, during this change.
+
+- **Curated hook examples with golden output**, under `examples/hooks/`. Ten
+  taskfiles, one rule each, and a recorded transcript of exactly what each
+  prints. `go test ./examples` verifies them; `-update` re-records. They are the
+  test suite for the documentation: a comment claiming `after` runs on both
+  paths is a claim, and `02-failure.golden` is evidence.
+
+- **BREAKING: `lifecycle.on_error` is now `lifecycle.on_failure_all`.** No alias,
+  no deprecation window. Every global hook is now its per-task name plus `_all`,
+  and `on_error` was the one that broke the pattern. Nothing on disk used it —
+  measured: zero occurrences across every `chores.yml` on the machine, six
+  internal references — so the rename is free now and never will be again. A file
+  written against the new names states `chore_min_version: 0.8.0`, which turns an
+  older chore's confusing `unknown field "on_failure_all"` into a message that
+  says what to do.
+
+- **Per-task lifecycle hooks: `before`, `on_success`, `on_failure`, `after`.**
+  The same four names the `lifecycle:` block uses, minus the `_all` that marks a
+  hook as per-invocation, on any task:
+
+      build:
+        before:     [ ./check-toolchain.sh ]
+        cmds:       [ make ]
+        on_success: [ ./publish.sh ]
+        on_failure: [ ./collect-logs.sh ]
+        after:      [ 'echo "ended {{.EXIT_CODE}}"' ]
+
+  `before` gates: if it fails, `cmds:` do not run, the task fails with the gate's
+  status, and `on_failure` fires for it — the rule `on_failure_all` already
+  followed for a failed `before_all`. The other three are best-effort and cannot
+  change the exit status; `on_failure` in particular cannot swallow a failure.
+
+  `after` runs **in addition to** the outcome hook, not instead of it. Without
+  that, "always" would have to be written into both `on_success` and
+  `on_failure`, which is the duplication `after` exists to remove.
+
+  Hooks run in the TASK's scope — its variables, parameters and `dir:` — so
+  `after: echo done {{.TARGET}}` reads the argument the task was called with.
+  They fire wherever the task runs, as a dependency or a `- task:` step included,
+  and they run **even when the task is up to date**, because a hook is not the
+  task's prerequisite. That last point is the whole reason `before` is not a
+  slower spelling of `deps:`.
+
+  Order, with the defers unwinding before the outcome branch so a finishing hook
+  runs once the thing it is finishing is already down:
+
+      before -> deps -> cmds -> defers (reverse) -> on_success|on_failure -> after
+
+- **`{{.EXIT_CODE}}` in `after` and `after_all`** — `"0"`, or the task's own
+  status. Exported to the script as `$EXIT_CODE` too, from the same value. Only
+  those two hooks get it: `on_success`/`on_failure` already know the outcome by
+  having been chosen, and `before_all` runs when there is no outcome yet.
+
+- **`lifecycle.on_success_all`**, so the run level has the same four hooks the
+  task level does.
+
+- **`child_hooks: false` silences a whole subtree**, for a coordinator that does
+  something once for a tree instead of letting every task in it do its own
+  version:
+
+      build:all:
+        child_hooks: false
+        deps:  [ prep ]
+        cmds:  [ {task: driver}, {task: driver} ]
+        after: ./sweep.sh          # once, not once per driver
+
+  It leaves the declaring task's own hooks alone — a task that did not want those
+  would delete them; what cannot be deleted is the tree below, because the same
+  library task is right to run its hooks when it is the top of a run and wrong
+  when it is nested inside one, and only the caller knows which. It reaches every
+  depth through `deps:` and `- task:` alike (a dep is just a task invocation), it
+  cannot be lifted from inside the subtree, and it **never** suppresses `defer:` —
+  which is what makes deep suppression safe, since all it can silence is advice,
+  never a teardown paired with something already brought up.
+
+- **`--no-lifecycle` now covers per-task hooks too.** It still leaves `deps:` and
+  `defer:` alone: a dependency is a requirement and a deferred step is a paired
+  teardown, while a hook is advice.
+
+- **A `- defer:` inside any hook is now refused at parse time.** A hook runs to
+  completion at one point in the task's life, so there is nothing for it to defer
+  to; accepting it would leave the reader choosing between two wrong answers.
+
+      taskfile: task "x": after step 1 is a `defer:` — a hook runs to completion,
+      so there is nothing for it to defer to; put it in `cmds:`, or call a task
+      that does
+
+
 ## v0.7.0
 
 - **A templated `sources:` or `generates:` never went up to date.** The check

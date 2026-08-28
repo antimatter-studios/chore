@@ -15,10 +15,42 @@ tasks:
     cmds:
       - go build -o bin/chore .
 
+  manual:
+    desc: Regenerate the built-in manual from the chore:manual comment blocks
+    sources: ['**/*.go']
+    generates: ['internal/manual/topics/*.md']
+    cmds:
+      - go run ./internal/manual/gen
+
+  manual:check:
+    desc: Fail if the built-in manual is out of date with the source
+    cmds:
+      # The whole point of extracting the manual from comments is that the two
+      # cannot drift. Nothing enforces that except regenerating and diffing, so
+      # this runs in CI and is the only thing standing between "beside the code"
+      # and "beside the code, and wrong".
+      - task: manual
+      - |
+        if ! git diff --quiet -- internal/manual/topics; then
+          echo "the built-in manual is out of date — run 'chore manual' and commit:" >&2
+          git --no-pager diff --stat -- internal/manual/topics >&2
+          exit 1
+        fi
+        echo "manual is in sync"
+
   test:
     desc: Run the tests with the race detector
     cmds:
       - go test -race -count=1 ./...
+
+  test:installed:
+    desc: Run the curated examples against the built binary rather than the library
+    deps: [build]
+    cmds:
+      # Same goldens as `chore test`, driven through the artifact people install.
+      # A difference between the two is a packaging fault — a missing embed, a
+      # bad stamp — which an in-process test cannot see by construction.
+      - CHORE_BIN="$PWD/bin/chore" go test ./examples -count=1
 
   lint:
     desc: gofmt and vet

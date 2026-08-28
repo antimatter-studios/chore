@@ -1,0 +1,9 @@
+$ chore demo
+# run level around task level
+1-before_all
+2-body
+3-task-on_success
+4-task-after
+5-on_success_all
+6-after_all task=demo exit=0
+exit 0

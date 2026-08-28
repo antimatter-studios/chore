@@ -23,6 +23,7 @@ import (
 	"github.com/antimatter-studios/chore/internal/buildinfo"
 	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/loader"
+	"github.com/antimatter-studios/chore/internal/manual"
 	"github.com/antimatter-studios/chore/internal/run"
 	"github.com/antimatter-studios/chore/internal/ui"
 )
@@ -34,6 +35,59 @@ var Version = "dev"
 // BuildDate is the commit date the release stamped in, empty for a build from
 // source (where the toolchain's own vcs.time is used instead).
 var BuildDate = ""
+
+// chore:manual invocation
+// title: Running tasks
+// summary: how a command line is read, and where the task name ends
+// aliases: usage, tasks, cli-args
+// order: 10
+//
+// # Running tasks
+//
+//     chore [flags] <task> [args...] [-- extra]
+//
+// Flags are read up to the **first non-flag word**, and that word is the task
+// name. Everything after it belongs to the task:
+//
+//     chore logs -f api          # -f is the TASK's, not chore's
+//     chore -f other.yml logs    # -f is chore's, because it came first
+//
+// This is not a parser quirk to work around — it is the rule that makes a task
+// able to take options of its own without chore claiming them first.
+//
+// Everything after `--` is left alone and arrives as `{{.CLI_ARGS}}`, so a task
+// can forward arbitrary words to whatever it runs.
+//
+// With no task named, `chore` lists what is available — the same answer as
+// `chore --list`, so running the bare command is never a mystery.
+//
+// `chore <task> --help` describes that task and **runs nothing**. It works in
+// either position: `chore --help up` and `chore up --help` are the same
+// question.
+
+// chore:manual flags
+// title: Flags
+// summary: every flag chore itself takes
+// order: 10
+//
+// # Flags
+//
+//     -C, --dir DIR      change to DIR before looking for the taskfile
+//     -f, --file FILE    file to read (default: chores.yml, searched upward)
+//     -l, --list         list tasks with their descriptions
+//         --dry          print what a task would run, without running it
+//         --force        run even if up-to-date checks say the work is done
+//     -v, --verbose      echo commands even for silent tasks
+//         --no-color     plain output (also: NO_COLOR, or a non-terminal)
+//         --no-lifecycle turn off hooks for this run — see `chore help hooks`
+//     -h, --help         usage, or a task's own help when a task is named
+//         --version      print the version
+//
+// `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
+//
+// A mistyped long flag is REFUSED rather than bound to something else. That
+// matters more than it sounds: before 0.3.0 an unknown `--flag` was taken as a
+// positional argument, so a typo silently set a different parameter.
 
 const usage = `chore — run tasks from a chores.yml
 
@@ -50,6 +104,10 @@ flags:
       --no-color    plain output, no colour (also: NO_COLOR, or a non-terminal)
   -h, --help        this text
       --version     print the version
+
+manual:
+  chore help            list the built-in manual's topics
+  chore help <topic>    read one, e.g. chore help hooks
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -111,6 +169,18 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			errUI.Errorf("%v", err)
 			return 1
 		}
+	}
+
+	// `chore help [topic]` reads the built-in manual, and does so BEFORE a
+	// taskfile is required: the manual describes chore, not this project, and
+	// someone reading `chore help hooks` to find out how to write a lifecycle
+	// block is by definition not standing in a directory that already has one.
+	//
+	// A project that defines its own `help` task still wins, the same way one
+	// defining `version` does — but only when the file actually loads, so a broken
+	// taskfile cannot make the manual unreachable.
+	if len(rest) > 0 && rest[0] == "help" && !projectDefines("help", opts.file) {
+		return manualHelp(out, errUI, rest[1:])
 	}
 
 	path, err := findTaskfile(opts.file)
@@ -204,6 +274,38 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// chore:manual interrupts
+// title: Ctrl-C and cleanup
+// summary: what an interrupt stops, and what still runs afterwards
+// aliases: ctrl-c, signals, cleanup
+// order: 10
+//
+// # Ctrl-C and cleanup
+//
+// **An interrupt stops the task, not just chore.** A script runs in its OWN
+// process group, which is what lets cancellation kill what the script started
+// rather than only the shell — but the terminal signals the FOREGROUND group,
+// which is chore. So SIGINT and SIGTERM are caught, cancel the run, and take the
+// group with them.
+//
+// Without that, `chore app:run` exited instantly and left `flutter run` behind:
+// chore died from the default action, and the hook that would have killed the
+// group never fired because nothing ever cancelled the context.
+//
+// Exit status is 128+signal, which is what every shell reports for a signalled
+// command and what a caller checking `$?` already knows how to read. An
+// interrupted run is reported as interrupted, not as the failure its internal
+// error would suggest.
+//
+// **Teardown survives the interrupt.** `defer:` steps and every best-effort hook
+// run afterwards on a FRESH context with a bounded grace budget, because a
+// cancelled context cannot start a process — teardown issued on one would be
+// silently skipped at the exact moment it matters most.
+//
+// **A second signal is not caught.** Someone pressing Ctrl-C twice has stopped
+// waiting for a tidy shutdown, so the default action takes over and there is
+// always a way out.
 
 // signalContext returns a context cancelled by SIGINT or SIGTERM, a function to
 // release the handler, and one reporting which signal arrived (0 if none).
@@ -443,6 +545,74 @@ func flagSpelling(name string) string {
 func paramKey(name string) string {
 	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
 }
+
+// chore:manual arguments
+// title: Task arguments
+// summary: declaring parameters, and the three ways to supply one
+// aliases: args, parameters, params
+// order: 20
+//
+// # Task arguments
+//
+// This is the feature chore exists for. go-task has no equivalent, so a value
+// could only reach a task as an environment variable set before the command.
+//
+// A task declares its parameters in positional order:
+//
+// ```yaml
+// up:
+//   args:
+//     - config                     # shorthand for {name: config}
+//     - name: follow
+//       short: f
+//       type: bool
+//       desc: keep streaming
+//   cmds:
+//     - docker compose -p {{.CONFIG}} up {{if .FOLLOW}}--follow{{end}}
+// ```
+//
+// A parameter is readable as `{{.CONFIG}}` and as `$CONFIG` in the script.
+//
+// ## The three call forms
+//
+// ```
+// chore up mail4.test              # positional
+// chore up CONFIG=mail4.test       # named
+// chore up --config mail4.test     # flag, or -c with `short: c`
+// ```
+//
+// All three bind BEFORE `dotenv:` is resolved, so a `dotenv:` path may be keyed
+// on a parameter: `dotenv: ['config/{{.CONFIG}}/config.env']`. go-task resolves
+// dotenv while parsing, before CLI variables exist, which is why the same line
+// there silently loads the default config and acts on the wrong stack.
+//
+// The same `NAME=value` pairs are also global to the run, so they reach the
+// tasks this one calls. `chore down CONFIG=mail1` has to arrive at the
+// `- task: postgres:down` inside `down`, or the child renders a container name
+// with a hole in it and matches nothing.
+//
+// ## Types
+//
+// ```
+// type: string   (default)
+// type: bool     a flag: present or absent, no value
+// type: int
+// ```
+//
+// The type is declared, never inferred. Inferring "boolean" from a `false`
+// default was tried and is subtly wrong: a string parameter whose default
+// happens to be "false" would become a flag and stop consuming its value.
+//
+// A bool takes `true`/`false`/`1`/`0`/`yes`/`no` and REFUSES anything else,
+// rather than treating every value as true.
+//
+// ## Short flags
+//
+// Opt-in per parameter, with `short: f`. Not derived automatically, because a
+// single-dash word is otherwise the task's DATA — `chore logs -f api` passes
+// `-f` to the task — and inventing shorts would change what existing files do.
+// Shorts bundle: `-abc`. `-h` cannot be claimed; it is answered before the task
+// runs, so the parameter would be unreachable.
 
 // splitArgs sorts the words after a task name into positional arguments and
 // variables. Three forms are accepted:
@@ -863,4 +1033,75 @@ func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
 	u.Raw("\n")
 	u.Dim("  called as:")
 	u.Detail(forms)
+}
+
+// manualHelp answers `chore help [topic]`: the topic list, or one page.
+//
+// The page is printed as it was written — markdown, unstyled. Rendering it would
+// mean a markdown engine in a task runner, and the text is already readable as
+// source; that is the property markdown has and the reason it is what the blocks
+// are written in.
+func manualHelp(out, errUI *ui.UI, words []string) int {
+	topics := manual.All()
+	if len(topics) == 0 {
+		errUI.Errorf("this build carries no manual")
+		return 1
+	}
+
+	if len(words) == 0 {
+		var groups []ui.Group
+		var entries []ui.Task
+		for _, t := range topics {
+			entries = append(entries, ui.Task{Name: t.Name, Desc: t.Summary})
+		}
+		groups = append(groups, ui.Group{Name: "topics", Tasks: entries})
+		out.ListUnder("manual", groups)
+		out.Raw("\nread one with: chore help <topic>\n")
+		return 0
+	}
+
+	name := words[0]
+	t, ok := manual.Lookup(name)
+	if !ok {
+		near := manual.Suggest(name)
+		switch {
+		case len(near) == 1:
+			errUI.Errorf("no manual topic %q (did you mean: %s?)", name, near[0])
+		case len(near) > 1:
+			errUI.Errorf("no manual topic %q (did you mean: %s?)", name, strings.Join(near, ", "))
+		default:
+			var all []string
+			for _, x := range topics {
+				all = append(all, x.Name)
+			}
+			errUI.Errorf("no manual topic %q — try: %s", name, strings.Join(all, ", "))
+		}
+		return 1
+	}
+	out.Raw(t.Body + "\n")
+	// Where the text came from, on stderr so it never lands in a pipe. A reader
+	// who thinks a page is wrong needs the code that page was extracted from, and
+	// the whole point of the format is that they are the same edit.
+	if len(t.Sources) > 0 {
+		errUI.Dim("\nfrom %s\n", strings.Join(t.Sources, ", "))
+	}
+	return 0
+}
+
+// projectDefines reports whether the project in reach defines a task by this
+// name, so a built-in word never shadows one someone wrote.
+//
+// Best-effort on purpose: any failure to find or load a taskfile answers "no",
+// because the caller's fallback is a built-in that needs no project at all.
+func projectDefines(name, file string) bool {
+	path, err := findTaskfile(file)
+	if err != nil {
+		return false
+	}
+	p, err := loader.Load(path)
+	if err != nil {
+		return false
+	}
+	_, ok := p.Tasks[name]
+	return ok
 }

@@ -97,12 +97,13 @@ is an error — so the floor fails closed even against versions that predate it.
 Cheap additions, included because they are a few lines each: `aliases`,
 `ignore_error`, `requires`, `platforms`, `summary`.
 
-**chore-only extension — `lifecycle:`**: a top-level block with `before_all`,
-`after_all` and `on_error`, run once around the invoked task, not per task. Task
-has no equivalent. It is one of the program's four hooks, and the only one that
-is not written as a step; the family is specified together under
-[Hooks](#hooks), because looking for a hook and finding only `defer:` — filed
-under `cmds` as a step form — is how the other three go unfound.
+**chore-only extension — hooks**: `before`, `on_success`, `on_failure` and
+`after` on any task, the same four names plus `_all` in a top-level `lifecycle:`
+block for the run as a whole, `child_hooks:` to switch off a subtree's, and
+`defer:` as a positional step. Task has no equivalent for any of it. The family
+is specified together under [Hooks](#hooks), because looking for a hook and
+finding only `defer:` — filed under `cmds` as a step form — is how the rest go
+unfound.
 
 **Explicitly not supported**: remote/git includes, `watch`, `for:`/matrix
 expansion, `prompt`, `interactive`, output styles (group/prefixed),
@@ -110,20 +111,125 @@ expansion, `prompt`, `interactive`, output styles (group/prefixed),
 
 ## Hooks
 
-Four hooks, and they belong to two different families. **The distinction that
-decides which one you want is not what they do but WHEN they are scoped:**
+Nine hooks in three families. **The distinction that decides which one you want
+is not what they do but WHEN they are scoped:**
 
 | hook | written as | scope | fires |
 |---|---|---|---|
+| `before` | a task field | once per **task run** | before `cmds:`, as a gate |
+| `on_success` | a task field | once per **task run** | when the task succeeded |
+| `on_failure` | a task field | once per **task run** | when the task or its `before` failed |
+| `after` | a task field | once per **task run** | either way, and *in addition* to the outcome hook |
 | `lifecycle.before_all` | a top-level block | once per **run** | before the invoked task, as a gate |
+| `lifecycle.on_success_all` | a top-level block | once per **run** | when the run succeeded |
+| `lifecycle.on_failure_all` | a top-level block | once per **run** | on any non-zero |
 | `lifecycle.after_all` | a top-level block | once per **run** | on the way out, success or failure |
-| `lifecycle.on_error` | a top-level block | once per **run** | on any non-zero |
-| `defer:` | a **step**, inside `cmds:` | once per **task** | when that task finishes, in reverse order |
+| `defer:` | a **step**, inside `cmds:` | once per **task run** | when that task finishes, in reverse order |
+
+Every `lifecycle:` name is its per-task name plus `_all`, and `_all` is the whole
+mnemonic: it marks the hook that fires once for the `chore` invocation rather
+than once for each task in it.
 
 `defer:` is the odd one, and it is the reason this section exists: it is the only
 hook that is **positional**, so it is written where a step goes rather than where
 a setting goes, and anyone searching a `chores.yml` reference for "hooks" finds
-the other three and not it.
+the fields and not it.
+
+### Order, for one task run
+
+```
+before
+  -> deps (concurrent)
+  -> cmds
+  -> deferred steps, reverse order, only those reached
+  -> on_success | on_failure
+  -> after
+```
+
+The body **unwinds before the outcome branch**, so `after` is a finishing step
+that runs once the thing it is finishing is already down — a task that brought a
+topology up has taken it down again by the time `after` sweeps.
+
+**`before` precedes `deps:`.** A gate is cheaper the earlier it fails, and there
+is no dependency work to undo when the check it guards has already said no. The
+decisive reason is the up-to-date rule: hooks fire for a skipped task and `deps:`
+do not, so "deps then before" could only hold for a task that was not skipped —
+the gate's position would depend on the up-to-date result.
+
+At the run level, matching:
+
+```
+before_all -> <task> -> on_success_all | on_failure_all -> after_all
+```
+
+### The four task fields
+
+```yaml
+build:
+  before:     [ ./check-toolchain.sh ]
+  cmds:       [ make ]
+  on_success: [ ./publish.sh ]
+  on_failure: [ ./collect-logs.sh ]
+  after:      [ 'echo "build ended {{.EXIT_CODE}}"' ]
+```
+
+- **`before` gates.** If it fails, `cmds:` do not run and the task fails with the
+  gate's own status. `on_failure` fires for that failure, exactly as
+  `on_failure_all` fires for a failed `before_all`.
+- **`after` runs *as well as* the outcome hook, never instead of it.** On failure
+  the order is `on_failure`, then `after`.
+- **`after` reads `{{.EXIT_CODE}}`** — `"0"`, or the task's own status. Available
+  as `$EXIT_CODE` in the script too, and only in `after` and `after_all`:
+  `on_success`/`on_failure` already know the outcome by having been chosen, and
+  `before` runs when there is no outcome yet.
+- **`on_success`, `on_failure` and `after` cannot change the exit status.** They
+  are best-effort, like `after_all`: a failure in one is reported on stderr and
+  the task's own status stands. `on_failure` is where someone will reach to
+  swallow a failure, and it cannot.
+- **They run in the TASK's scope** — its variables, its parameters, its `dir:`.
+  `after: echo done {{.TARGET}}` reads the argument the task was called with.
+  This is the difference from a `lifecycle:` hook, which runs in the root file's.
+- **They fire wherever the task runs**, including as another task's dependency or
+  `- task:` step. There is no "only when invoked directly" mode; a hook that must
+  fire once per invocation belongs in `lifecycle:`. `run: once` bounds the
+  repetition for a task depended on many times — its hooks fire once with it.
+- **They run even when the task is up to date**, for the same reason the
+  `lifecycle:` block does: a hook is not the task's prerequisite. This is the
+  whole reason `before` is not a slower spelling of `deps:`.
+- **A `- defer:` inside a hook is refused.** A hook runs to completion at one
+  point in the task's life, so there is nothing for it to defer to.
+
+### `child_hooks:` — one task speaking for its whole subtree
+
+```yaml
+build:all:
+  child_hooks: false                # everything BELOW me runs no hooks
+  deps:  [ prep ]
+  cmds:
+    - { task: driver, vars: {NAME: ext4}  }
+    - { task: driver, vars: {NAME: ntfs}  }
+  after: ./scripts/sweep-target.sh   # mine still runs — once, not three times
+```
+
+- **It does not touch the declaring task's own hooks.** A task that did not want
+  those would delete them. What it silences is the tree below, which cannot be
+  deleted: the same library task is right to run its hooks when it is the top of
+  a run and wrong when it is nested inside a bigger one, and only the caller
+  knows which.
+- **It reaches every depth**, through `deps:` and `- task:` steps alike. A dep is
+  a task invocation, so there is no second rule for it — and a one-level
+  suppression would be useless, because the hook that matters usually lives a
+  level below where the coordinator can see it.
+- **A child cannot opt back in.** `child_hooks: true` inside a suppressed subtree
+  does nothing. The guarantee is written at the coordinator and has to be
+  readable there.
+- **It never suppresses `defer:`**, at any depth. That is what makes deep
+  suppression safe: all it can silence is advice, never a teardown that pairs
+  with something already brought up.
+- **It says nothing about the `lifecycle:` block**, which is per invocation and
+  not part of anybody's subtree.
+- Known cost: it is the whole subtree or nothing. A coordinator that wants to
+  suppress three children and not a fourth splits into two tasks.
 
 ### Why `defer:` cannot be a task field
 
@@ -156,18 +262,22 @@ defer registered AFTER  a failing step   -> it does NOT run, and never registere
 lifecycle:
   before_all:
     - task: hooks:ensure
-  after_all:
-    - echo "done with {{.TASK}}"
-  on_error:
+  on_success_all:
+    - ./notify-green.sh
+  on_failure_all:
     - ./notify-failure.sh
+  after_all:
+    - echo "done with {{.TASK}}, status {{.EXIT_CODE}}"
 ```
 
 - **`before_all` is a gate.** If it fails, the invoked task never starts,
   `after_all` never runs, and the run exits with `before_all`'s status.
-  `on_error` still fires.
+  `on_failure_all` still fires.
 - **`after_all` runs once the task has been entered**, whether the task
-  succeeded or not, so it can tear down what `before_all` set up.
-- **`on_error` fires for a non-zero from either `before_all` or the task.**
+  succeeded or not, so it can tear down what `before_all` set up. It runs *in
+  addition to* the outcome hook, and reads `{{.EXIT_CODE}}`.
+- **`on_failure_all` fires for a non-zero from either `before_all` or the task**;
+  `on_success_all` fires when neither failed. Exactly one of the two runs.
 - **They run even when the task they wrap is up to date**, which a `deps:` entry
   could not: a dependency is skipped along with the task it gates, and a
   lifecycle hook is not that task's prerequisite. This is the whole reason the
@@ -181,18 +291,21 @@ lifecycle:
   `--version`**, and for a whole run with `--no-lifecycle`.
 - **A MISTYPED task name still runs them.** Against a file whose task is `ok`,
   `chore okk` runs `before_all`, fails with
-  `no task "okk" (did you mean: ok?)`, then runs `after_all` and `on_error`.
+  `no task "okk" (did you mean: ok?)`, then runs `on_failure_all` and `after_all`.
   The name is resolved inside the run, not before it, so a `before_all` that
   installs git hooks fires on a typo — harmless for a guard, and not harmless
   for anything expensive.
 - **An `internal:` task typed at the prompt is refused BEFORE `before_all`**, so
-  that one case runs no hook at all, `on_error` included. A run that will not
+  that one case runs no hook at all, `on_failure_all` included. A run that will not
   happen does not run a setup gate for it.
 
 ### `--no-lifecycle` turns off hooks, not dependencies
 
-It suppresses the three `lifecycle:` hooks and nothing else. `deps:` still run,
-and so do `defer:` steps — they are the task's own, not the file's.
+It suppresses every hook — the four `lifecycle:` ones and the four per-task
+ones — and nothing else. `deps:` still run, and so do `defer:` steps: a
+dependency is a requirement and a deferred step is a paired teardown, while a
+hook is advice. That distinction is the reason `before` is not a duplicate of
+`deps:`.
 
 **As of 0.6.0 the flag works and `chore --help` does not list it**, so the only
 way to find it is this document. Measured: `chore --no-lifecycle <task>` skips
@@ -222,11 +335,11 @@ task: greenbody: deferred step failed: greenbody: exit status 9
 ### Ordering, and what runs after an interrupt
 
 Registered `D1 D2 D3`, a task unwinds `D3 D2 D1`. Across the whole run the order
-on a failure is: the task's own defers (innermost first), then `after_all`, then
-`on_error`.
+on a failure is: the task's own defers (innermost first), then its `on_failure`
+and `after`, then `on_failure_all`, then `after_all`.
 
 **All of it survives Ctrl-C.** SIGINT and SIGTERM cancel the run and kill the
-script's process group, and teardown — `defer:`, `after_all`, `on_error` — then
+script's process group, and teardown — `defer:` and every best-effort hook — then
 runs on a **fresh** context with a bounded grace budget, because a cancelled
 context cannot start a process. Exit is 128+signal. A second signal is not
 caught, so there is always a way out.
@@ -242,10 +355,8 @@ caught, so there is always a way out.
   script itself computed needs a shell `trap`; see
   [PATTERNS.md](PATTERNS.md#cleanup-defer-or-trap).
 
-**Not built, and not to be documented as if it were:** per-task `before`,
-`on_success`, `on_failure` and `after` fields, and a rename of `on_error` to
-`on_failure`. They are designed. As of 0.6.0 the four hooks above are all there
-is.
+`lifecycle:` hooks and per-task hooks *do* still run for an up-to-date task —
+the asymmetry with `defer:` is deliberate, and is the point of both.
 
 ## Fixed semantics
 
@@ -364,7 +475,7 @@ is.
 8. **An interrupt stops the whole task.** SIGINT and SIGTERM cancel the run, which
    kills the script's process group — not just the shell — so Ctrl-C cannot leave
    a `flutter run` or a `docker logs -f` behind. Exit is 128+signal. Teardown
-   (`defer:`, `after_all`, `on_error`) still runs, on a fresh bounded context,
+   (`defer:` and every best-effort hook) still runs, on a fresh bounded context,
    because a cancelled one cannot start a process. A second signal is not caught.
 
 ## Package layout and contracts

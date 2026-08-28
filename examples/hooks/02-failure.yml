@@ -1,0 +1,18 @@
+# The failure path. on_failure fires, THEN after — `after` runs in addition to
+# the outcome hook, never instead of it — and `after` is told which it was.
+#
+# The run still exits 7. A best-effort hook cannot swallow a failure.
+version: '3'
+silent: true
+
+tasks:
+  demo:
+    cmds:
+      - echo 1-up
+      - defer: echo 3-down          # still unwinds, though the task failed
+      - echo 2-body
+      - exit 7
+      - echo never-reached
+    on_success: [ echo not-this-one ]
+    on_failure: [ echo 4-on_failure ]
+    after:      [ 'echo 5-after exit={{.EXIT_CODE}}' ]

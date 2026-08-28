@@ -1,0 +1,21 @@
+# Hooks are not the task's prerequisite, so they run even when the task itself
+# is skipped as up to date. This is the whole reason `before` is not a slower
+# spelling of `deps:` — a dep is skipped along with the task it gates.
+#
+# `defer:` is the opposite, and deliberately so: nothing was entered, so nothing
+# registered.
+#
+#   first run   before, built, cleanup, after
+#   second run  before, "is up to date", after
+version: '3'
+
+tasks:
+  build:
+    sources:   [ src.txt ]
+    generates: [ out.txt ]
+    cmds:
+      - defer: echo cleanup
+      - cp src.txt out.txt
+      - echo built
+    before: [ echo before ]
+    after:  [ echo after ]

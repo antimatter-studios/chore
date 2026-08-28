@@ -52,12 +52,40 @@ func Decode(data []byte) (*File, error) {
 				" — write it as MAJOR.MINOR.PATCH, as in 0.4.0", f.ChoreMinVersion)
 		}
 	}
+	if f.Lifecycle != nil {
+		for _, h := range []struct {
+			name string
+			cmds Cmds
+		}{
+			{"before_all", f.Lifecycle.BeforeAll},
+			{"on_success_all", f.Lifecycle.OnSuccess},
+			{"on_failure_all", f.Lifecycle.OnFailure},
+			{"after_all", f.Lifecycle.AfterAll},
+		} {
+			if err := rejectDefer("lifecycle", h.name, h.cmds); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for name, t := range f.Tasks {
 		if t == nil {
 			// `foo:` with an empty body is legal and means "a task that does
 			// nothing" — usually a placeholder or an alias target.
 			f.Tasks[name] = &Task{}
 			continue
+		}
+		for _, h := range []struct {
+			name string
+			cmds Cmds
+		}{
+			{"before", t.Before},
+			{"on_success", t.OnSuccess},
+			{"on_failure", t.OnFailure},
+			{"after", t.After},
+		} {
+			if err := rejectDefer("task "+quoteForError(name), h.name, h.cmds); err != nil {
+				return nil, err
+			}
 		}
 		shorts := map[string]string{}
 		for i, arg := range t.Args {
@@ -384,3 +412,23 @@ func scalarString(n *yaml.Node) (string, error) {
 
 // quoteForError makes a value printable inside an error message.
 func quoteForError(s string) string { return strconv.Quote(s) }
+
+// rejectDefer refuses `- defer:` inside a hook.
+//
+// `defer` means "run this when the surrounding task finishes", and a hook is not
+// that task — it is a list that runs to completion at one point in the task's
+// life. So the step has nothing to defer to. Accepting it would leave the reader
+// to guess between two wrong answers: that it unwinds at the end of the hook
+// (invisible, and pointless in a list this short) or at the end of the task
+// (which the hook cannot reach). A hook that genuinely needs paired teardown
+// calls a task that has it, where `defer:` means what it says.
+func rejectDefer(where, hook string, cmds Cmds) error {
+	for i, c := range cmds {
+		if c.Defer {
+			return fmt.Errorf("taskfile: %s: %s step %d is a `defer:` — a hook runs to completion,"+
+				" so there is nothing for it to defer to; put it in `cmds:`, or call a task that does",
+				where, hook, i+1)
+		}
+	}
+	return nil
+}

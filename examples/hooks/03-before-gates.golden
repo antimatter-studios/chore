@@ -1,0 +1,7 @@
+$ chore demo
+# a failing gate
+1-checking
+2-on_failure
+3-after exit=3
+(stderr) chore: demo: before failed: demo: exit status 3
+exit 3

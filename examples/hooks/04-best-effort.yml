@@ -1,0 +1,19 @@
+# What a failing hook can and cannot do.
+#
+#   a failing `after`  -> reported on stderr, exit status UNCHANGED (0)
+#   a failing `defer:` -> FAILS an otherwise-green task
+#
+# The asymmetry is deliberate: a teardown that did not happen is a resource left
+# behind, while a notification that did not send is not.
+version: '3'
+silent: true
+
+tasks:
+  hook-failure-is-not-fatal:
+    cmds:  [ echo body ]
+    after: [ exit 9 ]               # prints, exit stays 0
+
+  defer-failure-is-fatal:
+    cmds:
+      - defer: exit 9               # this one fails the task
+      - echo body

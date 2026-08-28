@@ -1,0 +1,21 @@
+# The run level: the same four names plus `_all`, firing once per `chore`
+# invocation rather than once per task.
+#
+# The canonical use for before_all is a self-installing guard — a repo that
+# activates its own git hooks the first time anyone runs any task, with no
+# per-task boilerplate — which works because a lifecycle hook fires even when
+# the task it wraps is up to date. A `deps:` entry would be skipped with it.
+version: '3'
+silent: true
+
+lifecycle:
+  before_all:     [ echo 1-before_all ]
+  on_success_all: [ echo 5-on_success_all ]
+  on_failure_all: [ echo not-this-one ]
+  after_all:      [ 'echo 6-after_all task={{.TASK}} exit={{.EXIT_CODE}}' ]
+
+tasks:
+  demo:
+    cmds:       [ echo 2-body ]
+    on_success: [ echo 3-task-on_success ]
+    after:      [ echo 4-task-after ]

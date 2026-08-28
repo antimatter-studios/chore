@@ -1,0 +1,12 @@
+$ chore hook-failure-is-not-fatal
+# a failing after does not fail the task
+body
+(stderr) task: hook-failure-is-not-fatal: after failed: hook-failure-is-not-fatal: exit status 9
+exit 0
+
+$ chore defer-failure-is-fatal
+# a failing defer does
+body
+(stderr) task: defer-failure-is-fatal: deferred step failed: defer-failure-is-fatal: exit status 9
+(stderr) chore: defer-failure-is-fatal: exit status 9
+exit 9

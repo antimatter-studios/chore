@@ -117,10 +117,10 @@ func TestAfterAllRunsAfterTheTaskEvenOnFailure(t *testing.T) {
 	}
 }
 
-func TestOnErrorRunsOnFailureNotOnSuccess(t *testing.T) {
-	// failure → on_error runs.
+func TestOnFailureAllRunsOnFailureNotOnSuccess(t *testing.T) {
+	// failure → on_failure_all runs.
 	f := newFixture(t, &chorefile.File{
-		Lifecycle: &chorefile.Lifecycle{OnError: steps("echo boom >> order.txt")},
+		Lifecycle: &chorefile.Lifecycle{OnFailure: steps("echo boom >> order.txt")},
 	}, map[string]*chorefile.Task{
 		"work": {Cmds: steps("exit 1")},
 	})
@@ -128,12 +128,12 @@ func TestOnErrorRunsOnFailureNotOnSuccess(t *testing.T) {
 		t.Fatal("expected the task to fail")
 	}
 	if strings.TrimSpace(f.read("order.txt")) != "boom" {
-		t.Fatalf("on_error should have run once: %q", f.read("order.txt"))
+		t.Fatalf("on_failure_all should have run once: %q", f.read("order.txt"))
 	}
 
-	// success → on_error does not run.
+	// success → on_failure_all does not run.
 	g := newFixture(t, &chorefile.File{
-		Lifecycle: &chorefile.Lifecycle{OnError: steps("echo boom >> order.txt")},
+		Lifecycle: &chorefile.Lifecycle{OnFailure: steps("echo boom >> order.txt")},
 	}, map[string]*chorefile.Task{
 		"work": {Cmds: steps("true")},
 	})
@@ -141,7 +141,7 @@ func TestOnErrorRunsOnFailureNotOnSuccess(t *testing.T) {
 		t.Fatalf("invoke: %v", err)
 	}
 	if g.exists("order.txt") {
-		t.Fatalf("on_error must not run on success:\n%s", g.read("order.txt"))
+		t.Fatalf("on_failure_all must not run on success:\n%s", g.read("order.txt"))
 	}
 }
 

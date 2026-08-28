@@ -1,0 +1,37 @@
+# `child_hooks: false` — one task speaking for its whole subtree.
+#
+# `all` sweeps ONCE for the tree instead of letting every task in it sweep for
+# itself. Its own `after` still runs; everything below it is silent, through
+# `deps:` and `- task:` alike, at every depth.
+#
+# `defer:` is never suppressed, at any depth. That is what makes deep
+# suppression safe: it silences advice, never a teardown paired with something
+# already brought up.
+version: '3'
+silent: true
+
+tasks:
+  all:
+    child_hooks: false
+    deps:  [ prep ]
+    cmds:
+      - { task: driver }
+    after: [ echo 4-all-after ]     # the coordinator's own hook: still runs
+
+  prep:
+    cmds:  [ echo 1-prep ]
+    after: [ echo prep-after-SUPPRESSED ]
+
+  driver:
+    cmds:
+      - { task: staticlib }
+    after: [ echo driver-after-SUPPRESSED ]
+
+  # Two levels down — where the hook that actually matters usually lives, and
+  # exactly what a one-level suppression would miss.
+  staticlib:
+    child_hooks: true               # cannot opt back in from inside
+    cmds:
+      - defer: echo 3-lib-down      # survives suppression
+      - echo 2-lib-body
+    after: [ echo lib-after-SUPPRESSED ]
