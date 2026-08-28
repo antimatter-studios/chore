@@ -1,0 +1,19 @@
+# `run: once` bounds a task to one execution per invocation, and its hooks go
+# with it: they are part of that one run, not of each reference to it.
+#
+# Called three times here; `shared` and its `after` each happen once.
+version: '3'
+silent: true
+
+tasks:
+  demo:
+    deps: [ { task: shared } ]
+    cmds:
+      - { task: shared }
+      - { task: shared }
+      - echo done
+
+  shared:
+    run: once
+    cmds:  [ echo shared-body ]
+    after: [ echo shared-after ]

@@ -1,0 +1,6 @@
+$ chore demo
+# three references, one run, one after
+shared-body
+shared-after
+done
+exit 0

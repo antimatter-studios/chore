@@ -1,0 +1,7 @@
+$ chore build ext4
+# a hook reads the task's own argument
+1-before target=ext4
+2-body ext4
+3-on_success built-ext4
+4-after target=ext4 exit=0
+exit 0

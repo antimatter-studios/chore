@@ -1,0 +1,27 @@
+# Every per-task hook, on the success path, in the order they fire.
+#
+#   before -> deps -> cmds -> defers (reverse) -> on_success -> after
+#
+# `before` is a GATE, so it precedes the dependency work it guards — and it has
+# to sit at a fixed position, because hooks fire even for a task skipped as up
+# to date while `deps:` do not.
+#
+# The defers unwind BEFORE the outcome branch, which is what makes `after` a
+# finishing step rather than one that runs while the thing it finishes is up.
+version: '3'
+silent: true
+
+tasks:
+  demo:
+    deps: [prepare]
+    before:     [ echo 1-before ]
+    cmds:
+      - echo 4-up
+      - defer: echo 6-down          # registered here, runs after the body
+      - echo 5-body
+    on_success: [ echo 7-on_success ]
+    after:      [ 'echo 8-after exit={{.EXIT_CODE}}' ]
+
+  prepare:
+    cmds:  [ echo 2-dep-body ]
+    after: [ echo 3-dep-after ]     # a dep is a task, so it has hooks too

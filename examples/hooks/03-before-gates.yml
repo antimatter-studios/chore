@@ -1,0 +1,14 @@
+# `before` is a gate. When it fails the body never runs, the task fails with the
+# GATE's own status (3, not 1), and on_failure fires for it — the same rule the
+# run level follows, where on_failure_all catches a failed before_all.
+version: '3'
+silent: true
+
+tasks:
+  demo:
+    before:
+      - echo 1-checking
+      - exit 3
+    cmds:       [ echo never-reached ]
+    on_failure: [ echo 2-on_failure ]
+    after:      [ 'echo 3-after exit={{.EXIT_CODE}}' ]

@@ -1,0 +1,7 @@
+$ chore all
+# the subtree is silent, the coordinator is not
+1-prep
+2-lib-body
+3-lib-down
+4-all-after
+exit 0

@@ -1,0 +1,16 @@
+$ chore demo
+# hooks on
+before_all
+before
+dep
+body
+cleanup
+after
+exit 0
+
+$ chore --no-lifecycle demo
+# hooks off, deps and defer untouched
+dep
+body
+cleanup
+exit 0

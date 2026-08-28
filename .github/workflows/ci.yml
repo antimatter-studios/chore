@@ -74,8 +74,32 @@ jobs:
           for f in scripts/*; do bash -n "$f"; done
           echo "scripts ok"
 
+      # The manual is extracted from `chore:manual` comment blocks. Regenerating
+      # and diffing is what actually keeps it in sync — a doc beside the code
+      # still rots if nothing checks it.
+      - name: Manual is in sync
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          go run ./internal/manual/gen
+          if ! git diff --quiet -- internal/manual/topics; then
+            echo "the built-in manual is out of date — run 'chore manual' and commit:" >&2
+            git --no-pager diff -- internal/manual/topics >&2
+            exit 1
+          fi
+          echo "manual is in sync"
+
       - name: Test
         run: go test -race -count=1 ./...
 
       - name: Build
         run: go build -o /tmp/chore . && /tmp/chore --version
+
+      # Run the curated examples against the BUILT BINARY, not the library. Same
+      # golden files, so a difference is a packaging fault — a missing embed, a
+      # bad linker stamp — that no in-process test can see. The built-in manual
+      # is embedded, and this is what proves it survived the build.
+      - name: Examples against the built binary
+        env:
+          CHORE_BIN: /tmp/chore
+        run: go test ./examples -count=1

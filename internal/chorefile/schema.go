@@ -85,6 +85,132 @@ type File struct {
 	Inherit bool `yaml:"-"`
 }
 
+// chore:manual hooks
+// title: Hooks
+// summary: before/on_success/on_failure/after, on a task or the whole run
+// aliases: lifecycle-hooks lifecycle
+// order: 10
+//
+// # Hooks
+//
+// Nine hooks in three families. The distinction that decides which one you want
+// is not what they do but WHEN they are scoped.
+//
+// | hook | written as | scope |
+// |---|---|---|
+// | `before` | a task field | once per task run |
+// | `on_success` | a task field | once per task run |
+// | `on_failure` | a task field | once per task run |
+// | `after` | a task field | once per task run |
+// | `lifecycle.before_all` | a top-level block | once per run |
+// | `lifecycle.on_success_all` | a top-level block | once per run |
+// | `lifecycle.on_failure_all` | a top-level block | once per run |
+// | `lifecycle.after_all` | a top-level block | once per run |
+// | `defer:` | a step inside `cmds:` | once per task run |
+//
+// Every `lifecycle:` name is its per-task name plus `_all`, and `_all` is the
+// whole mnemonic: it marks the hook that fires once for the `chore` invocation
+// rather than once for each task in it.
+//
+// ## Order, for one task run
+//
+// ```
+// before
+//   -> deps (concurrent)
+//   -> cmds
+//   -> deferred steps, reverse order, only those reached
+//   -> on_success | on_failure
+//   -> after
+// ```
+//
+// The body unwinds BEFORE the outcome branch, so `after` is a finishing step
+// that runs once the thing it is finishing is already down.
+//
+// `before` precedes `deps:`, not the other way round: a gate is cheaper the
+// earlier it fails, and hooks fire for a task that was skipped as up to date
+// while `deps:` do not — so any other order would make the gate's position
+// depend on the up-to-date result.
+//
+// ## The four task fields
+//
+// ```yaml
+// build:
+//   before:     [ ./check-toolchain.sh ]
+//   cmds:       [ make ]
+//   on_success: [ ./publish.sh ]
+//   on_failure: [ ./collect-logs.sh ]
+//   after:      [ 'echo "ended {{.EXIT_CODE}}"' ]
+// ```
+//
+// - **`before` gates.** If it fails, `cmds:` do not run and the task fails with
+//   the gate's own status. `on_failure` fires for that failure.
+// - **`after` runs as well as the outcome hook, never instead of it.** On failure
+//   the order is `on_failure`, then `after`.
+// - **`after` reads `{{.EXIT_CODE}}`** — `"0"`, or the task's own status. It is
+//   `$EXIT_CODE` in the script too, from the same value, and exists only in
+//   `after` and `after_all`.
+// - **The last three cannot change the exit status.** They are best-effort: a
+//   failure is reported on stderr and the task's own status stands. `on_failure`
+//   is where someone will reach to swallow a failure, and it cannot.
+// - **They run in the TASK's scope** — its variables, parameters and `dir:` — so
+//   `after: echo done {{.TARGET}}` reads the argument the task was called with.
+// - **They fire wherever the task runs**, as a dependency or a `- task:` step
+//   included. A hook that must fire once per invocation belongs in `lifecycle:`.
+// - **They run even when the task is up to date**, because a hook is not the
+//   task's prerequisite. That is the whole reason `before` is not a slower
+//   spelling of `deps:`.
+// - **A `- defer:` inside a hook is refused.** A hook runs to completion at one
+//   point in the task's life, so there is nothing for it to defer to.
+//
+// ## `lifecycle:` — once around the whole run
+//
+// ```yaml
+// lifecycle:
+//   before_all:     [ {task: hooks:ensure} ]
+//   on_success_all: [ ./notify-green.sh ]
+//   on_failure_all: [ ./notify-failure.sh ]
+//   after_all:      [ 'echo done with {{.TASK}}, status {{.EXIT_CODE}}' ]
+// ```
+//
+// The canonical use is a self-installing guard: `before_all` activates a repo's
+// git hooks the first time anyone runs any task, with no per-task boilerplate,
+// and it fires even when the task it wraps is up to date — which a `deps:` entry
+// could not, being skipped along with the task.
+//
+// - `before_all` is a gate. If it fails the task never starts and `after_all`
+//   never runs, but `on_failure_all` still fires.
+// - `{{.TASK}}` is the invoked task's name.
+// - Only the ROOT file's block runs. A `lifecycle:` in an included file is
+//   ignored, silently.
+// - Skipped for `--list`, `--help` and `--version`, and for a whole run with
+//   `--no-lifecycle`.
+// - A MISTYPED task name still runs them: the name is resolved inside the run.
+//
+// ## `child_hooks:` — one task speaking for its whole subtree
+//
+// ```yaml
+// build:all:
+//   child_hooks: false                # everything BELOW me runs no hooks
+//   deps:  [ prep ]
+//   cmds:  [ {task: driver}, {task: driver} ]
+//   after: ./sweep.sh                 # mine still runs — once, not twice
+// ```
+//
+// - **It does not touch the declaring task's own hooks.** A task that did not
+//   want those would delete them. What it silences is the tree below, which
+//   cannot be deleted: the same library task is right to run its hooks when it is
+//   the top of a run and wrong when nested inside a bigger one, and only the
+//   caller knows which.
+// - **It reaches every depth**, through `deps:` and `- task:` alike. A dep is a
+//   task invocation, so there is no second rule for it.
+// - **A child cannot opt back in.** `child_hooks: true` inside a suppressed
+//   subtree does nothing.
+// - **It never suppresses `defer:`.** That is what makes deep suppression safe:
+//   all it can silence is advice, never a teardown paired with something already
+//   brought up.
+// - **It says nothing about the `lifecycle:` block**, which is per invocation and
+//   not part of anybody's subtree.
+
 // Lifecycle declares hooks that run AROUND a whole `chore` invocation, once —
 // not per task. This is chore's own extension (Task has no equivalent): it lets a
 // project run setup and teardown for the run without wiring a dependency into
@@ -97,13 +223,16 @@ type File struct {
 //
 // Ordering, for the one task named on the command line:
 //
-//		before_all → <task> → after_all
+//		before_all → <task> → on_success_all | on_failure_all → after_all
 //
 //	  - before_all runs first, once. If it FAILS, the task does not run and neither
 //	    does after_all — a setup gate that did not pass must not let work proceed.
+//	  - on_success_all and on_failure_all are exclusive: exactly one fires, or
+//	    neither if before_all gated the run.
 //	  - after_all runs on the way out once the task has been entered, whether the
-//	    task succeeded or not, so it can tear down what before_all set up.
-//	  - on_error runs when before_all or the task returns non-zero.
+//	    task succeeded or not, so it can tear down what before_all set up. It runs
+//	    IN ADDITION to the outcome hook, not instead of it.
+//	  - on_failure_all runs when before_all or the task returns non-zero.
 //
 // Hooks are skipped for `--list`, `--help` and `version` (which never run a task)
 // and can be turned off for a run with `--no-lifecycle`. Each hook is a list of
@@ -111,8 +240,18 @@ type File struct {
 // and `{{.TASK}}` in a hook renders the name of the invoked task.
 type Lifecycle struct {
 	BeforeAll Cmds `yaml:"before_all"`
+	OnSuccess Cmds `yaml:"on_success_all"`
+	// OnFailure was `on_error` up to 0.7.0. Renamed with no alias: every global
+	// hook is now its per-task name plus `_all`, and `on_error` was the one that
+	// broke the pattern. An alias is the right call when a rename would strand
+	// existing files; nothing on disk used this one, so the only thing an alias
+	// would buy is two spellings of one hook, for ever.
+	//
+	// A file written against the new names and run by an older chore gets
+	// `unknown field "on_failure_all"`, which is confusing rather than wrong;
+	// `chore_min_version: 0.8.0` is how that file says what it needs instead.
+	OnFailure Cmds `yaml:"on_failure_all"`
 	AfterAll  Cmds `yaml:"after_all"`
-	OnError   Cmds `yaml:"on_error"`
 }
 
 // Include pulls another Taskfile into a namespace.
@@ -190,6 +329,65 @@ type Task struct {
 
 	Deps Deps `yaml:"deps"`
 	Cmds Cmds `yaml:"cmds"`
+
+	// The per-task half of the lifecycle. Same four names the file-level block
+	// uses, minus the `_all` that marks a hook as per-invocation, and they fire
+	// every time the task runs — including when another task calls it. A hook
+	// that must fire once per run belongs in `lifecycle:`, which is what that
+	// block is for.
+	//
+	// Order, with the body in the middle:
+	//
+	//	before → deps → cmds → deferred steps → on_success|on_failure → after
+	//
+	// `before` precedes `deps:` rather than following them, which the first design
+	// had the other way round. Two reasons, and the second is decisive: a gate is
+	// cheaper the earlier it fails, and there is no dependency work to undo when
+	// the toolchain check it guards has already said no. And a hook must fire even
+	// when the task is up to date, while deps do NOT — so "deps then before" could
+	// only hold for a task that was not skipped, making the gate's position depend
+	// on the up-to-date result. A fixed position is worth more than the tidier
+	// diagram.
+	//
+	// Before gates, exactly as before_all does: if it fails, cmds do not run,
+	// and the task fails with the gate's status. The other three are
+	// best-effort and cannot change it — on_failure especially, which is where
+	// someone will reach to swallow a failure.
+	//
+	// Deferred steps unwind BEFORE the outcome branch, because `after` is the
+	// finishing step and finishing something while it is still up is the wrong
+	// way round: a task that brought a topology up has taken it down again by
+	// the time `after` sweeps.
+	Before    Cmds `yaml:"before"`
+	OnSuccess Cmds `yaml:"on_success"`
+	OnFailure Cmds `yaml:"on_failure"`
+	// After runs whatever the outcome, IN ADDITION to on_success/on_failure
+	// rather than instead of them, and reads {{.EXIT_CODE}} to tell which
+	// happened. Without that variable the only way to write "always" would be
+	// the same line in both outcome hooks — the duplication After exists to
+	// remove.
+	After Cmds `yaml:"after"`
+
+	// ChildHooks, set false, suppresses the hooks of every task BELOW this one —
+	// its deps, its `- task:` steps, and everything they reach in turn — while
+	// leaving this task's own hooks alone.
+	//
+	// It is the coordinator's declaration that it is handling something for the
+	// whole tree: `build:all` sweeps once in its own `after:` instead of letting
+	// three `driver` runs sweep three times. Suppressing its OWN hooks is not
+	// what it is for — a task that did not want those would delete them; the
+	// hooks below cannot be deleted, because the same library task is right to
+	// run them when it is the top of a run and wrong when it is nested inside
+	// one, and only the caller knows which.
+	//
+	// Deep, and a child cannot opt back in: the guarantee is written at the
+	// coordinator and has to be readable there. `defer:` is never suppressed at
+	// any depth — that is what makes deep suppression safe, since all this can
+	// silence is advice, never a teardown that pairs with something already
+	// brought up.
+	//
+	// A pointer so "not declared" is distinguishable from an explicit `true`.
+	ChildHooks *bool `yaml:"child_hooks"`
 
 	// Up-to-date checks. Status is a list of shell commands: all exiting zero
 	// means "already done, skip". Sources/Generates compare content checksums.
@@ -394,3 +592,16 @@ func BoolLiteral(s string) bool {
 
 // RunOnce reports whether the task should execute at most once per invocation.
 func (t *Task) RunOnce() bool { return t.Run == "once" }
+
+// SuppressesChildHooks reports whether this task turns off hooks for everything
+// it invokes. Absent means no: hooks run unless a coordinator says otherwise.
+func (t *Task) SuppressesChildHooks() bool {
+	return t.ChildHooks != nil && !*t.ChildHooks
+}
+
+// HasHooks reports whether the task declares any lifecycle hook at all, so the
+// runner can skip the whole apparatus for the overwhelming majority of tasks
+// that declare none.
+func (t *Task) HasHooks() bool {
+	return len(t.Before) > 0 || len(t.OnSuccess) > 0 || len(t.OnFailure) > 0 || len(t.After) > 0
+}

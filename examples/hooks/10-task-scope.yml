@@ -1,0 +1,19 @@
+# A per-task hook runs in the TASK's own scope — its parameters, variables and
+# `dir:` — which is the difference from a `lifecycle:` hook, which runs in the
+# root file's.
+#
+#   chore -f 10-task-scope.yml build ext4
+#
+# A file-level hook could not read TARGET at all: it is this task's argument.
+version: '3'
+silent: true
+
+tasks:
+  build:
+    args: [ target ]
+    vars:
+      STAMP: 'built-{{.TARGET}}'
+    before:     [ 'echo 1-before target={{.TARGET}}' ]
+    cmds:       [ 'echo 2-body $TARGET' ]
+    on_success: [ 'echo 3-on_success {{.STAMP}}' ]
+    after:      [ 'echo 4-after target={{.TARGET}} exit=$EXIT_CODE' ]

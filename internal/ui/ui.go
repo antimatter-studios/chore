@@ -127,9 +127,15 @@ func (u *UI) SetPlain(plain bool) { u.plain = plain }
 //
 // The name column is padded to the widest name ACROSS ALL GROUPS, so
 // descriptions line up down the whole listing rather than per group.
-func (u *UI) List(groups []Group) {
+func (u *UI) List(groups []Group) { u.ListUnder("tasks", groups) }
+
+// ListUnder is List with the heading named, so the same layout can present
+// something that is not a task list — `chore help` lists manual topics, and a
+// listing headed "tasks:" would be telling the reader the wrong thing about
+// every line under it.
+func (u *UI) ListUnder(heading string, groups []Group) {
 	if len(groups) == 0 {
-		fmt.Fprintln(u.w, "no tasks")
+		fmt.Fprintln(u.w, "no "+heading)
 		return
 	}
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
@@ -147,14 +153,14 @@ func (u *UI) List(groups []Group) {
 	}
 
 	if u.plain {
-		u.listPlain(groups, width)
+		u.listPlain(heading, groups, width)
 		return
 	}
-	u.listStyled(groups, width)
+	u.listStyled(heading, groups, width)
 }
 
-func (u *UI) listPlain(groups []Group, width int) {
-	fmt.Fprintln(u.w, "tasks:")
+func (u *UI) listPlain(heading string, groups []Group, width int) {
+	fmt.Fprintln(u.w, heading+":")
 	for _, g := range groups {
 		fmt.Fprintf(u.w, "\n  [%s]\n", g.Name)
 		for _, t := range g.Tasks {
@@ -176,7 +182,7 @@ func (u *UI) listPlain(groups []Group, width int) {
 // and a table drawn per namespace turns a long project into thirty framed boxes
 // — chrome competing with the only content that matters. A heading, one rule,
 // and aligned columns do the same job with none of that.
-func (u *UI) listStyled(groups []Group, width int) {
+func (u *UI) listStyled(heading string, groups []Group, width int) {
 	// Truncate descriptions rather than let them wrap: a wrapped listing loses
 	// the column that makes it scannable. 4 indent + name + 2 gap.
 	descWidth := u.width - 4 - width - 2
@@ -184,7 +190,7 @@ func (u *UI) listStyled(groups []Group, width int) {
 		descWidth = 12
 	}
 
-	fmt.Fprintln(u.w, u.title.Render("tasks"))
+	fmt.Fprintln(u.w, u.title.Render(heading))
 	for _, g := range groups {
 		rule := strings.Repeat("─", min(u.width-2, 38))
 		fmt.Fprintf(u.w, "\n  %s\n  %s\n", u.group.Render(g.Name), u.border.Render(rule))

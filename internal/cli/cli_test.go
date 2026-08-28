@@ -1659,3 +1659,95 @@ func TestSignalContextCancelsOnInterrupt(t *testing.T) {
 		t.Errorf("interruptedBy = %v, want SIGINT — the exit code is derived from this", got)
 	}
 }
+
+// ─── the built-in manual ────────────────────────────────────────────────────
+
+func TestHelpListsTheManualTopics(t *testing.T) {
+	got := runMain(t, writeTree(t, map[string]string{"chores.yml": "version: '3'\ntasks: {ok: {cmds: [true]}}\n"}), "help")
+	if got.code != 0 {
+		t.Fatalf("exit = %d, stderr:\n%s", got.code, got.stderr)
+	}
+	// Headed "manual", not "tasks" — every line under it is a topic.
+	if !strings.HasPrefix(got.stdout, "manual:") {
+		t.Errorf("listing should be headed manual:\n%s", got.stdout)
+	}
+	for _, want := range []string{"hooks", "arguments", "variables", "includes"} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("topic %q missing from the contents page:\n%s", want, got.stdout)
+		}
+	}
+	if !strings.Contains(got.stdout, "chore help <topic>") {
+		t.Errorf("the contents page should say how to read one:\n%s", got.stdout)
+	}
+}
+
+func TestHelpPrintsATopic(t *testing.T) {
+	dir := writeTree(t, map[string]string{"chores.yml": "version: '3'\ntasks: {ok: {cmds: [true]}}\n"})
+	got := runMain(t, dir, "help", "hooks")
+	if got.code != 0 {
+		t.Fatalf("exit = %d, stderr:\n%s", got.code, got.stderr)
+	}
+	if !strings.HasPrefix(got.stdout, "# Hooks") {
+		t.Errorf("stdout should start with the page:\n%s", got.stdout)
+	}
+	// The provenance goes to stderr so the page can be piped somewhere.
+	if !strings.Contains(got.stderr, "schema.go") {
+		t.Errorf("stderr should name where the page came from:\n%s", got.stderr)
+	}
+	if strings.Contains(got.stdout, "schema.go") {
+		t.Errorf("provenance must not land in stdout:\n%s", got.stdout)
+	}
+
+	// An alias reaches the same page, because the name is a phrase someone
+	// half-remembers rather than an identifier they copied.
+	for _, alias := range []string{"lifecycle_hooks", "lifecycle-hooks", "HOOKS"} {
+		if a := runMain(t, dir, "help", alias); a.stdout != got.stdout {
+			t.Errorf("`help %s` did not reach the same page", alias)
+		}
+	}
+}
+
+func TestHelpOnAnUnknownTopicSuggests(t *testing.T) {
+	dir := writeTree(t, map[string]string{"chores.yml": "version: '3'\ntasks: {ok: {cmds: [true]}}\n"})
+
+	near := runMain(t, dir, "help", "hook")
+	if near.code == 0 {
+		t.Error("an unknown topic must not exit 0")
+	}
+	if !strings.Contains(near.stderr, "did you mean: hooks") {
+		t.Errorf("a near miss should suggest:\n%s", near.stderr)
+	}
+
+	far := runMain(t, dir, "help", "zzzz")
+	if !strings.Contains(far.stderr, "try:") || !strings.Contains(far.stderr, "hooks") {
+		t.Errorf("an unrelated word should list the topics:\n%s", far.stderr)
+	}
+}
+
+// The manual describes chore, not this project, so someone reading it to find
+// out how to write a taskfile is by definition not standing in a directory that
+// already has one.
+func TestHelpWorksWithNoTaskfile(t *testing.T) {
+	got := runMain(t, t.TempDir(), "help", "hooks")
+	if got.code != 0 {
+		t.Fatalf("exit = %d, stderr:\n%s", got.code, got.stderr)
+	}
+	if !strings.HasPrefix(got.stdout, "# Hooks") {
+		t.Errorf("the manual should not need a project:\n%s", got.stdout)
+	}
+}
+
+// A built-in word must never shadow a task someone wrote, the same way `version`
+// does not.
+func TestAProjectsOwnHelpTaskWins(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml": "version: '3'\nsilent: true\ntasks:\n  help:\n    cmds: ['echo project-help']\n",
+	})
+	got := runMain(t, dir, "help")
+	if got.code != 0 {
+		t.Fatalf("exit = %d, stderr:\n%s", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "project-help") {
+		t.Errorf("a task named help must win over the manual:\n%s", got.stdout)
+	}
+}

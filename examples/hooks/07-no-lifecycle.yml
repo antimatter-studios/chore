@@ -1,0 +1,25 @@
+# `--no-lifecycle` suppresses HOOKS and nothing else.
+#
+#   chore -f 07-no-lifecycle.yml demo                 everything runs
+#   chore -f 07-no-lifecycle.yml --no-lifecycle demo  only dep, body, cleanup
+#
+# `deps:` and `defer:` are untouched, because a dependency is a requirement and
+# a deferred step is a paired teardown, while a hook is advice. That distinction
+# is also why `before` is not a duplicate of `deps:`.
+version: '3'
+silent: true
+
+lifecycle:
+  before_all: [ echo before_all ]
+
+tasks:
+  demo:
+    deps: [ dep ]
+    cmds:
+      - defer: echo cleanup
+      - echo body
+    before: [ echo before ]
+    after:  [ echo after ]
+
+  dep:
+    cmds: [ echo dep ]

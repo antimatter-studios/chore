@@ -917,3 +917,82 @@ func TestDecodeListsWithoutNullsStillDecode(t *testing.T) {
 		t.Errorf("cmds = %+v, want just echo hi", got)
 	}
 }
+
+// The per-task hooks and child_hooks are ordinary struct fields, so the point of
+// these is the grammar they add: that the four names are accepted where a task
+// setting goes, that child_hooks distinguishes "absent" from "true", and that a
+// `defer:` inside a hook is refused rather than silently run as a step.
+func TestDecodeTaskHooks(t *testing.T) {
+	f, err := Decode([]byte(`
+version: '3'
+tasks:
+  build:
+    child_hooks: false
+    before:     [ ./check.sh ]
+    cmds:       [ make ]
+    on_success: [ ./publish.sh ]
+    on_failure: [ {task: collect:logs} ]
+    after:      [ 'echo {{.EXIT_CODE}}' ]
+  plain:
+    cmds: [ true ]
+`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	b := f.Tasks["build"]
+	if len(b.Before) != 1 || b.Before[0].Cmd != "./check.sh" {
+		t.Errorf("before = %+v", b.Before)
+	}
+	if len(b.OnSuccess) != 1 || b.OnSuccess[0].Cmd != "./publish.sh" {
+		t.Errorf("on_success = %+v", b.OnSuccess)
+	}
+	if len(b.OnFailure) != 1 || b.OnFailure[0].Task != "collect:logs" {
+		t.Errorf("on_failure = %+v", b.OnFailure)
+	}
+	if len(b.After) != 1 || b.After[0].Cmd != "echo {{.EXIT_CODE}}" {
+		t.Errorf("after = %+v", b.After)
+	}
+	if !b.HasHooks() {
+		t.Error("HasHooks() = false for a task that declares four")
+	}
+	if !b.SuppressesChildHooks() {
+		t.Error("child_hooks: false must suppress")
+	}
+	// Absent is not the same as false: a task that says nothing must not silence
+	// its children.
+	p := f.Tasks["plain"]
+	if p.ChildHooks != nil {
+		t.Errorf("ChildHooks = %v, want nil when undeclared", *p.ChildHooks)
+	}
+	if p.SuppressesChildHooks() {
+		t.Error("an undeclared child_hooks must not suppress")
+	}
+	if p.HasHooks() {
+		t.Error("HasHooks() = true for a task with no hooks")
+	}
+}
+
+func TestDecodeRejectsDeferInsideAHook(t *testing.T) {
+	for _, tc := range []struct{ name, yaml, want string }{
+		{
+			name: "task hook",
+			yaml: "version: '3'\ntasks:\n  x:\n    cmds: [true]\n    after:\n      - defer: echo nope\n",
+			want: `task "x": after step 1 is a ` + "`defer:`",
+		},
+		{
+			name: "lifecycle hook",
+			yaml: "version: '3'\nlifecycle:\n  after_all:\n    - defer: echo nope\ntasks:\n  x:\n    cmds: [true]\n",
+			want: "lifecycle: after_all step 1 is a " + "`defer:`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Decode([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("a `defer:` inside a hook must be refused, not run as an ordinary step")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}

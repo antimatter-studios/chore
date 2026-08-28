@@ -1,0 +1,9 @@
+$ chore demo
+# failure path
+1-up
+2-body
+3-down
+4-on_failure
+5-after exit=7
+(stderr) chore: demo: exit status 7
+exit 7

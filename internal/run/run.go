@@ -130,26 +130,45 @@ func (r *Runner) Invoke(ctx context.Context, name string, args []string, callVar
 		return r.Run(ctx, name, args, callVars)
 	}
 
-	// on_error fires for a failure of EITHER before_all or the task, so register it
-	// first (outermost defer) against the named return value.
+	// One defer, not two, because the order matters and defers run LIFO: the
+	// outcome hook fires FIRST and after_all LAST, so they cannot be two
+	// independent traps. `entered` is what keeps after_all off a run that
+	// before_all gated — there is nothing to tear down — while still letting
+	// on_failure_all see that gate's failure.
+	entered := false
 	defer func() {
 		if err != nil {
-			r.runHookBestEffort(ctx, "on_error", lc.OnError, name)
+			r.runHookBestEffort(ctx, "on_failure_all", lc.OnFailure, name, nil)
+		} else {
+			r.runHookBestEffort(ctx, "on_success_all", lc.OnSuccess, name, nil)
+		}
+		if entered {
+			r.runHookBestEffort(ctx, "after_all", lc.AfterAll, name, exitVars(err))
 		}
 	}()
 
-	if e := r.runHook(ctx, "before_all", lc.BeforeAll, name); e != nil {
+	if e := r.runHook(ctx, "before_all", lc.BeforeAll, name, nil); e != nil {
 		// A setup gate that did not pass stops the run — the task never starts and
 		// there is nothing for after_all to tear down.
 		err = fmt.Errorf("before_all: %w", e)
 		return err
 	}
-	// Now that the run has been entered, after_all is a trap: it runs on the way
-	// out whether the task succeeds or fails.
-	defer r.runHookBestEffort(ctx, "after_all", lc.AfterAll, name)
+	entered = true
 
 	err = r.Run(ctx, name, args, callVars)
 	return err
+}
+
+// exitVars is the variable a finishing hook needs and no other hook does: the
+// status of the thing it is finishing. "0" for success, the script's own code
+// otherwise, so `[ "$EXIT_CODE" = 0 ]` and {{if eq .EXIT_CODE "0"}} both read it.
+//
+// Only `after` and `after_all` get it. on_success/on_failure already know the
+// outcome by virtue of having been chosen, and before_all runs when there is no
+// outcome yet — publishing a meaningless 0 there would invite a hook to branch
+// on it.
+func exitVars(err error) map[string]string {
+	return map[string]string{"EXIT_CODE": strconv.Itoa(shell.ExitCode(err))}
 }
 
 // lifecycle returns the file's lifecycle hooks, or nil when there are none or the
@@ -165,7 +184,7 @@ func (r *Runner) lifecycle() *chorefile.Lifecycle {
 // calls) — as if it were a tiny internal task of the root file. trigger is the
 // name of the invoked task, exposed to the hook as {{.TASK}}. An empty hook is a
 // no-op. A step failure is returned so before_all can gate the run.
-func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) error {
+func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string, extra map[string]string) error {
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -183,6 +202,10 @@ func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, 
 			cv[k] = v
 		}
 	}
+	// extra is the hook's own context — {{.EXIT_CODE}} for after_all — and outranks
+	// a CLI variable of the same name, because it describes this run's outcome
+	// rather than an input to it.
+	maps.Copy(cv, extra)
 	scope, err := r.scope(ctx, t, nil, cv)
 	if err != nil {
 		return fmt.Errorf("lifecycle %s: %w", hook, err)
@@ -195,12 +218,12 @@ func (r *Runner) runHook(ctx context.Context, hook string, cmds chorefile.Cmds, 
 
 // runHookBestEffort runs a teardown/notify hook whose own failure must not mask
 // the run's outcome; it only reports the failure.
-func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string) {
-	// after_all and on_error are teardown, so they run on the way out of an
-	// INTERRUPTED run too — the same reason deferred steps get a grace context.
+func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds chorefile.Cmds, trigger string, extra map[string]string) {
+	// after_all and the outcome hooks are teardown, so they run on the way out of
+	// an INTERRUPTED run too — the same reason deferred steps get a grace context.
 	ctx, done := cleanupContext(ctx)
 	defer done()
-	if err := r.runHook(ctx, hook, cmds, trigger); err != nil {
+	if err := r.runHook(ctx, hook, cmds, trigger, extra); err != nil {
 		fmt.Fprintf(r.Err, "chore: %v\n", err)
 	}
 }
@@ -240,12 +263,122 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 
 	// `run: once` is keyed on the rendered variables, not just the name: two
 	// invocations with different arguments are different work.
+	//
+	// The hooks go INSIDE the Once with the body, not around it: they are part of
+	// one run of the task, and a task that runs once has its hooks fire once.
 	if t.RunOnce() {
 		e := r.onceEntry(onceKey(name, scope))
-		e.once.Do(func() { e.err = r.execute(ctx, t, scope) })
+		e.once.Do(func() { e.err = r.runTask(ctx, t, scope) })
 		return e.err
 	}
-	return r.execute(ctx, t, scope)
+	return r.runTask(ctx, t, scope)
+}
+
+// hooksOffKey marks a context as being inside a subtree whose hooks a coordinator
+// has switched off with `child_hooks: false`.
+type hooksOffKey struct{}
+
+// suppressChildHooks returns a context in which no task's hooks run. It is only
+// ever set, never cleared: a task inside a suppressed subtree cannot opt itself
+// back in, because the guarantee is written at the coordinator and has to be
+// readable there.
+func suppressChildHooks(ctx context.Context) context.Context {
+	return context.WithValue(ctx, hooksOffKey{}, true)
+}
+
+func childHooksSuppressed(ctx context.Context) bool {
+	on, _ := ctx.Value(hooksOffKey{}).(bool)
+	return on
+}
+
+// runTask runs one task with its own lifecycle hooks around it:
+//
+//	before → deps → cmds → deferred steps → on_success|on_failure → after
+//
+// deps and the deferred steps are inside execute; what this adds is the four
+// hooks. `before` gates, exactly as before_all does at the run level. The other
+// three are best-effort and cannot change the task's status.
+//
+// Hooks sit OUTSIDE execute's up-to-date check on purpose: a hook is not the
+// task's prerequisite, so — like before_all, and unlike a `deps:` entry — it runs
+// even when the task itself is skipped as up to date. That is the whole reason
+// `before` is not a slower spelling of `deps:`.
+func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
+	// Whether THIS task's hooks run was settled by an ancestor. Whether its
+	// children's do is settled here, and only ever downwards.
+	run := t.HasHooks() && !r.NoLifecycle && !childHooksSuppressed(ctx)
+	inner := ctx
+	if t.SuppressesChildHooks() {
+		inner = suppressChildHooks(ctx)
+	}
+	if !run {
+		return r.execute(inner, t, scope)
+	}
+
+	dir, err := r.taskDir(t, scope)
+	if err != nil {
+		return fmt.Errorf("%s: %w", t.Name, err)
+	}
+
+	runErr := r.taskHook(inner, t, scope, dir, "before", t.Before, nil)
+	if runErr == nil {
+		runErr = r.execute(inner, t, scope)
+	}
+
+	// A failed gate is still an outcome, so the outcome hooks fire for it — the
+	// same rule the run level already follows, where on_failure_all catches a
+	// before_all failure.
+	if runErr != nil {
+		r.taskHookBestEffort(inner, t, scope, dir, "on_failure", t.OnFailure, nil)
+	} else {
+		r.taskHookBestEffort(inner, t, scope, dir, "on_success", t.OnSuccess, nil)
+	}
+	// after runs IN ADDITION to the outcome hook, never instead of it, and is the
+	// one that is told which outcome it was.
+	r.taskHookBestEffort(inner, t, scope, dir, "after", t.After, exitVars(runErr))
+	return runErr
+}
+
+// taskHook runs one per-task hook's steps in the TASK's own scope — its
+// variables, its parameters, its directory — which is the difference from a
+// file-level hook and the reason `after: echo done {{.NAME}}` reads the argument
+// the task was called with.
+func (r *Runner) taskHook(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, dir, hook string, cmds chorefile.Cmds, extra map[string]string) error {
+	if len(cmds) == 0 {
+		return nil
+	}
+	s := scope
+	if len(extra) > 0 {
+		s = scope.Push(extra)
+	}
+	// The shell is built from the pushed scope so {{.EXIT_CODE}} and $EXIT_CODE
+	// are the same value; r.shell exports every scope name that can be one.
+	sh := r.shell(dir, s)
+	for i, c := range cmds {
+		if err := r.command(ctx, t, s, sh, c); err != nil {
+			if c.IgnoreError {
+				fmt.Fprintf(r.Err, "task: %s: %s step %d failed, ignored: %v\n", t.Name, hook, i+1, err)
+				continue
+			}
+			return fmt.Errorf("%s: %s failed: %w", t.Name, hook, err)
+		}
+	}
+	return nil
+}
+
+// taskHookBestEffort runs a hook whose failure must not mask the task's outcome.
+// It reports the failure and returns nothing — on_failure in particular is where
+// someone will reach to swallow a failure, and it cannot.
+func (r *Runner) taskHookBestEffort(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, dir, hook string, cmds chorefile.Cmds, extra map[string]string) {
+	if len(cmds) == 0 {
+		return
+	}
+	// Teardown outlives an interrupt, the same as a deferred step.
+	ctx, done := cleanupContext(ctx)
+	defer done()
+	if err := r.taskHook(ctx, t, scope, dir, hook, cmds, extra); err != nil {
+		fmt.Fprintf(r.Err, "task: %v\n", err)
+	}
 }
 
 func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
@@ -334,6 +467,47 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	return nil
 }
 
+// chore:manual hooks
+// order: 20
+//
+// ## `defer:` — the positional one
+//
+// `defer:` is a STEP inside `cmds:`, not a field, and that is the point: where
+// you put it is information.
+//
+// ```yaml
+// cmds:
+//   - docker compose up -d
+//   - defer: docker compose down     # only registers if `up` was reached
+//   - ./run-tests.sh
+// ```
+//
+// If `up` fails the `defer:` is never reached, so `down` never registers and
+// never runs — correct, because nothing came up. An unconditional `after:` field
+// would tear down a topology that never existed. Move the `defer:` above the
+// `up` and it runs unconditionally; that choice is what the position is for.
+//
+// ```
+// defer registered BEFORE a failing step   -> it RUNS
+// defer registered AFTER  a failing step   -> it does NOT run, and never registered
+// ```
+//
+// Defers accumulate as a LIFO stack — `D1 D2 D3` unwinds `D3 D2 D1` — and one
+// that fails does not stop the others, because a cleanup stack that stopped at
+// the first failure would leak everything registered beneath it.
+//
+// Two things `defer:` does not do:
+//
+// - **It does not run for a task that was up to date.** Nothing was entered, so
+//   nothing registered. Hooks DO still run in that case; the asymmetry is
+//   deliberate.
+// - **It does not see the script's shell.** A deferred step runs in a fresh
+//   process, so it reads chore's variables and none of the script's.
+//
+// A failing `defer:` FAILS an otherwise-green task, with the defer's own status.
+// A failing best-effort hook only prints. That difference is deliberate: a
+// teardown that did not happen is a resource left behind.
+
 // cleanupGrace bounds teardown that runs after the run's context is already
 // cancelled. Long enough for a `docker rm` or an `rm -f`, short enough that a
 // wedged teardown is not the thing keeping someone at the terminal.
@@ -411,6 +585,68 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	}
 	return nil
 }
+
+// chore:manual variables
+// title: Variables
+// summary: where a value can come from, and which one wins
+// aliases: vars, templates, env
+// order: 10
+//
+// # Variables
+//
+// Templating is Go `text/template` with `if`/`else`/`range` and exactly one added
+// function, `default`. No sprig.
+//
+// ## Precedence, lowest first
+//
+// ```
+// process environment
+// dotenv files
+// file vars:          (with the include's vars: merged in)
+// task vars:
+// vars: passed by a caller  (- task: x, or a deps: entry)
+// NAME=value typed on the command line
+// positional arguments
+// ```
+//
+// Nothing later shadows something earlier, and it is all resolved at ONE point.
+// That single evaluation is the fix for go-task's `dotenv:`, which resolves while
+// parsing — before command-line variables exist — so `task up CONFIG=x` loads the
+// default config's environment and acts on the wrong stack.
+//
+// The one thing above a command-line variable is a value a parent passes
+// EXPLICITLY to a child, because a file naming a value for one step is describing
+// that step rather than guessing: a task that brings up two servers by passing
+// each its own name must not have both collapsed into one by a global.
+//
+// ## Two forms
+//
+// ```yaml
+// vars:
+//   NAME: literal
+//   SHA:  {sh: git rev-parse HEAD}      # captured from a shell command
+// ```
+//
+// ## Provided by chore
+//
+// ```
+// {{.ROOT_DIR}}          directory of the root taskfile
+// {{.TASKFILE_DIR}}      directory of the file this task came from
+// {{.USER_WORKING_DIR}}  where the person actually was
+// {{.TASK}}              the task's own name
+// {{.CLI_ARGS}}          everything after --
+// {{.CHORE_EXE}}         path of the binary running, NOT what PATH answers
+// {{.CHORE_VERSION}}     its version
+// {{.EXIT_CODE}}         in `after` and `after_all` only
+// ```
+//
+// `CHORE_EXE` matters when a task must invoke chore — a launchd plist needs an
+// absolute path. Resolving the word `chore` through PATH answers "the one I would
+// get if I typed it", not "the one running me", and those differ exactly when it
+// matters: a file whose `env:` pins PATH, or a dev binary run from a checkout.
+//
+// Every variable whose name can be one is also exported to the script as an
+// environment variable, so `$CONFIG` and `{{.CONFIG}}` are the same value.
 
 // scope assembles the variables for one invocation.
 //

@@ -158,18 +158,30 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
-- **Four hooks, in two families** — and the second family is easy to miss because
-  it is not written as a setting. [SPEC.md's Hooks
-  section](SPEC.md#hooks) has all four together.
-  - **`lifecycle:` runs once around a whole invocation**, not per task —
-    `before_all`, `after_all`, `on_error`. One block covers every task instead of
-    wiring a `deps:` entry into each, and it fires even when the task it wraps is
-    up to date (a dependency would be skipped along with the task). `before_all`
-    is a gate — if it fails, the task never starts. The use it was built for: a
-    repo that installs its own git hooks the first time anyone runs any task,
+- **Nine hooks, in three families** — and the last is easy to miss because it is
+  not written as a setting. [SPEC.md's Hooks section](SPEC.md#hooks) has them
+  together.
+  - **Every task takes `before`, `on_success`, `on_failure` and `after`.**
+    `before` gates: if it fails, `cmds:` never run. `after` runs whatever
+    happened, *in addition to* the outcome hook, and reads `{{.EXIT_CODE}}`.
+    The last three cannot change the task's exit status. They run in the task's
+    own scope, fire wherever the task runs — as a dependency or a `- task:` step
+    — and run even when the task is up to date, which is what separates `before`
+    from a `deps:` entry.
+  - **`lifecycle:` runs once around a whole invocation**, not per task — the same
+    four names plus `_all`. One block covers every task instead of wiring a
+    `deps:` entry into each, and it fires even when the task it wraps is up to
+    date (a dependency would be skipped along with the task). `before_all` is a
+    gate — if it fails, the task never starts. The use it was built for: a repo
+    that installs its own git hooks the first time anyone runs any task,
     `before_all: [{task: hooks:ensure}]`, with no per-task boilerplate. Off for a
     run with `--no-lifecycle` — which turns off hooks and *not* `deps:`; never
     runs for `--list`/`--help`/`--version`.
+  - **`child_hooks: false` silences a whole subtree**, so a coordinator can do
+    something once for a tree instead of every task in it doing its own version.
+    It leaves the declaring task's own hooks alone, reaches every depth through
+    `deps:` and `- task:` alike, cannot be lifted from inside, and never
+    suppresses `defer:`.
   - **`defer:` runs once per task, and is POSITIONAL** — a step inside `cmds:`,
     not a field on the task, because where you put it is information:
 
@@ -183,16 +195,25 @@ real shell — with real `pipefail` — possible.
     If `up` fails, `down` never registers and never runs — correct, because
     nothing came up. An unconditional `on_failure:` field could not say that.
     Deferred steps unwind in reverse order, and a `defer:` that fails **fails an
-    otherwise-green task** (an `after_all` that fails only prints).
+    otherwise-green task** (a best-effort hook that fails only prints). They
+    unwind *before* `on_success`/`on_failure`/`after`, so a finishing hook runs
+    once what it is finishing is already down.
 - **Ctrl-C stops the task, not just chore.** A script runs in its own process
   group, which is what lets cancellation kill what the script started rather than
   only the shell — but the terminal signals the foreground group, which is chore.
   SIGINT and SIGTERM cancel the run and take the group with them, so `chore
   app:run` cannot exit and leave `flutter run` behind. Exit is 128+signal, and
-  teardown — `defer:`, `after_all` and `on_error` — still runs, on a fresh context
+  teardown — `defer:` and every best-effort hook — still runs, on a fresh context
   with a bounded budget. A second Ctrl-C is not caught.
 - **The system shell runs scripts**, so `set -o pipefail` works — Task's embedded
   interpreter does not implement it, and a failing pipeline there reports success.
+- **A built-in manual.** `chore help` is a contents page; `chore help hooks`
+  prints the page. Topics are extracted from `chore:manual` comment blocks that
+  live beside the code they describe, embedded into the binary, and checked in
+  CI by regenerating and diffing — so a rule and the paragraph explaining it move
+  in the same commit. Names take hyphens or underscores and carry aliases, so
+  `chore help lifecycle_hooks`, `chore help sources` and `chore help args` all
+  land. It needs no taskfile: the manual is about chore, not about your project.
 - **`chore <task> --help` describes the task and runs nothing.** Built from the
   task's own declarations: its `desc`, each parameter's type and whether it is
   optional, and the call forms. Works before or after the task name.
