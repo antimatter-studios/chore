@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0
 
 - **`interactive: true` gives a task the terminal.**
 
