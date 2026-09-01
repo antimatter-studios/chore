@@ -205,6 +205,67 @@ func TestBooleanParameterNormalisation(t *testing.T) {
 	}
 }
 
+// TestInteractiveTaskGetsStdin: `interactive: true` hands the task chore's own
+// terminal.
+//
+// Without it a task's stdin is /dev/null, because exec.Cmd with a nil Stdin
+// wires the child to it. A script that prompts — `read -rs token` for a
+// credential rotation — then gets EOF immediately and carries on with an empty
+// answer it never received. Measured on a real Taskfile: `chore claude:login`
+// printed its banner, showed nothing while a full-screen `claude setup-token`
+// ran, and only flushed when the user pressed Ctrl-C.
+func TestInteractiveTaskGetsStdin(t *testing.T) {
+	tasks := func() map[string]*chorefile.Task {
+		return map[string]*chorefile.Task{
+			"ask": {
+				Interactive: true,
+				Cmds:        cmds(`read -r answer; printf 'got=[%s]' "$answer" > out.txt`),
+			},
+			"deaf": {
+				Cmds: cmds(`read -r answer; printf 'got=[%s]' "$answer" > out.txt`),
+			},
+		}
+	}
+
+	t.Run("the task reads what the user types", func(t *testing.T) {
+		f := newFixture(t, nil, tasks())
+		f.r.Stdin = strings.NewReader("a-pasted-token\n")
+		f.mustRun("ask", nil, nil)
+		if got := f.read("out.txt"); got != "got=[a-pasted-token]" {
+			t.Errorf("out.txt = %q, want the typed value", got)
+		}
+	})
+
+	t.Run("without the flag stdin is empty, which is the bug", func(t *testing.T) {
+		f := newFixture(t, nil, tasks())
+		f.r.Stdin = strings.NewReader("a-pasted-token\n")
+		f.mustRun("deaf", nil, nil)
+		if got := f.read("out.txt"); got != "got=[]" {
+			t.Errorf("out.txt = %q, want an empty read: a task that did not ask "+
+				"for the terminal must not consume chore's stdin", got)
+		}
+	})
+}
+
+// A captured value is chore reading a command, not a human answering one. If a
+// `sh:` var inherited the terminal it would swallow the keystrokes meant for the
+// task, and the prompt that follows would read whatever was left.
+func TestCaptureNeverConsumesStdin(t *testing.T) {
+	f := newFixture(t, &chorefile.File{
+		Vars: map[string]chorefile.Var{"CAPTURED": {Sh: "head -c 4"}},
+	}, map[string]*chorefile.Task{
+		"probe": {
+			Interactive: true,
+			Cmds:        cmds(`read -r answer; printf 'captured=[{{.CAPTURED}}] task=[%s]' "$answer" > out.txt`),
+		},
+	})
+	f.r.Stdin = strings.NewReader("the-whole-line\n")
+	f.mustRun("probe", nil, nil)
+	if got := f.read("out.txt"); got != "captured=[] task=[the-whole-line]" {
+		t.Errorf("out.txt = %q, want the capture empty and the task holding the whole line", got)
+	}
+}
+
 // chore identifies itself in the environment so a Taskfile can distinguish the two
 // runners — needed where a guard exists to catch a Task-specific trap.
 func TestRunnerIdentifiesItself(t *testing.T) {

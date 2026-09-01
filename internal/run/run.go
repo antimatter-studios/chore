@@ -44,6 +44,10 @@ type Runner struct {
 	NoLifecycle bool
 	CLIArgs     string // everything after `--`
 
+	// Stdin is what an `interactive: true` task reads from. Defaulted to
+	// os.Stdin by New; a test supplies its own.
+	Stdin io.Reader
+
 	// ChoreExe and ChoreVersion describe the binary actually running, published
 	// to tasks as {{.CHORE_EXE}} and {{.CHORE_VERSION}}.
 	//
@@ -91,6 +95,7 @@ func New(p *chorefile.Project, out, errOut io.Writer) *Runner {
 		Project: p,
 		Out:     out,
 		Err:     errOut,
+		Stdin:   os.Stdin,
 		once:    map[string]*onceEntry{},
 		warned:  map[string]bool{},
 	}
@@ -354,6 +359,7 @@ func (r *Runner) taskHook(ctx context.Context, t *chorefile.Task, scope *tmpl.Sc
 	// The shell is built from the pushed scope so {{.EXIT_CODE}} and $EXIT_CODE
 	// are the same value; r.shell exports every scope name that can be one.
 	sh := r.shell(dir, s)
+	sh.Interactive, sh.In = t.Interactive, r.Stdin
 	for i, c := range cmds {
 		if err := r.command(ctx, t, s, sh, c); err != nil {
 			if c.IgnoreError {
@@ -387,6 +393,9 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
 	sh := r.shell(dir, scope)
+	// The flag belongs to the task, so it covers every command the task runs.
+	// Capture ignores it, so the up-to-date check below cannot eat a keystroke.
+	sh.Interactive, sh.In = t.Interactive, r.Stdin
 
 	if !r.Force {
 		up, err := fingerprint.UpToDate(ctx, t, scope, sh, dir, r.cacheDir())
