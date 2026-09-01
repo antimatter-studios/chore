@@ -338,7 +338,7 @@ The feature set was measured against a real 3,131-line Taskfile rather than
 guessed: `desc`, `cmds` (strings, `- task:` references, multi-line blocks),
 `vars` (including `sh:`), `deps` (concurrent), `env`, `dotenv` (per file OR per
 task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
-`silent`, `internal`, `dir`,
+`silent`, `internal`, `interactive`, `dir`,
 `run: once`, `defer`, `status`, `sources`/`generates` (content-hash up-to-date
 checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.

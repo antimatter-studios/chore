@@ -293,6 +293,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 // chore died from the default action, and the hook that would have killed the
 // group never fired because nothing ever cancelled the context.
 //
+// **`interactive: true` trades that away, deliberately.** A child in its own
+// process group is a BACKGROUND group as far as the terminal is concerned: it
+// cannot take the foreground, so a full-screen program draws nothing until it
+// dies and reading /dev/tty raises SIGTTIN. A task that must prompt therefore
+// shares chore's group, and cancelling it signals the process rather than the
+// group — so what THAT task starts is not swept up. It is opt-in per task for
+// exactly this reason: the guarantee above is worth more than a prompt almost
+// everywhere.
+//
 // Exit status is 128+signal, which is what every shell reports for a signalled
 // command and what a caller checking `$?` already knows how to read. An
 // interrupted run is reported as interrupted, not as the failure its internal

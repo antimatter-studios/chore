@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **`interactive: true` gives a task the terminal.**
+
+      claude:login:
+        interactive: true
+        cmds:
+          - 'claude setup-token; read -rs token; ...'
+
+  Until now a task could not prompt. `exec.Cmd` with a nil `Stdin` wires the
+  child to /dev/null, and chore never set one — so `read -rs token` returned EOF
+  at once and the script carried on with an empty answer it never received.
+
+  The second half was worse to diagnose. Every task runs in its OWN process
+  group, which is what lets Ctrl-C kill what the script started rather than only
+  the shell. But a child in its own group is a BACKGROUND group as far as the
+  terminal is concerned: it cannot take the foreground, so a full-screen program
+  draws nothing and reading /dev/tty raises SIGTTIN. Measured on a real
+  Taskfile, `chore claude:login` printed its banner, sat silent while `claude
+  setup-token` ran invisibly, and only flushed the TUI when the user pressed
+  Ctrl-C.
+
+  So an interactive task gets a real stdin AND shares chore's process group, and
+  cancelling it signals the process rather than the group. That is a genuine
+  loss — what that task starts is no longer swept up by Ctrl-C — which is why it
+  is opt-in per task rather than detected: a task that silently changed its
+  cleanup guarantee depending on whether output was piped would be worse than
+  one that declares itself.
+
+  A `sh:` capture ignores the flag. A captured value is chore reading a command,
+  not a human answering one, and an up-to-date check that swallowed the
+  keystrokes meant for the prompt would be a very quiet bug.
+
 ## v0.8.0
 
 - **A built-in manual, extracted from the source.**

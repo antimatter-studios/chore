@@ -47,6 +47,12 @@ type Shell struct {
 	Env []string
 	Out io.Writer
 	Err io.Writer
+	// In is the reader an interactive task gets as stdin. Unused otherwise: a
+	// task that does not ask for the terminal must not be able to eat the
+	// keystrokes meant for chore itself.
+	In io.Reader
+	// Interactive gives the script the terminal — see exec for what that costs.
+	Interactive bool
 	// Bin overrides the shell binary. Empty prefers bash, falling back to sh:
 	// bash is a superset, and scripts in the wild assume more than POSIX more
 	// often than they admit.
@@ -62,6 +68,11 @@ func (s Shell) Run(ctx context.Context, script string) error {
 // trimmed — the form a variable wants. stderr still reaches s.Err, so a script
 // that warns while producing a value does not lose the warning.
 func (s Shell) Capture(ctx context.Context, script string) (string, error) {
+	// A captured value is chore reading a command, not a human answering one.
+	// Inheriting stdin here would let a `sh:` var or a `sources:` check swallow
+	// the keystrokes intended for the task itself. The receiver is a value, so
+	// this is local to the call.
+	s.Interactive = false
 	var buf strings.Builder
 	err := s.exec(ctx, script, &buf)
 	return strings.TrimRight(buf.String(), "\n"), err
@@ -78,6 +89,31 @@ func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 	cmd.Stdout = out
 	cmd.Stderr = s.Err
 
+	if s.Interactive {
+		// The task asked for the terminal, so give it one — both halves matter.
+		//
+		// stdin, because a nil Stdin is /dev/null: `read -rs token` then returns
+		// EOF at once and the script proceeds with an empty answer it never
+		// prompted for.
+		//
+		// And NO new process group. A child in its own group is a BACKGROUND
+		// group as far as the terminal is concerned: it cannot become the
+		// foreground, so a full-screen program draws nothing until it dies, and
+		// reading /dev/tty raises SIGTTIN and stops it. Sharing chore's group is
+		// what lets it take the terminal at all.
+		cmd.Stdin = s.In
+		// Which is why cancelling must signal the PROCESS. -pid here would name
+		// chore's own process group — the shell that launched it included.
+		cmd.Cancel = func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Signal(syscall.SIGTERM)
+		}
+		cmd.WaitDelay = 2 * time.Second
+		return s.wait(ctx, cmd)
+	}
+
 	// Own process group, so cancelling kills what the script started rather than
 	// only the shell: a task running `docker logs -f` would otherwise leave the
 	// child holding the terminal.
@@ -90,6 +126,11 @@ func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 	}
 	cmd.WaitDelay = 2 * time.Second
 
+	return s.wait(ctx, cmd)
+}
+
+// wait runs the command and translates how it ended.
+func (s Shell) wait(ctx context.Context, cmd *exec.Cmd) error {
 	if err := cmd.Run(); err != nil {
 		// A cancelled context is not a script failure: the caller stopped the
 		// work, so report that rather than the SIGTERM exit status (143) the

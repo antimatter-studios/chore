@@ -97,6 +97,14 @@ is an error — so the floor fails closed even against versions that predate it.
 Cheap additions, included because they are a few lines each: `aliases`,
 `ignore_error`, `requires`, `platforms`, `summary`.
 
+`interactive: true` on a task gives it chore's own terminal — a real stdin, and
+the foreground process group a full-screen program needs. Off by default and
+opt-in per task, because it costs the cancellation guarantee: an ordinary task
+runs in its own process group so Ctrl-C kills what the script started, and a
+task in that group can never take the terminal. A `sh:` capture ignores the
+flag, so an up-to-date check cannot swallow the keystrokes meant for the
+prompt.
+
 **chore-only extension — hooks**: `before`, `on_success`, `on_failure` and
 `after` on any task, the same four names plus `_all` in a top-level `lifecycle:`
 block for the run as a whole, `child_hooks:` to switch off a subtree's, and

@@ -5,7 +5,8 @@
 // The schema covers the features rest-mail's Taskfiles actually use, plus the
 // ones that cost almost nothing to support. Everything else Task grew —
 // remote includes, watch mode, v2 compatibility, matrix/for expansion,
-// interactive tasks, output styles — is deliberately absent.
+// output styles — is deliberately absent. (Interactive tasks were, until a
+// credential-rotation task needed a terminal; they are opt-in per task.)
 package chorefile
 
 import (
@@ -291,6 +292,11 @@ type Task struct {
 	Dir      string   `yaml:"dir"`
 	Silent   bool     `yaml:"silent"`
 	Internal bool     `yaml:"internal"`
+	// Interactive gives the task chore's own terminal: a real stdin, and the
+	// foreground process group a full-screen program needs. Opt-in per task,
+	// because it costs the cancellation guarantee every other task has — see
+	// shell.Shell.Interactive.
+	Interactive bool `yaml:"interactive"`
 	// Run is "always" (default) or "once": a task marked once executes one time
 	// per invocation of chore, keyed on its rendered variables.
 	Run         string   `yaml:"run"`

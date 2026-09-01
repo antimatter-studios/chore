@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/chorefile/schema.go:88 internal/run/run.go:470 -->
+<!-- sources: internal/chorefile/schema.go:89 internal/run/run.go:479 -->
 ---
 title: Hooks
 summary: before/on_success/on_failure/after, on a task or the whole run
