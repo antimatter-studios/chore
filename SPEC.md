@@ -451,8 +451,16 @@ down the same resource, with the handler usually first: `on_timeout:`, then the
 task's `defer:` steps, then anything outside the process. All of them can run
 against a state that is already clean, and a failing `defer:` fails an
 otherwise-green task — so a teardown that errors because the work was already
-done turns a clean run red. `docker rm -f`, `vagrant destroy -f`, `|| true` on
-the kill.
+done turns a clean run red.
+
+The line is not "never fail". Exit 0 for every state that is not the resource
+still being there; exit non-zero only when it **is** still there. A blanket
+`|| true` gets the first half and destroys the second, swallowing the one case
+that has to be loud: the teardown that ran and did not work. A teardown
+reporting success while the thing is still up is worse than one that fails,
+because nobody looks again at a green run. Idempotent and loud are one rule seen
+from two sides — which is also what a later strict mode breaks, by taking the
+tempting step of failing on "never created".
 
 Observed with three layers composed on a hung VM fixture: the handler reclaimed
 it, then the `defer:` and an out-of-process reaper ran harmlessly on an
