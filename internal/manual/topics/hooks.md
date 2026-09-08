@@ -164,9 +164,13 @@ Three things `defer:` does not do:
   deliberate.
 - **It does not see the script's shell.** A deferred step runs in a fresh
   process, so it reads chore's variables and none of the script's.
-- **It does not cover a task that HANGS.** Registration is positional, so a
-  task stuck on a step reaches nothing below it and unwinds nothing at all —
-  which is what `timeout:` is for. See `chore help timeouts`.
+- **It does not cover a task that HANGS — unless that task has a `timeout:`.**
+  Registration is positional, so a task stuck on a step reaches nothing below
+  it, and with no deadline nothing unwinds at all. A `timeout:` turns the hang
+  into an ending, and the deferred steps then run like any other ending. Worth
+  saying because the reasonable guess is the other way: a field test written
+  against a hung VM predicted its `defer:` would be lost and it was not. See
+  `chore help timeouts`.
 
 A failing `defer:` FAILS an otherwise-green task, with the defer's own status.
 A failing best-effort hook only prints. That difference is deliberate: a

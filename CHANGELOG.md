@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.10.0
+## Unreleased
 
 - **`timeout:` and `on_timeout:` — the net for a task that hangs.**
 
@@ -62,6 +62,32 @@
   Refused at load, not at runtime: `on_timeout` with no `timeout`, and a duration
   with no unit — `timeout: 30` is thirty of something, and a net that can be out
   by a factor of sixty is not one.
+
+  A `defer:` that the hang would have swallowed runs after all, which is the part
+  that surprises: a deferred step is registered positionally, so a task that
+  never returns never unwinds — until the budget ends the hang. A hang was the
+  one case where `defer:` was unreachable, and with a `timeout:` it no longer is.
+
+  Verified against the case that motivated it rather than a stand-in: a task
+  holding an already-booted btrfs oracle VM, hanging without booting anything —
+  the failure that beat every existing net, because the process is alive so a
+  liveness check correctly declines to reclaim, and `defer:` never fires because
+  the body never returns.
+
+      qemu before: 1
+      chore: holds-a-vm: timed out after 20s — signalling process group 19781
+      handler: pgid=[19781] spent=20s
+      ==> default: Force killing QEMU process (pid=21655)
+      ==> default: virtiofsd stopped
+      after, exit 124
+      elapsed: 23s
+      qemu after: 0
+      slot: the oracle slot is free
+
+  Twenty-three seconds against a twenty-second budget. The group was live when
+  the handler ran, so `vm.sh down` reached the guest and halted it properly
+  rather than orphaning qemu — which is the entire reason the handler runs before
+  the signal. The scenario that cost thirteen hours, closed in 23 seconds.
 
   **It does not make an out-of-process backstop redundant**, and it will look as
   though it does. A timer dies with the process that owns it: SIGKILL chore, or

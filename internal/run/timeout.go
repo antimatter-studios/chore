@@ -111,6 +111,12 @@ import (
 //   minutes into the task it was meant to guard.
 // - **A task that was up to date has nothing to time out.** The clock stops with
 //   the skip.
+// - **A `defer:` the hang would have swallowed runs after all.** This is the part
+//   that surprises: a deferred step is registered positionally, so a task that
+//   never returns never unwinds — until the budget ends the hang, at which point
+//   the ordinary unwinding happens and the teardown paired with what was brought
+//   up finally runs. A hang was the one case where `defer:` was unreachable, and
+//   with a `timeout:` it no longer is.
 //
 // ## It does not replace a backstop outside the process
 //

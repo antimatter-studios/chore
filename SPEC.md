@@ -371,9 +371,13 @@ caught, so there is always a way out.
   process, so it reads chore's variables and none of the script's. Anything the
   script itself computed needs a shell `trap`; see
   [PATTERNS.md](PATTERNS.md#cleanup-defer-or-trap).
-- **It does not cover a task that HANGS.** Registration is positional, so a task
-  stuck on a step reaches nothing below it and unwinds nothing at all. That is
-  what the next section is for.
+- **It does not cover a task that HANGS — unless that task has a `timeout:`.**
+  Registration is positional, so a task stuck on a step reaches nothing below it,
+  and with no deadline nothing unwinds at all. That is what the next section is
+  for — and note which way it cuts: a `timeout:` turns the hang into an ending,
+  so the deferred steps run like any other ending. The reasonable guess is the
+  opposite, and a field test written against a hung VM predicted its `defer:`
+  would be lost. It was not.
 
 `lifecycle:` hooks and per-task hooks *do* still run for an up-to-date task —
 the asymmetry with `defer:` is deliberate, and is the point of both.
@@ -467,6 +471,10 @@ The rest:
   not twenty minutes into the task it was meant to guard.
 - **A task skipped as up to date has nothing to time out.** The clock stops with
   the skip.
+- **A `defer:` the hang would have swallowed runs after all**, which is the part
+  that surprises. A hang was the one case where a deferred step was unreachable;
+  once the budget ends the hang, the ordinary unwinding happens and the teardown
+  paired with what was brought up finally runs.
 - **The run does not report the task over while the timeout is still working.**
   The handler, the signal and the escalation all complete first, so a message
   about the kill cannot land against whatever ran next.
