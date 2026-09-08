@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.10.1
+
+Two corrections, both found while verifying the release that preceded them.
+Nothing about `timeout:` behaves differently.
+
+- **`chore verify-release` forces UTC when deriving the build date.** It rebuilds
+  a published release and compares hashes, which is the whole basis for trusting
+  the pipeline being optional — and it reported v0.10.0 as NOT reproducible.
+
+  The release was fine. goreleaser stamps `.CommitDate` in UTC, and
+  `git log --date=format-local:…%SZ` means *render in the local zone*, so an
+  11:45 UTC commit was stamped `13:45` and labelled Z: two hours of difference in
+  the ldflags, a different binary, and a false alarm from the one tool that
+  exists to let somebody check the claim by hand. Wrong outside UTC since it was
+  written, and green in CI because a runner's clock is already UTC — the worst
+  available hiding place. With TZ forced, v0.10.0 and v0.9.0 both reproduce
+  byte-for-byte.
+
+- **`chore help timeouts` says what was observed of the out-of-process backstop,
+  not what was assumed.** The page claimed both nets had been "observed working
+  on one machine on one day". Half of that was measured: `timeout:` reclaimed a
+  hung task's VM in 23 seconds. The guest-side deadline had been observed
+  ARMING — four ways, including a `hold` that cancels it and a reboot that
+  re-arms it — and confirmed from inside a guest as a poweroff scheduled for
+  13:25, but nobody has watched it fire; that VM was taken down by hand as the
+  target of the timeout test.
+
+  Corrected because of where the sentence sits. It is the argument for keeping a
+  net this feature makes look redundant, and an argument for trusting something
+  is the worst place to claim more evidence than exists. The honest version is
+  the stronger one: the inner net is proven to fire, the outer is so far only
+  proven to be set.
+
 ## v0.10.0
 
 - **`timeout:` and `on_timeout:` — the net for a task that hangs.**
