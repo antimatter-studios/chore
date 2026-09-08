@@ -74,6 +74,35 @@ for g in $TIMEOUT_PGID; do kill -TERM -"$g" 2>/dev/null || true; done
   escalation is limited the same way. A task that must prompt is a poor
   candidate for a timeout for that reason.
 
+## Write the teardown idempotent
+
+A timeout means more than one thing may tear down the same resource, and the
+handler usually gets there first: `on_timeout:` runs, then the task's `defer:`
+steps unwind, and anything outside the process — a reaper, a later sweep —
+may arrive later still. All of them can run against a state that is already
+clean.
+
+So write each of them to succeed on an already-clean state. `docker rm -f`,
+`vagrant destroy -f`, an `|| true` on the kill. Not doing so has a specific
+cost here: a failing `defer:` FAILS an otherwise-green task, so a teardown
+that errors because the work was already done turns a clean run red.
+
+Observed with three layers composed — chore's handler, the task's `defer:`,
+and an out-of-process reaper — on a hung VM fixture:
+
+```
+chore: test: timed out after 15s — signalling process group 39230
+handler: vm.sh down  ->  QEMU 38451 killed, virtiofsd stopped
+defer:   vm.sh down      (already down)
+reaper:  vm.sh reap
+qemu after: 0    slot: free    20s elapsed
+```
+
+The handler reclaimed it; the other two ran harmlessly. That is what makes
+keeping all three cost nothing, and it is a better argument for the redundancy
+than "each covers a case the others do not": the OVERLAP is free, so there is
+nothing to trade off when deciding whether to keep the outer nets.
+
 ## Rules
 
 - **It is not a hook, so nothing suppresses it.** `--no-lifecycle` and

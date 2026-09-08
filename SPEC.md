@@ -446,6 +446,20 @@ concurrent `deps:` had several scripts in flight (chore signals all of them), an
 process group by design, so `-pgid` would name chore; the pid is all there is,
 and chore's own escalation is limited the same way.
 
+**Write the teardown idempotent.** A timeout means more than one thing may tear
+down the same resource, with the handler usually first: `on_timeout:`, then the
+task's `defer:` steps, then anything outside the process. All of them can run
+against a state that is already clean, and a failing `defer:` fails an
+otherwise-green task — so a teardown that errors because the work was already
+done turns a clean run red. `docker rm -f`, `vagrant destroy -f`, `|| true` on
+the kill.
+
+Observed with three layers composed on a hung VM fixture: the handler reclaimed
+it, then the `defer:` and an out-of-process reaper ran harmlessly on an
+already-clean state. That is a better argument for keeping all three than "each
+covers a case the others do not" — the **overlap is free**, so there is nothing
+to trade off when deciding whether to keep the outer nets.
+
 The rest:
 
 - **Nothing suppresses it.** `--no-lifecycle` and `child_hooks: false` silence

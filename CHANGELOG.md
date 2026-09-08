@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **`chore help timeouts` says to write the teardown idempotent, and why the
+  redundancy is free.** A timeout means more than one thing may tear down the
+  same resource, with the handler usually first: `on_timeout:`, then the task's
+  `defer:` steps, then anything outside the process. All of them can run against
+  a state that is already clean, and a failing `defer:` fails an otherwise-green
+  task — so a teardown that errors because the work was already done turns a
+  clean run red.
+
+  Observed with three layers composed on a hung VM fixture: the handler reclaimed
+  it, and the `defer:` and an out-of-process reaper then ran harmlessly on an
+  already-clean state. That is a better argument for keeping all three than "each
+  covers a case the others do not" — the overlap is free, so there is nothing to
+  trade off when deciding whether to keep the outer nets.
+
 ## v0.10.1
 
 Two corrections, both found while verifying the release that preceded them.
