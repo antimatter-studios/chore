@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/cli/cli.go:39 -->
+<!-- sources: internal/cli/cli.go:40 -->
 ---
 title: Running tasks
 summary: how a command line is read, and where the task name ends

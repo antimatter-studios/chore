@@ -31,14 +31,44 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/antimatter-studios/chore/internal/cli"
 )
 
 var update = flag.Bool("update", false, "rewrite the .golden files from what the examples actually print")
+
+// buf collects one run's output. Locked, because chore writes to Out and Err
+// from more than one goroutine: concurrent `deps:` each stream from their own
+// script, and a `timeout:` reports from the timer that fired it. A plain
+// bytes.Buffer silently LOSES writes there — two goroutines appending from a
+// stale length, last one wins — which reads as a feature that printed nothing
+// rather than as the race it is. os.Stderr does not have the problem, so this is
+// the harness catching up with the program. internal/run's syncBuf is the same
+// type for the same reason.
+type buf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *buf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *buf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+// processGroup matches the pids in a timeout's own messages; see clean.
+var processGroup = regexp.MustCompile(`process group(s?) [0-9]+( [0-9]+)*`)
 
 // run is one invocation recorded in a golden file: a label, the words after
 // `chore`, and everything it produced.
@@ -71,6 +101,10 @@ var cases = map[string][]run{
 	},
 	"09-run-once.yml":   {{"three references, one run, one after", []string{"demo"}}},
 	"10-task-scope.yml": {{"a hook reads the task's own argument", []string{"build", "ext4"}}},
+	"11-timeout.yml": {
+		{"a task that hangs", []string{"hangs"}},
+		{"a task that finishes in time", []string{"finishes"}},
+	},
 }
 
 func TestExamples(t *testing.T) {
@@ -153,7 +187,7 @@ func record(t *testing.T, path string, runs []run) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		var out, errOut bytes.Buffer
+		var out, errOut buf
 		// -C keeps chore's own working directory out of it, and NO_COLOR is
 		// implicit because neither destination is a terminal.
 		args := append([]string{"-C", dir, "-f", filepath.Join(dir, name)}, r.args...)
@@ -174,7 +208,7 @@ func record(t *testing.T, path string, runs []run) string {
 
 // invoke runs one command line, either in this process or through the binary
 // named by CHORE_BIN.
-func invoke(t *testing.T, args []string, out, errOut *bytes.Buffer) int {
+func invoke(t *testing.T, args []string, out, errOut *buf) int {
 	t.Helper()
 	bin := os.Getenv("CHORE_BIN")
 	if bin == "" {
@@ -199,10 +233,15 @@ func invoke(t *testing.T, args []string, out, errOut *bytes.Buffer) int {
 }
 
 // clean removes what would make a golden file machine-specific: the temp
-// directory's path, and the dev-build banner that only appears when the version
-// is not a release.
+// directory's path, the dev-build banner that only appears when the version is
+// not a release, and the process ids a timeout names.
 func clean(s, dir string) string {
 	s = strings.ReplaceAll(s, dir, "<dir>")
+	// A process group number is different on every run. The point of the line
+	// that carries one is that there WAS a group to signal, so the number is
+	// normalised rather than recorded — the alternative is an example that fails
+	// every time it passes.
+	s = processGroup.ReplaceAllString(s, "process group$1 <pgid>")
 	var keep []string
 	for _, line := range strings.Split(s, "\n") {
 		if strings.Contains(line, "development build") || strings.Contains(line, "chore dev") {

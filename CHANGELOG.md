@@ -1,5 +1,107 @@
 # Changelog
 
+## Unreleased
+
+- **`timeout:` and `on_timeout:` — the net for a task that hangs.**
+
+      e2e:
+        timeout: 20m
+        on_timeout:
+          - ./vm.sh destroy          # $TIMEOUT_PGID is the hung process GROUP
+        cmds:
+          - vagrant up
+          - defer: vagrant destroy -f
+          - ./run-tests.sh
+
+  `defer:` covers a task that ENDS, normally or with an error. It runs when the
+  task reaches the step that registered it — so it does not cover a task that
+  HANGS, and a hang is the common case: a build stalled on a lock, an ssh that
+  never returns, a test deadlocked. A hung task reaches nothing, so nothing it
+  registered runs.
+
+  Measured on 2026-09-07: a task booted a Vagrant VM, the task's process was
+  killed, and nothing tore the VM down. It held a global lock for **thirteen
+  hours**. Three safety nets existed and all three were PASSIVE — a `defer:`
+  waiting for the task to reach its step, a reaper waiting for a later `chore`
+  invocation, a lock staleness check waiting for another repository to try the
+  lock. Each waited for somebody else to act, and that night nobody did.
+
+  When the budget is spent, the handler runs FIRST — while the hung process group
+  is still alive — then chore SIGTERMs that group, SIGKILLs after a 2s grace
+  whatever ignored it, unwinds the `defer:` steps and outcome hooks exactly as
+  after a Ctrl-C, and the task fails with exit **124**, the status `timeout(1)`
+  uses for the same event. `{{.EXIT_CODE}}` in `after` reads it.
+
+  Two details are the whole reason this is not `context.WithTimeout`:
+
+  - **The handler is given a process GROUP, not a pid.** `vagrant up` forks qemu
+    and virtiofsd; killing the pid orphans both, which is exactly how a qemu
+    process ended up holding that lock with no parent left to clean up after it.
+    `$TIMEOUT_PGID` is the group, handed over live, so
+    `kill -TERM -"$TIMEOUT_PGID"` takes the tree. It is space-separated when
+    concurrent `deps:` had several scripts in flight, and empty for an
+    `interactive: true` task, which shares chore's own group by design.
+  - **The clock is wall-clock from the start of the task**, not time since the
+    last output. A hung process very often still logs — progress ticks,
+    keepalives, retries — so an idle-output timer is silent on precisely the case
+    worth catching.
+
+  Nothing suppresses it: `--no-lifecycle` and `child_hooks: false` silence
+  advice, and neither a safety net nor the teardown it triggers is advice — the
+  same rule that keeps `defer:` alive inside a suppressed subtree. `on_timeout:`
+  is therefore not one of the nine hooks. The budget covers the task's forward
+  progress (its `before`, its `deps:`, its `cmds:`) and is switched off before
+  the deferred steps unwind, because a deadline that killed the teardown it had
+  just triggered would leave behind the very resource it fired to reclaim. The
+  handler gets 60 seconds and so does the teardown behind it, since the handler
+  runs before the kill and one that hung would defeat the timeout it serves. A
+  handler that kills the group itself — the shape to write — does not cut that
+  teardown short: the unwinding runs on a context chore's own cancellation cannot
+  reach.
+
+  Refused at load, not at runtime: `on_timeout` with no `timeout`, and a duration
+  with no unit — `timeout: 30` is thirty of something, and a net that can be out
+  by a factor of sixty is not one.
+
+  A `defer:` that the hang would have swallowed runs after all, which is the part
+  that surprises: a deferred step is registered positionally, so a task that
+  never returns never unwinds — until the budget ends the hang. A hang was the
+  one case where `defer:` was unreachable, and with a `timeout:` it no longer is.
+
+  Verified against the case that motivated it rather than a stand-in: a task
+  holding an already-booted btrfs oracle VM, hanging without booting anything —
+  the failure that beat every existing net, because the process is alive so a
+  liveness check correctly declines to reclaim, and `defer:` never fires because
+  the body never returns.
+
+      qemu before: 1
+      chore: holds-a-vm: timed out after 20s — signalling process group 19781
+      handler: pgid=[19781] spent=20s
+      ==> default: Force killing QEMU process (pid=21655)
+      ==> default: virtiofsd stopped
+      after, exit 124
+      elapsed: 23s
+      qemu after: 0
+      slot: the oracle slot is free
+
+  Twenty-three seconds against a twenty-second budget. The group was live when
+  the handler ran, so `vm.sh down` reached the guest and halted it properly
+  rather than orphaning qemu — which is the entire reason the handler runs before
+  the signal. The scenario that cost thirteen hours, closed in 23 seconds.
+
+  **It does not make an out-of-process backstop redundant**, and it will look as
+  though it does. A timer dies with the process that owns it: SIGKILL chore, or
+  lose the machine, and nothing fires. The thirteen-hour lock above was held by a
+  VM whose parent had already been killed. Keep the dumb net too — a guest-side
+  deadline, the VM scheduling its own poweroff at boot, survives the host dying
+  outright. `timeout:` is the fast, precise net; something outside the process is
+  the unkillable one. Both, not either. `chore help timeouts`.
+
+  Observed rather than argued: on one machine on one day, `timeout:` reclaimed a
+  hung task's VM in 23 seconds, and a guest booted at 11:24 under a 120-minute
+  bound was confirmed from inside itself to have its own poweroff scheduled for
+  13:25. Two nets, working independently, neither covering the other's case.
+
 ## v0.9.0
 
 - **`interactive: true` gives a task the terminal.**

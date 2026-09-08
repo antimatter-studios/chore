@@ -615,3 +615,67 @@ func samePath(t *testing.T, a, b string) bool {
 	}
 	return ra == rb
 }
+
+// Started/Stopped are what let a caller act on a script while it is still
+// running — `timeout:` hands the group to its handler — so the contract worth
+// pinning is that the group named is the SCRIPT's own, not the shell's pid dressed
+// up as one, and that the end is reported as well as the start.
+func TestStartedReportsTheScriptsOwnProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	var starts, stops int
+	var pid, pgid int
+	var out strings.Builder
+	sh := Shell{
+		Dir:     dir,
+		Out:     &out,
+		Err:     &out,
+		Started: func(p, g int) { starts++; pid, pgid = p, g },
+		Stopped: func(int) { stops++ },
+	}
+	// The script prints the process group the KERNEL says it is in, which is the
+	// value a handler would signal.
+	if err := sh.Run(context.Background(), `ps -o pgid= -p $$`); err != nil {
+		t.Fatalf("Run: %v\n%s", err, out.String())
+	}
+	if starts != 1 || stops != 1 {
+		t.Fatalf("Started fired %d times and Stopped %d, want 1 and 1", starts, stops)
+	}
+	if pgid != pid {
+		t.Errorf("pgid = %d, pid = %d — a script is given a group of its own, so they are the same number", pgid, pid)
+	}
+	if got := strings.TrimSpace(out.String()); got != fmt.Sprint(pgid) {
+		t.Errorf("the script reports process group %q, Started reported %d", got, pgid)
+	}
+}
+
+// An interactive script deliberately stays in chore's process group so it can
+// take the terminal. There is therefore no group of its own to report, and
+// reporting chore's would be worse than reporting nothing: -pgid names chore.
+func TestStartedReportsNoGroupForAnInteractiveScript(t *testing.T) {
+	var pid, pgid int
+	sh := Shell{
+		Interactive: true,
+		In:          strings.NewReader(""),
+		Started:     func(p, g int) { pid, pgid = p, g },
+	}
+	if err := sh.Run(context.Background(), "true"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if pid <= 0 {
+		t.Errorf("pid = %d, want the process's own", pid)
+	}
+	if pgid != 0 {
+		t.Errorf("pgid = %d, want 0 — an interactive script shares chore's group and has none of its own", pgid)
+	}
+}
+
+// The hooks must not change how a failure is reported: the status still comes
+// from the process, whether or not anybody was watching it start.
+func TestStartedDoesNotChangeHowAFailureIsReported(t *testing.T) {
+	sh := Shell{Started: func(int, int) {}, Stopped: func(int) {}}
+	err := sh.Run(context.Background(), "exit 9")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 9 {
+		t.Fatalf("err = %v, want exit status 9", err)
+	}
+}

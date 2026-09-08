@@ -1,0 +1,15 @@
+$ chore hangs
+# a task that hangs
+up
+handler: pgid=given, spent 500ms
+down
+failure
+after, exit 124
+(stderr) chore: hangs: timed out after 500ms — signalling process group <pgid>
+exit 124
+
+$ chore finishes
+# a task that finishes in time
+quick
+after, exit 0
+exit 0

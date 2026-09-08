@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/run/run.go:598 -->
+<!-- sources: internal/run/run.go:672 -->
 ---
 title: Variables
 summary: where a value can come from, and which one wins

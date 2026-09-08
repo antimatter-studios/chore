@@ -9,7 +9,6 @@ package run
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -34,8 +33,14 @@ import (
 // Runner executes tasks from a loaded project.
 type Runner struct {
 	Project *chorefile.Project
-	Out     io.Writer
-	Err     io.Writer
+	// Out and Err must tolerate concurrent writes. Concurrent `deps:` each stream
+	// from their own script, and a `timeout:` reports from the timer that fired
+	// it. os.Stderr is fine; a plain bytes.Buffer is not, and it LOSES writes
+	// rather than complaining about them — two goroutines appending from a stale
+	// length, last one wins — so a test that wraps one in a mutex is not being
+	// fussy.
+	Out io.Writer
+	Err io.Writer
 
 	DryRun  bool
 	Force   bool
@@ -308,6 +313,11 @@ func childHooksSuppressed(ctx context.Context) bool {
 // task's prerequisite, so — like before_all, and unlike a `deps:` entry — it runs
 // even when the task itself is skipped as up to date. That is the whole reason
 // `before` is not a slower spelling of `deps:`.
+//
+// `timeout:` is armed here too, around the same span. It is NOT a hook, so
+// neither --no-lifecycle nor `child_hooks: false` touches it: those silence
+// advice, and a safety net is not advice — the same rule that keeps `defer:`
+// running inside a suppressed subtree.
 func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
 	// Whether THIS task's hooks run was settled by an ancestor. Whether its
 	// children's do is settled here, and only ever downwards.
@@ -316,7 +326,7 @@ func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	if t.SuppressesChildHooks() {
 		inner = suppressChildHooks(ctx)
 	}
-	if !run {
+	if !run && t.Timeout <= 0 {
 		return r.execute(inner, t, scope)
 	}
 
@@ -325,9 +335,33 @@ func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
 
-	runErr := r.taskHook(inner, t, scope, dir, "before", t.Before, nil)
+	// The clock starts before the gate, not after it: a `before:` that hangs is a
+	// task that never starts and never ends, which is the case this is for.
+	inner, deadline := r.arm(inner, t, scope, dir)
+	defer deadline.disarm()
+
+	var runErr error
+	if run {
+		runErr = r.taskHook(inner, t, scope, dir, "before", t.Before, nil)
+	}
 	if runErr == nil {
 		runErr = r.execute(inner, t, scope)
+	}
+	// Whatever the body reported, a task whose budget ran out failed for that
+	// reason — see deadline.explain. Decided before the outcome hooks, so
+	// on_failure fires for a timeout and {{.EXIT_CODE}} in `after` reads 124.
+	runErr = deadline.explain(runErr)
+	// And the budget is over: the hooks below are the finishing steps, and killing
+	// those is not what a deadline is for.
+	deadline.disarm()
+	// A deadline that fired is still working when the body returns — the handler,
+	// the kill, the escalation behind it. Wait for it here, so the run neither
+	// reports the task over while chore is still killing it nor prints a line
+	// about it after moving on to the next thing.
+	deadline.settle()
+
+	if !run {
+		return runErr
 	}
 
 	// A failed gate is still an outcome, so the outcome hooks fire for it — the
@@ -358,8 +392,17 @@ func (r *Runner) taskHook(ctx context.Context, t *chorefile.Task, scope *tmpl.Sc
 	}
 	// The shell is built from the pushed scope so {{.EXIT_CODE}} and $EXIT_CODE
 	// are the same value; r.shell exports every scope name that can be one.
-	sh := r.shell(dir, s)
+	sh := r.shell(ctx, dir, s)
 	sh.Interactive, sh.In = t.Interactive, r.Stdin
+	if hook == hookOnTimeout {
+		// on_timeout is the one hook that runs while the body is STILL RUNNING —
+		// that is the whole point of it, since the process group it is handed has
+		// to be alive. So it does not get the task's terminal even on an
+		// `interactive: true` task: two processes reading one stdin is a fight over
+		// the keystrokes, and a net that fires without being asked has no business
+		// prompting anybody anyway.
+		sh.Interactive, sh.In = false, nil
+	}
 	for i, c := range cmds {
 		if err := r.command(ctx, t, s, sh, c); err != nil {
 			if c.IgnoreError {
@@ -392,10 +435,18 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	if err != nil {
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
-	sh := r.shell(dir, scope)
+	sh := r.shell(ctx, dir, scope)
 	// The flag belongs to the task, so it covers every command the task runs.
 	// Capture ignores it, so the up-to-date check below cannot eat a keystroke.
 	sh.Interactive, sh.In = t.Interactive, r.Stdin
+
+	// The deadline THIS task armed, if it armed one, and never an ancestor's: a
+	// sub-task reaching the end of its work is not the coordinator reaching the
+	// end of a budget, so it must not stop that clock or answer for it.
+	own := deadlineFrom(ctx)
+	if own != nil && own.task != t {
+		own = nil
+	}
 
 	if !r.Force {
 		up, err := fingerprint.UpToDate(ctx, t, scope, sh, dir, r.cacheDir())
@@ -406,12 +457,15 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 			if !r.silent(t) {
 				fmt.Fprintf(r.Out, "task: %s is up to date\n", t.Name)
 			}
+			// Nothing ran, so there is nothing left to time out.
+			own.disarm()
 			return nil
 		}
 	}
 
 	if err := r.deps(ctx, t, scope); err != nil {
-		return err
+		own.disarm()
+		return own.explain(err)
 	}
 
 	// Deferred steps run when the task finishes, in reverse order, whether or not
@@ -435,13 +489,21 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 	}
 
+	// The body is over, so the budget is: everything below is teardown, and a
+	// deadline that killed the teardown it had just triggered would leave exactly
+	// the resource behind that it fired to reclaim.
+	own.disarm()
+
 	// Teardown outlives an interrupt. Once the run's context is cancelled,
 	// exec.CommandContext refuses to START a process, so passing ctx straight
 	// through would silently skip every deferred step at the one moment they
 	// matter most: Ctrl-C on a task that brought a topology up. The grace budget
 	// is bounded so a hung teardown cannot wedge the tool — and a second Ctrl-C
 	// is not caught at all, so there is always a way out.
-	cleanupCtx, endCleanup := cleanupContext(ctx)
+	// Through the deadline, which is what keeps a FIRED timeout from cancelling
+	// the teardown it fired to trigger — see deadline.cleanupContext. Without a
+	// deadline it is the plain cleanupContext above.
+	cleanupCtx, endCleanup := own.cleanupContext(ctx)
 	defer endCleanup()
 
 	for i := len(deferred) - 1; i >= 0; i-- {
@@ -454,6 +516,11 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 			}
 		}
 	}
+	// A killed task reports the timeout rather than the cancellation it saw, and a
+	// task whose every step declared `ignore_error` reports it rather than nothing
+	// at all. Before the fingerprint below, because recording work as done is the
+	// one thing a task that was cut short must not do.
+	runErr = own.explain(runErr)
 	if runErr != nil {
 		return runErr
 	}
@@ -505,13 +572,20 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 // that fails does not stop the others, because a cleanup stack that stopped at
 // the first failure would leak everything registered beneath it.
 //
-// Two things `defer:` does not do:
+// Three things `defer:` does not do:
 //
 // - **It does not run for a task that was up to date.** Nothing was entered, so
 //   nothing registered. Hooks DO still run in that case; the asymmetry is
 //   deliberate.
 // - **It does not see the script's shell.** A deferred step runs in a fresh
 //   process, so it reads chore's variables and none of the script's.
+// - **It does not cover a task that HANGS — unless that task has a `timeout:`.**
+//   Registration is positional, so a task stuck on a step reaches nothing below
+//   it, and with no deadline nothing unwinds at all. A `timeout:` turns the hang
+//   into an ending, and the deferred steps then run like any other ending. Worth
+//   saying because the reasonable guess is the other way: a field test written
+//   against a hung VM predicted its `defer:` would be lost and it was not. See
+//   `chore help timeouts`.
 //
 // A failing `defer:` FAILS an otherwise-green task, with the defer's own status.
 // A failing best-effort hook only prints. That difference is deliberate: a
@@ -548,7 +622,7 @@ func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope)
 				return fmt.Errorf("%s: dep name: %w", t.Name, err)
 			}
 			name = reference(t, name)
-			vars, err := scope.Resolve(gctx, d.Vars, r.shell(r.Project.RootDir, scope))
+			vars, err := scope.Resolve(gctx, d.Vars, r.shell(gctx, r.Project.RootDir, scope))
 			if err != nil {
 				return fmt.Errorf("%s: dep %s vars: %w", t.Name, name, err)
 			}
@@ -694,7 +768,7 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	}
 	early := base.Push(r.CLIVars).Push(argVars).Push(callVars)
 
-	sh := r.shell(r.Project.RootDir, early)
+	sh := r.shell(ctx, r.Project.RootDir, early)
 
 	// A declared parameter's DEFAULT has to be available before the dotenv path is
 	// rendered, because the path is usually keyed on that very parameter
@@ -1360,7 +1434,13 @@ func (r *Runner) taskDir(t *chorefile.Task, scope *tmpl.Scope) (string, error) {
 // shell builds a shell whose environment carries the resolved variables, so a
 // script can use $VAR as well as {{.VAR}} — the target project relies on that
 // for things like `>$OUTPUT`.
-func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
+//
+// It takes a context for one reason: every script chore starts registers its
+// process group with the `timeout:` deadline in scope, and this is the single
+// place a script becomes a process. Wiring that at the call sites instead would
+// mean remembering it at each of them, and the one forgotten is a hang the
+// handler is then told nothing about.
+func (r *Runner) shell(ctx context.Context, dir string, scope *tmpl.Scope) shell.Shell {
 	// Identify the runner, so a Taskfile can tell which one is executing it. The
 	// concrete need: guards written to catch Task's "CLI variables do not reach
 	// dotenv" trap must not fire here, where the trap does not exist and the
@@ -1378,7 +1458,14 @@ func (r *Runner) shell(dir string, scope *tmpl.Scope) shell.Shell {
 			env = append(env, k+"="+v)
 		}
 	}
-	return shell.Shell{Dir: dir, Env: env, Out: r.Out, Err: r.Err}
+	sh := shell.Shell{Dir: dir, Env: env, Out: r.Out, Err: r.Err}
+	// A task under a `timeout:` — its own, or an ancestor's, since a hang is
+	// usually in a dep rather than in the coordinator — has every script it
+	// starts report what to signal if the budget runs out.
+	if d := deadlineFrom(ctx); d != nil {
+		sh.Started, sh.Stopped = d.start, d.end
+	}
+	return sh
 }
 
 func (r *Runner) silent(t *chorefile.Task) bool {
@@ -1567,13 +1654,8 @@ func envFiles(p *chorefile.Project, t *chorefile.Task) []*chorefile.File {
 }
 
 // ExitCode reports the process exit code an error should produce.
-func ExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ee *shell.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
-	}
-	return 1
-}
+//
+// One rule, held in internal/shell: an error that names its own status answers
+// for it. Two copies of that rule is how a new error type — a timeout, say —
+// ends up exiting 124 through one path and 1 through the other.
+func ExitCode(err error) int { return shell.ExitCode(err) }

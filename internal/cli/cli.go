@@ -9,6 +9,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -269,7 +270,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			errUI.Errorf("%s: stopped %s and anything it started", verb, rest[0])
 			return 128 + int(sig)
 		}
-		errUI.Errorf("%v", err)
+		// A timeout has already reported itself, at the moment it happened and with
+		// the detail this line could not carry — which process group it signalled.
+		// Saying it again here is one identical line under another; the status is
+		// what is left to report, and that is the return below.
+		var timedOut *run.TimeoutError
+		if !errors.As(err, &timedOut) {
+			errUI.Errorf("%v", err)
+		}
 		return run.ExitCode(err)
 	}
 	return 0

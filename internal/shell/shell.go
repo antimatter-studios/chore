@@ -57,6 +57,22 @@ type Shell struct {
 	// bash is a superset, and scripts in the wild assume more than POSIX more
 	// often than they admit.
 	Bin string
+
+	// Started, if set, is called as soon as a script HAS a process, with its pid
+	// and its process group. The group is the pid, because a script is given a
+	// group of its own — except when Interactive, where it is 0: such a script
+	// deliberately shares chore's group, so -pgid would name chore itself and
+	// there is no group of the script's own to hand out.
+	//
+	// It exists so a caller can act on what is running while it is still running.
+	// `timeout:` is the reason: a handler that is told only the pid orphans
+	// whatever the script forked — the exact way a `vagrant up` left qemu and
+	// virtiofsd behind holding a lock — so it has to be told the group.
+	Started func(pid, pgid int)
+	// Stopped, if set, is called once that process has ended. A caller tracking
+	// what is in flight needs the end as well as the start: a pid it keeps after
+	// the process is gone is a pid the kernel may have given to something else.
+	Stopped func(pid int)
 }
 
 // Run executes a script, streaming stdout and stderr to Out and Err.
@@ -131,7 +147,7 @@ func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 
 // wait runs the command and translates how it ended.
 func (s Shell) wait(ctx context.Context, cmd *exec.Cmd) error {
-	if err := cmd.Run(); err != nil {
+	if err := s.startAndWait(cmd); err != nil {
 		// A cancelled context is not a script failure: the caller stopped the
 		// work, so report that rather than the SIGTERM exit status (143) the
 		// shell died with, which a caller would otherwise have to decode.
@@ -141,6 +157,35 @@ func (s Shell) wait(ctx context.Context, cmd *exec.Cmd) error {
 		return exitError(err)
 	}
 	return nil
+}
+
+// startAndWait is cmd.Run, split into its two halves so the pid can be published
+// while the process is still alive — which is the only moment it is worth
+// anything to a caller that wants to signal it.
+//
+// With no hooks set it IS cmd.Run, so the ordinary path is unchanged.
+func (s Shell) startAndWait(cmd *exec.Cmd) error {
+	if s.Started == nil && s.Stopped == nil {
+		return cmd.Run()
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	pid := cmd.Process.Pid
+	// Setpgid made the child a group leader, so its group id IS its pid. An
+	// interactive script was deliberately left in chore's group and has none of
+	// its own — see exec.
+	pgid := pid
+	if s.Interactive {
+		pgid = 0
+	}
+	if s.Started != nil {
+		s.Started(pid, pgid)
+	}
+	if s.Stopped != nil {
+		defer s.Stopped(pid)
+	}
+	return cmd.Wait()
 }
 
 // bin picks the shell to run scripts with.
@@ -191,13 +236,19 @@ func (e *ExitError) Unwrap() error { return e.Err }
 // ExitCode returns the exit status err represents: 0 for nil, the script's own
 // code for an *ExitError, and 1 for anything else — a cancelled context or a
 // shell that could not start is still a failure, and chore must exit non-zero.
+//
+// Any error that names its own status answers for it, not just this package's.
+// That is what lets a run-level failure with a MEANING — a task stopped by its
+// own `timeout:`, which exits 124 the way timeout(1) does — arrive at the exit
+// status intact instead of being flattened into the 1 that would make it
+// indistinguishable from an ordinary failed command.
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exit *ExitError
-	if errors.As(err, &exit) {
-		return exit.Code
+	var coded interface{ ExitCode() int }
+	if errors.As(err, &coded) {
+		return coded.ExitCode()
 	}
 	return 1
 }

@@ -113,6 +113,11 @@ is specified together under [Hooks](#hooks), because looking for a hook and
 finding only `defer:` — filed under `cmds` as a step form — is how the rest go
 unfound.
 
+**chore-only extension — timeouts**: `timeout:` on a task, with `on_timeout:` as
+its handler. Specified under [`timeout:` — for a task that never
+ends](#timeout--for-a-task-that-never-ends), next to the hooks it is deliberately
+not one of.
+
 **Explicitly not supported**: remote/git includes, `watch`, `for:`/matrix
 expansion, `prompt`, `interactive`, output styles (group/prefixed),
 `set`/`shopt`, v2 schema, shell completions, Windows.
@@ -142,6 +147,10 @@ than once for each task in it.
 hook that is **positional**, so it is written where a step goes rather than where
 a setting goes, and anyone searching a `chores.yml` reference for "hooks" finds
 the fields and not it.
+
+`on_timeout:` is a tenth handler and is deliberately **not** in that table: it
+belongs to `timeout:`, below, not to this family. A hook is advice and can be
+switched off; a timeout is a safety net and cannot.
 
 ### Order, for one task run
 
@@ -352,7 +361,7 @@ runs on a **fresh** context with a bounded grace budget, because a cancelled
 context cannot start a process. Exit is 128+signal. A second signal is not
 caught, so there is always a way out.
 
-### Two things `defer:` does not do
+### Three things `defer:` does not do
 
 - **It does not run for a task that was up to date.** `sources:`/`generates:` and
   `status:` both short-circuit before the command list is entered, so nothing
@@ -362,9 +371,127 @@ caught, so there is always a way out.
   process, so it reads chore's variables and none of the script's. Anything the
   script itself computed needs a shell `trap`; see
   [PATTERNS.md](PATTERNS.md#cleanup-defer-or-trap).
+- **It does not cover a task that HANGS — unless that task has a `timeout:`.**
+  Registration is positional, so a task stuck on a step reaches nothing below it,
+  and with no deadline nothing unwinds at all. That is what the next section is
+  for — and note which way it cuts: a `timeout:` turns the hang into an ending,
+  so the deferred steps run like any other ending. The reasonable guess is the
+  opposite, and a field test written against a hung VM predicted its `defer:`
+  would be lost. It was not.
 
 `lifecycle:` hooks and per-task hooks *do* still run for an up-to-date task —
 the asymmetry with `defer:` is deliberate, and is the point of both.
+
+### `timeout:` — for a task that never ends
+
+```yaml
+e2e:
+  timeout: 20m
+  on_timeout:
+    - ./vm.sh destroy               # $TIMEOUT_PGID is the hung process GROUP
+  cmds:
+    - vagrant up
+    - defer: vagrant destroy -f
+    - ./run-tests.sh
+```
+
+`defer:` covers a task that **ends**, normally or with an error. A hang is the
+other half, and it is the common one: a build stalled on a lock, an ssh that
+never returns, a test deadlocked.
+
+Measured, 2026-09-07: a task booted a Vagrant VM, the task's process was killed,
+and nothing tore the VM down. It held a global lock for **thirteen hours**. Three
+safety nets existed and all three were **passive** — a `defer:` waiting for the
+task to reach its step, a reaper waiting for a later `chore` invocation, a lock
+staleness check waiting for another repository to try the lock. Each waited for
+somebody else to act, and that night nobody did.
+
+When the budget is spent:
+
+```
+on_timeout    -> the handler runs, with the hung process group still ALIVE
+SIGTERM       -> to that group, so the tree goes and not just the shell
+SIGKILL       -> after a 2s grace, to anything that ignored it
+exit 124      -> the task fails, with the status timeout(1) uses
+```
+
+Then the ordinary unwinding: `defer:` steps, `on_failure`, `after` — all of it,
+on a context the timeout cannot then cancel, because the teardown is the work it
+fired to have done. `{{.EXIT_CODE}}` in `after` reads `124`.
+
+Two details are not incidental; they are the whole reason this is not
+`context.WithTimeout`:
+
+- **The handler is given a process GROUP, not a pid.** `vagrant up` forks qemu
+  and virtiofsd. Killing the pid orphans both, which is exactly how a qemu
+  process ended up holding the lock with no parent left to clean up after it.
+  `$TIMEOUT_PGID` is that group, handed over while it is still alive, so
+  `kill -TERM -"$TIMEOUT_PGID"` takes the tree.
+- **The clock is wall-clock from the start of the task**, not time since the last
+  output. A hung process very often still logs — progress ticks, keepalives,
+  retries — so an idle-output timer is silent on precisely the case worth
+  catching.
+
+What the handler is told:
+
+```
+$TIMEOUT        the budget that was spent, e.g. 20m0s
+$TIMEOUT_PGID   the process group to signal
+$TIMEOUT_PID    the shell's own pid inside it
+```
+
+Each is also `{{.TIMEOUT_PGID}}` in a template. The group is space-separated when
+concurrent `deps:` had several scripts in flight (chore signals all of them), and
+**empty** for an `interactive: true` task — such a task shares chore's own
+process group by design, so `-pgid` would name chore; the pid is all there is,
+and chore's own escalation is limited the same way.
+
+The rest:
+
+- **Nothing suppresses it.** `--no-lifecycle` and `child_hooks: false` silence
+  advice, and neither a safety net nor the teardown it triggers is advice. Same
+  rule that keeps `defer:` alive inside a suppressed subtree.
+- **The budget covers the task's forward progress** — its `before`, its `deps:`
+  (their scripts are tracked too) and its `cmds:`. It is switched off before the
+  deferred steps unwind: a deadline that killed the teardown it had just
+  triggered would leave behind the very resource it fired to reclaim.
+- **The handler gets 60 seconds, and so does the teardown behind it**, because
+  the handler runs before the kill and one that hung would defeat the timeout it
+  serves. Sixty rather than the fifteen an interrupt's teardown gets: this is the
+  specific work the net fired to have done. A failing handler is reported on
+  stderr and cannot change the outcome, like every other best-effort hook.
+- **A handler that kills the group itself does not cut the teardown short.** It
+  is the shape to write — `for g in $TIMEOUT_PGID; do kill -TERM -"$g"; done` —
+  and it means the body returns before chore's own cancellation lands, so the
+  unwinding runs on a context that cancellation cannot reach. Measured the other
+  way first: `deferred step failed: context canceled`, with the VM still up.
+- **`on_timeout:` without `timeout:` is refused at load**, and so is a duration
+  without a unit: `timeout: 30` is thirty of something, and a net that can be out
+  by a factor of sixty is not one. A typo in a deadline has to fail on the way in,
+  not twenty minutes into the task it was meant to guard.
+- **A task skipped as up to date has nothing to time out.** The clock stops with
+  the skip.
+- **A `defer:` the hang would have swallowed runs after all**, which is the part
+  that surprises. A hang was the one case where a deferred step was unreachable;
+  once the budget ends the hang, the ordinary unwinding happens and the teardown
+  paired with what was brought up finally runs.
+- **The run does not report the task over while the timeout is still working.**
+  The handler, the signal and the escalation all complete first, so a message
+  about the kill cannot land against whatever ran next.
+
+**It does not replace a backstop outside the process.** It will look as though it
+does — same purpose, better precision, fires far sooner — but this is a timer
+inside chore, and a timer dies with the process that owns it: `SIGKILL` chore, or
+lose the machine, and nothing fires. The thirteen-hour lock above was held by a
+VM whose parent had *already* been killed. A guest-side deadline (the VM
+scheduling its own poweroff at boot) survives that, because nothing on the host
+has to be alive for it to happen. `timeout:` is the fast, precise net; something
+out of process is the unkillable one. Both, not either.
+
+Observed, not argued: on one machine on one day, `timeout:` reclaimed a hung
+task's VM in 23 seconds, and a guest booted at 11:24 under a 120-minute bound was
+confirmed from inside itself to have its own poweroff scheduled for 13:25. Two
+nets, working independently, neither covering the other's case.
 
 ## Fixed semantics
 
@@ -512,7 +639,8 @@ is loud.
 ### internal/shell
 
 ```go
-type Shell struct{ Dir string; Env []string; Out, Err io.Writer; Bin string }
+type Shell struct{ Dir string; Env []string; Out, Err io.Writer; Bin string
+    Started func(pid, pgid int); Stopped func(pid int) }
 func (s Shell) Run(ctx context.Context, script string) error          // stream
 func (s Shell) Capture(ctx context.Context, script string) (string, error) // stdout
 ```
@@ -539,6 +667,11 @@ project prefixes and would stop detecting orphans.
 `bash` is resolved from **PATH first**: macOS still ships bash 3.2 (2007) at
 /bin/bash, whose parser mishandles a `case` pattern inside `$( … )` and reports a
 syntax error at the `;;`. Real Taskfiles contain that construct.
+
+`Started`/`Stopped` publish a script's pid and its process **group** while it is
+running, which is what `timeout:` hands its handler. The group is the pid — a
+script is given a group of its own — and 0 when `Interactive`, because such a
+script shares chore's group and `-pgid` would name chore itself.
 
 ### internal/tmpl
 
@@ -599,6 +732,17 @@ order, loads `dotenv` (after args), evaluates up-to-date checks unless `Force`,
 runs `deps` concurrently (errgroup, first error cancels), then `cmds` in order.
 A `- task:` cmd recurses with its own call vars. `run: once` dedupes on
 `name + rendered vars`. `DryRun` prints rendered commands without executing.
+
+A task with `timeout:` is wrapped in a deadline (internal/run/timeout.go): every
+script the task starts, its deps included, registers its process group there, and
+when the budget is spent the handler is run with that group, the task's context is
+cancelled, and anything that survived SIGTERM is SIGKILLed by group. Failure is a
+`*TimeoutError`, exit **124**.
+
+`Out` and `Err` must tolerate concurrent writes: `deps:` stream from several
+scripts at once, and a timeout reports from the timer that fired it. os.Stderr
+does; a plain `bytes.Buffer` does not, and loses writes rather than complaining —
+which is why the tests here wrap one.
 
 ### internal/cli
 

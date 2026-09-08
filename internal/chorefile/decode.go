@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -82,10 +83,19 @@ func Decode(data []byte) (*File, error) {
 			{"on_success", t.OnSuccess},
 			{"on_failure", t.OnFailure},
 			{"after", t.After},
+			{"on_timeout", t.OnTimeout},
 		} {
 			if err := rejectDefer("task "+quoteForError(name), h.name, h.cmds); err != nil {
 				return nil, err
 			}
+		}
+		// A handler with no clock to fire it is a teardown that will never run, and
+		// the file that declares one plainly believes it will. Refused where it is
+		// written: the alternative is a task that looks guarded and is not, which is
+		// worse than an unguarded one because nobody looks at it twice.
+		if len(t.OnTimeout) > 0 && t.Timeout <= 0 {
+			return nil, fmt.Errorf("taskfile: task %q: on_timeout with no timeout —"+
+				" nothing would ever fire it; give the task a budget, as in `timeout: 20m`", name)
 		}
 		shorts := map[string]string{}
 		for i, arg := range t.Args {
@@ -185,6 +195,35 @@ func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 	default:
 		return fmt.Errorf("line %d: a variable must be a value or a mapping with `sh`", n.Line)
 	}
+}
+
+// UnmarshalYAML reads a duration the way Go writes one: 20m, 90s, 1h30m.
+//
+// A bare number is refused rather than read as seconds. `timeout: 30` looks like
+// a deadline and would be one — thirty of something — and a safety net that can
+// be out by a factor of sixty because the unit was assumed is not a safety net.
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	s, err := scalarString(n)
+	if err != nil {
+		return err
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		// `timeout:` with nothing after it. Left as zero, which means no deadline,
+		// the same as not writing the key — there is no value here to get wrong.
+		return nil
+	}
+	v, perr := time.ParseDuration(s)
+	if perr != nil {
+		return fmt.Errorf("line %d: %s is not a duration — write it with a unit, as in 20m, 90s or 1h30m",
+			n.Line, quoteForError(s))
+	}
+	if v <= 0 {
+		return fmt.Errorf("line %d: a timeout of %s would be spent before the task started;"+
+			" remove the key to have no deadline, or give it a real budget", n.Line, quoteForError(s))
+	}
+	*d = Duration(v)
+	return nil
 }
 
 // UnmarshalYAML accepts a shell command as a plain string, or a mapping calling
