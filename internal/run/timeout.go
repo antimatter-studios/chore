@@ -131,6 +131,13 @@ import (
 // because nothing on the host has to be alive for it to happen. `timeout:` is the
 // fast, precise net; something out of process is the unkillable one. Both, not
 // either.
+//
+// Not a theory. Both were observed working on one machine on one day,
+// independently of each other: `timeout:` reclaimed a hung task's VM in 23
+// seconds, and a guest booted at 11:24 with a 120-minute bound was confirmed
+// from inside itself to have its own poweroff scheduled for 13:25 — a bound that
+// holds with nothing on the host alive to notice. Neither net covers the other's
+// case. Keep both.
 
 // TimeoutExitCode is what a timed-out task exits with. 124 is what GNU
 // timeout(1) reports for the same event, so a caller checking `$?` already has a

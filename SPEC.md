@@ -488,6 +488,11 @@ scheduling its own poweroff at boot) survives that, because nothing on the host
 has to be alive for it to happen. `timeout:` is the fast, precise net; something
 out of process is the unkillable one. Both, not either.
 
+Observed, not argued: on one machine on one day, `timeout:` reclaimed a hung
+task's VM in 23 seconds, and a guest booted at 11:24 under a 120-minute bound was
+confirmed from inside itself to have its own poweroff scheduled for 13:25. Two
+nets, working independently, neither covering the other's case.
+
 ## Fixed semantics
 
 1. **Arguments.** `args:` declares a task's parameters — a bare name, or an

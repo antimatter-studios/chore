@@ -97,6 +97,11 @@
   outright. `timeout:` is the fast, precise net; something outside the process is
   the unkillable one. Both, not either. `chore help timeouts`.
 
+  Observed rather than argued: on one machine on one day, `timeout:` reclaimed a
+  hung task's VM in 23 seconds, and a guest booted at 11:24 under a 120-minute
+  bound was confirmed from inside itself to have its own poweroff scheduled for
+  13:25. Two nets, working independently, neither covering the other's case.
+
 ## v0.9.0
 
 - **`interactive: true` gives a task the terminal.**
