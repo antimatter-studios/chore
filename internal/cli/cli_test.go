@@ -1562,6 +1562,15 @@ func TestHyphenatedSpellingOfAMultiWordParameter(t *testing.T) {
 // task, so deps: and `- task:` must keep working. That is the whole reason the
 // check lives in Invoke rather than Run.
 func TestInternalTaskNotRunnableFromCommandLine(t *testing.T) {
+	// Stated rather than assumed: this test is ABOUT the CHORE variable, so it has
+	// to say which side of it each case is on. Inheriting the ambient value made
+	// three of the four subtests fail whenever the suite was run through chore
+	// itself — `chore test` exports CHORE=1 to every task script, so the runner
+	// looked like chore calling itself and the refusal under test never happened.
+	// The project could not run its own test task, which is a poor advertisement
+	// for a task runner.
+	t.Setenv("CHORE", "")
+
 	files := map[string]string{
 		"Taskfile.yml": `version: '3'
 tasks:
