@@ -102,7 +102,14 @@ tasks:
         # Which one a release used is not recorded anywhere, so both are tried and
         # the winner is named. A match is still a match against the PUBLISHED hash;
         # trying two known recipes cannot manufacture one.
-        utc=$(cd "$work/src" && git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
+        #
+        # TZ=UTC is load-bearing: `format-local` means "render in the LOCAL zone",
+        # so without it this task stamps 13:45 for an 11:45 commit on a machine in
+        # CEST — and then reports the release as unreproducible, naming the one
+        # thing it exists to reassure people about. It passed in CI only because a
+        # runner's clock is already UTC. Verified on v0.10.0: byte-identical with
+        # TZ forced, two hours out without it.
+        utc=$(cd "$work/src" && TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
         local_offset=$(cd "$work/src" && git log -1 --format=%cI)
 
         got=""
