@@ -10,6 +10,12 @@
   task — so a teardown that errors because the work was already done turns a
   clean run red.
 
+  With the line drawn where it belongs, which is not "never fail": exit 0 for
+  every state that is not the resource still being there, non-zero only when it
+  is. A blanket `|| true` swallows the one case that has to be loud, and a
+  teardown reporting success while the thing is still up is worse than one that
+  fails, because nobody looks again at a green run.
+
   Observed with three layers composed on a hung VM fixture: the handler reclaimed
   it, and the `defer:` and an out-of-process reaper then ran harmlessly on an
   already-clean state. That is a better argument for keeping all three than "each

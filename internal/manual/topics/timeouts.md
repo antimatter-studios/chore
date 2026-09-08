@@ -82,10 +82,26 @@ steps unwind, and anything outside the process — a reaper, a later sweep —
 may arrive later still. All of them can run against a state that is already
 clean.
 
-So write each of them to succeed on an already-clean state. `docker rm -f`,
-`vagrant destroy -f`, an `|| true` on the kill. Not doing so has a specific
-cost here: a failing `defer:` FAILS an otherwise-green task, so a teardown
-that errors because the work was already done turns a clean run red.
+So write each of them to succeed on an already-clean state — and note exactly
+where that line falls, because it is not "never fail". Exit 0 for every state
+that is not the resource still being there; exit non-zero only when it IS
+still there. `docker rm -f`. A halt that then CONFIRMS the machine is not
+running, and treats "already off", "never created" and "cannot tell, it was
+never made" alike.
+
+A blanket `|| true` is the wrong way to reach that, and here is the reason: it
+also swallows the one case that has to be loud — the teardown that ran and did
+not work. A teardown reporting success while the thing is still up is worse
+than one that fails, because nobody looks again at a green run. Idempotent and
+loud are not competing goals; they are one rule seen from two sides.
+
+Which is also the thing a later strict mode gets wrong. Made stricter, the
+tempting change is to fail on "never created" — and that breaks the
+composition below without touching the part anybody was thinking about.
+
+Not doing any of this has a specific cost here: a failing `defer:` FAILS an
+otherwise-green task, so a teardown that errors because the work was already
+done turns a clean run red.
 
 Observed with three layers composed — chore's handler, the task's `defer:`,
 and an out-of-process reaper — on a hung VM fixture:
