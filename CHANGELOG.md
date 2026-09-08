@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
 
 - **`timeout:` and `on_timeout:` — the net for a task that hangs.**
 
