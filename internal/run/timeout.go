@@ -132,12 +132,17 @@ import (
 // fast, precise net; something out of process is the unkillable one. Both, not
 // either.
 //
-// Not a theory. Both were observed working on one machine on one day,
-// independently of each other: `timeout:` reclaimed a hung task's VM in 23
-// seconds, and a guest booted at 11:24 with a 120-minute bound was confirmed
-// from inside itself to have its own poweroff scheduled for 13:25 — a bound that
-// holds with nothing on the host alive to notice. Neither net covers the other's
-// case. Keep both.
+// What has been observed, stated exactly, because the two halves are not equally
+// proven: `timeout:` reclaimed a hung task's VM in 23 seconds, measured. The
+// guest-side deadline has been observed ARMING — four ways, including a `hold`
+// that cancels it and a reboot that re-arms it — and confirmed from inside a
+// guest booted at 11:24 as a poweroff scheduled for 13:25. Its firing has not
+// been watched: that VM was taken down by hand at 12:58, being the target of the
+// timeout test.
+//
+// So the inner net is proven to fire and the outer one is so far only proven to
+// be set. Worth knowing before leaning on it, and a reason to watch one fire on
+// purpose — not a reason to drop it. Neither net covers the other's case.
 
 // TimeoutExitCode is what a timed-out task exits with. 124 is what GNU
 // timeout(1) reports for the same event, so a caller checking `$?` already has a
