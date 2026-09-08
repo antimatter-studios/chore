@@ -198,6 +198,26 @@ real shell — with real `pipefail` — possible.
     otherwise-green task** (a best-effort hook that fails only prints). They
     unwind *before* `on_success`/`on_failure`/`after`, so a finishing hook runs
     once what it is finishing is already down.
+- **`timeout:` on a task covers what hangs**, where `defer:` covers what ends:
+
+    ```yaml
+    e2e:
+      timeout: 20m
+      on_timeout: [ './vm.sh destroy' ]      # $TIMEOUT_PGID is the hung group
+    ```
+
+    A deferred step runs when the task reaches the step that registered it, so a
+    task stuck on a lock, an ssh that never returns or a deadlocked test unwinds
+    nothing at all. When the budget is spent the handler runs first — while the
+    hung process group is still alive — then chore SIGTERMs that group,
+    SIGKILLs whatever ignored it, unwinds the defers and outcome hooks as after a
+    Ctrl-C, and exits **124**, the status `timeout(1)` uses. The handler is given
+    the process **group**, not the pid: `vagrant up` forks qemu and virtiofsd, and
+    killing the pid orphans both. The clock is wall-clock from the start of the
+    task, not time since the last output, because a hung process usually still
+    logs. Nothing suppresses it — a safety net is not advice — and it does not
+    make an out-of-process backstop redundant, because a timer dies with the
+    process that owns it. `chore help timeouts`.
 - **Ctrl-C stops the task, not just chore.** A script runs in its own process
   group, which is what lets cancellation kill what the script started rather than
   only the shell — but the terminal signals the foreground group, which is chore.
@@ -342,6 +362,9 @@ task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 `run: once`, `defer`, `status`, `sources`/`generates` (content-hash up-to-date
 checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
+
+chore-only, on top of that: `args:`, `chore_min_version:`, the nine hooks,
+`child_hooks:`, and `timeout:`/`on_timeout:`.
 
 Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,
 `interactive`, output styles (go-task's group/prefixed task output), v2 schema, Windows. See [SPEC.md](SPEC.md).

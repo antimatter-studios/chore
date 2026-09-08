@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/chorefile/schema.go:89 internal/run/run.go:479 -->
+<!-- sources: internal/chorefile/schema.go:90 internal/run/run.go:546 -->
 ---
 title: Hooks
 summary: before/on_success/on_failure/after, on a task or the whole run
@@ -26,6 +26,11 @@ is not what they do but WHEN they are scoped.
 Every `lifecycle:` name is its per-task name plus `_all`, and `_all` is the
 whole mnemonic: it marks the hook that fires once for the `chore` invocation
 rather than once for each task in it.
+
+There is a tenth handler, `on_timeout:`, and it is deliberately not in that
+table: it belongs to `timeout:` rather than to this family. A hook is advice
+and can be switched off; a timeout is a safety net and cannot. See
+`chore help timeouts`.
 
 ## Order, for one task run
 
@@ -152,13 +157,16 @@ Defers accumulate as a LIFO stack — `D1 D2 D3` unwinds `D3 D2 D1` — and one
 that fails does not stop the others, because a cleanup stack that stopped at
 the first failure would leak everything registered beneath it.
 
-Two things `defer:` does not do:
+Three things `defer:` does not do:
 
 - **It does not run for a task that was up to date.** Nothing was entered, so
   nothing registered. Hooks DO still run in that case; the asymmetry is
   deliberate.
 - **It does not see the script's shell.** A deferred step runs in a fresh
   process, so it reads chore's variables and none of the script's.
+- **It does not cover a task that HANGS.** Registration is positional, so a
+  task stuck on a step reaches nothing below it and unwinds nothing at all —
+  which is what `timeout:` is for. See `chore help timeouts`.
 
 A failing `defer:` FAILS an otherwise-green task, with the defer's own status.
 A failing best-effort hook only prints. That difference is deliberate: a

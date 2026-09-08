@@ -12,6 +12,7 @@ package chorefile
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Project is a loaded Taskfile and everything it includes, with tasks
@@ -112,6 +113,11 @@ type File struct {
 // Every `lifecycle:` name is its per-task name plus `_all`, and `_all` is the
 // whole mnemonic: it marks the hook that fires once for the `chore` invocation
 // rather than once for each task in it.
+//
+// There is a tenth handler, `on_timeout:`, and it is deliberately not in that
+// table: it belongs to `timeout:` rather than to this family. A hook is advice
+// and can be switched off; a timeout is a safety net and cannot. See
+// `chore help timeouts`.
 //
 // ## Order, for one task run
 //
@@ -395,6 +401,44 @@ type Task struct {
 	// A pointer so "not declared" is distinguishable from an explicit `true`.
 	ChildHooks *bool `yaml:"child_hooks"`
 
+	// Timeout is the wall-clock budget for one run of this task, and OnTimeout is
+	// what runs when it is spent:
+	//
+	//	timeout: 20m
+	//	on_timeout: [ ./vm.sh destroy ]
+	//
+	// This is the net `defer:` cannot be. A deferred step runs when the task
+	// reaches the step that registered it, so it covers a task that ENDS —
+	// normally or with an error. It does not cover a task that HANGS, and a hang
+	// is the common case: a build stalled on a lock, an ssh that never returns, a
+	// test deadlocked. A hung task reaches nothing, so nothing it registered runs.
+	//
+	// Measured: a task booted a Vagrant VM, the task's process was killed, and
+	// nothing tore the VM down. It held a global lock for thirteen hours. Three
+	// safety nets existed and all three were PASSIVE — a `defer:` waiting for the
+	// task to reach its step, a reaper waiting for a later invocation, a staleness
+	// check waiting for another repository to try the lock. Each waited for
+	// somebody else to act, and nobody did.
+	//
+	// Two details come from that failure and are the whole reason this is not just
+	// context.WithTimeout:
+	//
+	//   - The handler is given the task's process GROUP, not its pid. `vagrant up`
+	//     forks qemu and virtiofsd; killing the pid orphans both, which is exactly
+	//     how a qemu process ended up holding the lock with no parent to clean up
+	//     after it.
+	//   - The clock is wall-clock from the start of the task, not time since the
+	//     last output. A hung process very often still logs — progress ticks,
+	//     keepalives, retries — so an idle-output timer is quiet on the one case
+	//     worth catching.
+	//
+	// Neither is a hook: --no-lifecycle and `child_hooks: false` do not touch
+	// them, for the same reason they never touch `defer:`. And none of it makes an
+	// out-of-process backstop redundant — a timer dies with the process that owns
+	// it, so a SIGKILL defeats this entirely. See `chore help timeouts`.
+	Timeout   Duration `yaml:"timeout"`
+	OnTimeout Cmds     `yaml:"on_timeout"`
+
 	// Up-to-date checks. Status is a list of shell commands: all exiting zero
 	// means "already done, skip". Sources/Generates compare content checksums.
 	Status    []string `yaml:"status"`
@@ -405,6 +449,16 @@ type Task struct {
 	Name string `yaml:"-"` // namespaced name, e.g. "postgres:up"
 	File *File  `yaml:"-"` // the file this task came from
 }
+
+// Duration is a wall-clock span, written the way Go writes one: `20m`, `90s`,
+// `1h30m`. A unit is required, because `timeout: 30` means nothing on its own and
+// guessing at seconds or minutes would be a safety net with a factor of sixty in
+// it.
+//
+// Parsed when the file LOADS rather than when the task runs, and deliberately
+// not templated: a typo in a deadline has to fail on the way in, not twenty
+// minutes into the task it was supposed to guard.
+type Duration time.Duration
 
 // Cmds and Deps are named slice types purely so they can reject a null element.
 // yaml.v3 zero-fills a null into a struct slice entry BEFORE any element
@@ -608,6 +662,10 @@ func (t *Task) SuppressesChildHooks() bool {
 // HasHooks reports whether the task declares any lifecycle hook at all, so the
 // runner can skip the whole apparatus for the overwhelming majority of tasks
 // that declare none.
+//
+// `on_timeout:` is NOT one of them. It is part of the timeout, which is a safety
+// net rather than advice: the things that switch hooks off — --no-lifecycle,
+// `child_hooks: false` — must not switch it off, so it cannot be counted here.
 func (t *Task) HasHooks() bool {
 	return len(t.Before) > 0 || len(t.OnSuccess) > 0 || len(t.OnFailure) > 0 || len(t.After) > 0
 }

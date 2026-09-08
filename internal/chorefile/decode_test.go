@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // bq is a single backquote. Go has no escape for one inside a raw string
@@ -989,6 +990,95 @@ func TestDecodeRejectsDeferInsideAHook(t *testing.T) {
 			_, err := Decode([]byte(tc.yaml))
 			if err == nil {
 				t.Fatal("a `defer:` inside a hook must be refused, not run as an ordinary step")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// `timeout:` is parsed when the file loads, which is the point: a typo in a
+// deadline has to fail on the way in rather than twenty minutes into the task it
+// was supposed to guard. So the grammar is what these check.
+func TestDecodeTimeout(t *testing.T) {
+	f, err := Decode([]byte(`
+version: '3'
+tasks:
+  e2e:
+    timeout: 20m
+    on_timeout: [ './vm.sh destroy' ]
+    cmds: [ ./run-tests.sh ]
+  long:
+    timeout: 1h30m
+    cmds: [ true ]
+  plain:
+    cmds: [ true ]
+`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got := time.Duration(f.Tasks["e2e"].Timeout); got != 20*time.Minute {
+		t.Errorf("timeout = %s, want 20m", got)
+	}
+	if got := time.Duration(f.Tasks["long"].Timeout); got != 90*time.Minute {
+		t.Errorf("timeout = %s, want 1h30m", got)
+	}
+	if got := f.Tasks["e2e"].OnTimeout; len(got) != 1 || got[0].Cmd != "./vm.sh destroy" {
+		t.Errorf("on_timeout = %+v", got)
+	}
+	if got := time.Duration(f.Tasks["plain"].Timeout); got != 0 {
+		t.Errorf("an undeclared timeout is %s, want 0 — no deadline", got)
+	}
+	// The handler is not a hook. Counting it as one would let --no-lifecycle and
+	// `child_hooks: false` switch off a safety net, which is the one thing they
+	// must never do.
+	if f.Tasks["e2e"].HasHooks() {
+		t.Error("HasHooks() = true for a task whose only hook-shaped field is on_timeout")
+	}
+}
+
+func TestDecodeRejectsABadTimeout(t *testing.T) {
+	for _, tc := range []struct{ name, yaml, want string }{
+		{
+			// Thirty of what? A safety net that can be out by a factor of sixty
+			// because the unit was assumed is not one.
+			name: "no unit",
+			yaml: "version: '3'\ntasks:\n  x:\n    timeout: 30\n    cmds: [true]\n",
+			want: "is not a duration",
+		},
+		{
+			name: "not a duration at all",
+			yaml: "version: '3'\ntasks:\n  x:\n    timeout: soon\n    cmds: [true]\n",
+			want: "is not a duration",
+		},
+		{
+			name: "already spent",
+			yaml: "version: '3'\ntasks:\n  x:\n    timeout: 0s\n    cmds: [true]\n",
+			want: "would be spent before the task started",
+		},
+		{
+			name: "negative",
+			yaml: "version: '3'\ntasks:\n  x:\n    timeout: -5m\n    cmds: [true]\n",
+			want: "would be spent before the task started",
+		},
+		{
+			// A handler with no clock to fire it is a teardown that will never run,
+			// in a file that plainly believes it will.
+			name: "a handler with no clock",
+			yaml: "version: '3'\ntasks:\n  x:\n    on_timeout: [ ./sweep.sh ]\n    cmds: [true]\n",
+			want: "on_timeout with no timeout",
+		},
+		{
+			name: "defer inside the handler",
+			yaml: "version: '3'\ntasks:\n  x:\n    timeout: 1m\n    on_timeout:\n      - defer: echo nope\n    cmds: [true]\n",
+			want: `task "x": on_timeout step 1 is a ` + "`defer:`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Decode([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("want an error at load time")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %q, want it to contain %q", err, tc.want)

@@ -1,0 +1,32 @@
+# `defer:` covers a task that ENDS. `timeout:` covers one that HANGS.
+#
+# A deferred step runs when the task reaches the step that registered it, so a
+# task that never reaches anything runs nothing it registered. That is the common
+# failure — a build stalled on a lock, an ssh that never returns — and the reason
+# this is a field rather than a step.
+#
+# The budget here is 500ms and the command sleeps for 60 seconds, so what the
+# golden file records is the net firing, not the command finishing.
+version: '3'
+silent: true
+
+tasks:
+  hangs:
+    timeout: 500ms
+    on_timeout:
+      # The handler runs FIRST, while the hung process group is still alive, and
+      # is told what to signal. Printing the number would make this file
+      # machine-specific, so it prints whether it was given one.
+      - 'echo "handler: pgid=$([ -n "$TIMEOUT_PGID" ] && echo given || echo empty), spent $TIMEOUT"'
+    cmds:
+      - echo up
+      - defer: echo down            # still unwinds, on a fresh grace budget
+      - sleep 60
+    on_failure: [ echo failure ]
+    after: [ 'echo "after, exit $EXIT_CODE"' ]   # 124, the status timeout(1) uses
+
+  # A task that beats its budget is untouched, and nothing it armed outlives it.
+  finishes:
+    timeout: 500ms
+    cmds: [ echo quick ]
+    after: [ 'echo "after, exit $EXIT_CODE"' ]
