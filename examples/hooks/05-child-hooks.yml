@@ -8,7 +8,6 @@
 # suppression safe: it silences advice, never a teardown paired with something
 # already brought up.
 version: '3'
-silent: true
 
 tasks:
   all:

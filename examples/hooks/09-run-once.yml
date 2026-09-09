@@ -3,7 +3,6 @@
 #
 # Called three times here; `shared` and its `after` each happen once.
 version: '3'
-silent: true
 
 tasks:
   demo:

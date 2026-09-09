@@ -47,6 +47,10 @@ func Decode(data []byte) (*File, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, readable(err)
 	}
+	if f.Silent && f.Verbose {
+		return nil, fmt.Errorf("taskfile: the file sets both silent and verbose —" +
+			" they are opposite answers about printing commands; keep the one you mean")
+	}
 	if f.ChoreMinVersion != "" {
 		if _, ok := ParseSemver(f.ChoreMinVersion); !ok {
 			return nil, fmt.Errorf("taskfile: chore_min_version is %q, which is not a version"+
@@ -93,6 +97,15 @@ func Decode(data []byte) (*File, error) {
 		// the file that declares one plainly believes it will. Refused where it is
 		// written: the alternative is a task that looks guarded and is not, which is
 		// worse than an unguarded one because nobody looks at it twice.
+		// `silent:` and `verbose:` on one task are opposite answers to the same
+		// question. One would have to lose, and picking a winner silently is how a
+		// file ends up meaning something nobody wrote — the failure mode this
+		// decoder exists to remove. Across levels they do not conflict: a task
+		// outranks its file, which is what lets one loud task live in a quiet file.
+		if t.Silent && t.Verbose {
+			return nil, fmt.Errorf("taskfile: task %q sets both silent and verbose —"+
+				" they are opposite answers about printing its commands; keep the one you mean", name)
+		}
 		if len(t.OnTimeout) > 0 && t.Timeout <= 0 {
 			return nil, fmt.Errorf("taskfile: task %q: on_timeout with no timeout —"+
 				" nothing would ever fire it; give the task a budget, as in `timeout: 20m`", name)

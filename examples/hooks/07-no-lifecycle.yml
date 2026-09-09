@@ -7,7 +7,6 @@
 # a deferred step is a paired teardown, while a hook is advice. That distinction
 # is also why `before` is not a duplicate of `deps:`.
 version: '3'
-silent: true
 
 lifecycle:
   before_all: [ echo before_all ]

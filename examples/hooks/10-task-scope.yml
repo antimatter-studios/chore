@@ -6,7 +6,6 @@
 #
 # A file-level hook could not read TARGET at all: it is this task's argument.
 version: '3'
-silent: true
 
 tasks:
   build:

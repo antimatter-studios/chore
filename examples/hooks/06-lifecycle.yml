@@ -6,7 +6,6 @@
 # per-task boilerplate — which works because a lifecycle hook fires even when
 # the task it wraps is up to date. A `deps:` entry would be skipped with it.
 version: '3'
-silent: true
 
 lifecycle:
   before_all:     [ echo 1-before_all ]

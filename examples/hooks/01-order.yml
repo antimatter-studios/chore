@@ -9,7 +9,6 @@
 # The defers unwind BEFORE the outcome branch, which is what makes `after` a
 # finishing step rather than one that runs while the thing it finishes is up.
 version: '3'
-silent: true
 
 tasks:
   demo:

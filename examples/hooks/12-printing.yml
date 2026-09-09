@@ -1,0 +1,42 @@
+# Who decides whether you see the commands.
+#
+# Nothing is printed by default: a script is written for the shell, not for a
+# reader. Four settings can change that, and they settle in one order —
+#
+#   a command's own `silent:`   never printed, --verbose included
+#   --verbose                   prints everything else
+#   the task's verbose:/silent: a loud task in a quiet file, or the reverse
+#   the file's
+#
+# A task setting both `silent:` and `verbose:` is refused when the file loads.
+version: '3'
+
+tasks:
+  # The ordinary case. You see what the commands SAID, not what they were.
+  quiet:
+    cmds:
+      - echo built the thing
+
+  # A task whose commands are part of what the operator is meant to see: a
+  # deploy, a destructive migration, anything where "what exactly did it run" is
+  # the question afterwards.
+  deploy:
+    verbose: true
+    cmds:
+      - echo deploying to prod
+      # ...except this one. `silent:` on the command is the only setting attached
+      # to THIS text, so it is the only one that can keep a token off a screen.
+      - cmd: 'token=hunter2; echo authenticated'
+        silent: true
+
+  # What the old default was worth, kept: the step is printed when it FAILS, so a
+  # five-step task still says which line produced the status.
+  breaks:
+    cmds:
+      - echo first
+      - |
+        case "release" in
+          release) echo picking release; exit 4 ;;
+          *)       echo debug ;;
+        esac
+      - echo never reached

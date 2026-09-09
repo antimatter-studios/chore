@@ -97,6 +97,18 @@ is an error — so the floor fails closed even against versions that predate it.
 Cheap additions, included because they are a few lines each: `aliases`,
 `ignore_error`, `requires`, `platforms`, `summary`.
 
+Commands are **not printed** unless asked for (0.11.0; before that they were, and
+ten of eleven curated examples set `silent: true` to stop it). Four settings
+settle it, in this order: a command's own `silent:` — never printed, `--verbose`
+included, being the only setting attached to that text and so the only one that
+can keep a token off a screen — then `--verbose`, then the task's
+`verbose:`/`silent:`, then the file's. A task setting both is refused at load.
+When a step FAILS it is printed then, on stderr, unless it is command-silent or
+its failure is ignored: that is the one question the echo answered which the
+error alone does not. `--dry` still prints commands instead of running them, and
+`silent:` otherwise governs only chore's own progress notices — it has never
+touched a command's own output.
+
 `interactive: true` on a task gives it chore's own terminal — a real stdin, and
 the foreground process group a full-screen program needs. Off by default and
 opt-in per task, because it costs the cancellation guarantee: an ordinary task
@@ -784,7 +796,7 @@ chore [flags] <task> [args...] [-- extra]
   -l, --list          list tasks with descriptions, grouped by namespace
       --dry           print commands without running them
       --force         ignore up-to-date checks
-  -v, --verbose       echo commands even for silent tasks
+  -v, --verbose       print each command before it runs
       --no-color      plain output (also: NO_COLOR, or a non-terminal)
       --no-lifecycle  skip the file's lifecycle: hooks for this run
   -h, --help          usage, or a task's own help when a task is named

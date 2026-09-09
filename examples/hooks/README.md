@@ -1,8 +1,8 @@
 # Hook examples
 
-Eleven taskfiles, each demonstrating one rule about the lifecycle — the hooks,
-and the timeout that is not one — and a `.golden` file recording exactly what it
-prints.
+Twelve taskfiles, each demonstrating one rule about the lifecycle — the hooks,
+the timeout that is not one, and who decides what reaches the terminal — and a
+`.golden` file recording exactly what it prints.
 
 They are not samples to copy — they are **the test suite for the documentation**.
 A comment claiming `after` runs on both paths is a claim; `02-failure.golden` is
@@ -22,6 +22,7 @@ Everything in `chore help hooks` is demonstrated by one of these.
 | `09-run-once.yml` | `run: once` bounds the hooks with the task |
 | `10-task-scope.yml` | a hook reads the task's own arguments and vars |
 | `11-timeout.yml` | `timeout:` fires `on_timeout`, unwinds, and exits 124 |
+| `12-printing.yml` | who decides whether commands are printed, and the failing step |
 
 ## Running them
 
