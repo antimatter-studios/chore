@@ -669,9 +669,10 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	// printed a six-line dispatcher and a compound one-liner before vitest said
 	// anything at all.
 	//
-	// `--verbose` prints them, including for a `silent:` task, which is what that
-	// flag has always promised.
-	if r.Verbose {
+	// `--verbose` prints them, and so does `verbose:` on the task or its file —
+	// see echoes for the order those settle in.
+	echoed := r.echoes(t, c)
+	if echoed {
 		fmt.Fprintf(r.Out, "%s\n", script)
 	}
 	if err := sh.Run(ctx, script); err != nil {
@@ -684,12 +685,47 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		// step is allowed to fail, and the caller already reports that in one
 		// line. Printing the script there would put the noise back for the steps
 		// least likely to deserve it.
-		if !r.Verbose && !c.IgnoreError && !t.IgnoreError {
+		if !echoed && !c.Silent && !c.IgnoreError && !t.IgnoreError {
 			fmt.Fprintf(r.Err, "chore: %s: failing step:\n%s\n", t.Name, indentScript(script))
 		}
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
 	return nil
+}
+
+// echoes reports whether a command is printed before it runs.
+//
+// The order is what makes the four knobs answerable in one place, and each step
+// of it earns its position:
+//
+//  1. A command's own `silent: true` wins over everything, `--verbose` included.
+//     It is the only setting attached to THIS text, so it is the only one that
+//     can mean "this particular line must not reach a screen" — a token on a
+//     command line, say. It also keeps the failing-step report off that command,
+//     because a secret does not become printable by failing.
+//  2. `--verbose` next: the flag belongs to the person at the terminal, and it
+//     outranks a `silent:` task, exactly as its help has always said.
+//  3. Then the task's own `verbose:`/`silent:`, which is why a loud task can live
+//     in a quiet file and the other way round. A task setting both is refused at
+//     load, so there is nothing to arbitrate here.
+//  4. Then the file's.
+//
+// Default false, which is the whole point of 0.11.0: a script is written for the
+// shell, not for a reader.
+func (r *Runner) echoes(t *chorefile.Task, c chorefile.Cmd) bool {
+	switch {
+	case c.Silent:
+		return false
+	case r.Verbose:
+		return true
+	case t.Verbose:
+		return true
+	case t.Silent:
+		return false
+	case t.File != nil:
+		return t.File.Verbose
+	}
+	return false
 }
 
 // indentScript indents a script so a failure report cannot be mistaken for the

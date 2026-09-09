@@ -42,14 +42,17 @@ type File struct {
 	// top-level keys are an error, so the floor fails closed even against
 	// versions that predate it. This only replaces a confusing message with an
 	// actionable one.
-	ChoreMinVersion string              `yaml:"chore_min_version"`
-	Silent          bool                `yaml:"silent"`
-	Dotenv          []string            `yaml:"dotenv"`
-	Includes        map[string]*Include `yaml:"includes"`
-	Vars            map[string]Var      `yaml:"vars"`
-	Env             map[string]Var      `yaml:"env"`
-	Tasks           map[string]*Task    `yaml:"tasks"`
-	Lifecycle       *Lifecycle          `yaml:"lifecycle"`
+	ChoreMinVersion string `yaml:"chore_min_version"`
+	Silent          bool   `yaml:"silent"`
+	// Verbose makes every task in this file print its commands. Per-task
+	// `verbose:`/`silent:` outranks it either way. See Task.Verbose.
+	Verbose   bool                `yaml:"verbose"`
+	Dotenv    []string            `yaml:"dotenv"`
+	Includes  map[string]*Include `yaml:"includes"`
+	Vars      map[string]Var      `yaml:"vars"`
+	Env       map[string]Var      `yaml:"env"`
+	Tasks     map[string]*Task    `yaml:"tasks"`
+	Lifecycle *Lifecycle          `yaml:"lifecycle"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -303,7 +306,27 @@ type Task struct {
 	//
 	// Kept because it is go-task's field and files in the wild set it. `--verbose`
 	// outranks it, as that flag's help has always said.
-	Silent   bool `yaml:"silent"`
+	//
+	// It has never suppressed the task's OWN output. A command's stdout and
+	// stderr are the task's business and pass through untouched; this only ever
+	// governed the lines chore prints about the task.
+	Silent bool `yaml:"silent"`
+	// Verbose makes this task print each command before it runs, with nobody
+	// having to pass `--verbose`. The inverse of what `silent:` used to buy, now
+	// that the default is quiet.
+	//
+	// It is for the task whose commands are part of what the operator is meant to
+	// see — a deploy, a destructive migration, anything where "what exactly did
+	// it run" is the question afterwards. Off everywhere else, because the person
+	// at the terminal is usually the one who knows whether they want the scripts,
+	// and `--verbose` is theirs.
+	//
+	// A task setting both this and `silent:` is refused when the file loads: one
+	// of them would have to lose, and picking a winner silently is how a file
+	// ends up meaning something nobody wrote. Across LEVELS there is no conflict
+	// — a task's own setting outranks its file's, which is what lets one loud task
+	// live in a quiet file.
+	Verbose  bool `yaml:"verbose"`
 	Internal bool `yaml:"internal"`
 	// Interactive gives the task chore's own terminal: a real stdin, and the
 	// foreground process group a full-screen program needs. Opt-in per task,

@@ -1086,3 +1086,82 @@ func TestDecodeRejectsABadTimeout(t *testing.T) {
 		})
 	}
 }
+
+// `verbose:` is the inverse of what `silent:` used to buy, now that the default
+// is quiet. The grammar worth pinning is that both levels take it and that one
+// task cannot say both things at once.
+func TestDecodeVerbose(t *testing.T) {
+	f, err := Decode([]byte(`
+version: '3'
+verbose: true
+tasks:
+  deploy:
+    verbose: true
+    cmds: [ ./deploy.sh ]
+  quiet:
+    silent: true
+    cmds: [ make ]
+  plain:
+    cmds: [ true ]
+`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !f.Verbose {
+		t.Error("file verbose: true did not decode")
+	}
+	if !f.Tasks["deploy"].Verbose {
+		t.Error("task verbose: true did not decode")
+	}
+	if f.Tasks["plain"].Verbose || f.Tasks["plain"].Silent {
+		t.Error("an undeclared task must be neither")
+	}
+	if !f.Tasks["quiet"].Silent {
+		t.Error("silent: true still has to decode — it is go-task's field")
+	}
+}
+
+func TestDecodeRejectsSilentAndVerboseTogether(t *testing.T) {
+	for _, tc := range []struct{ name, yaml, want string }{
+		{
+			name: "on a task",
+			yaml: "version: '3'\ntasks:\n  x:\n    silent: true\n    verbose: true\n    cmds: [true]\n",
+			want: `task "x" sets both silent and verbose`,
+		},
+		{
+			name: "on the file",
+			yaml: "version: '3'\nsilent: true\nverbose: true\ntasks:\n  x:\n    cmds: [true]\n",
+			want: "the file sets both silent and verbose",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Decode([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("opposite answers to one question must be refused, not arbitrated")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A task outranks its file in BOTH directions, which is the point of allowing the
+// field at two levels: one loud task in a quiet file, or one quiet task in a loud
+// one, without the file having to be edited for either.
+func TestDecodeVerboseAcrossLevelsIsNotAConflict(t *testing.T) {
+	f, err := Decode([]byte(`
+version: '3'
+silent: true
+tasks:
+  loud:
+    verbose: true
+    cmds: [ ./deploy.sh ]
+`))
+	if err != nil {
+		t.Fatalf("a task may disagree with its file: %v", err)
+	}
+	if !f.Silent || !f.Tasks["loud"].Verbose {
+		t.Error("both settings must survive; the runner resolves them, not the decoder")
+	}
+}

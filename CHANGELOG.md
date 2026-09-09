@@ -35,12 +35,39 @@
           esac
       chore: build: exit status 4
 
+- **`verbose: true` on a task or a file** prints that task's commands with nobody
+  passing a flag — the inverse of what `silent:` used to buy, now that the
+  default is quiet. For the task whose commands are part of what the operator is
+  meant to see: a deploy, a destructive migration, anything where "what exactly
+  did it run" is the question afterwards.
+
+  Four settings now decide what reaches the terminal, and they settle in one
+  order:
+
+      a command's own silent:      never printed, --verbose included
+      --verbose                    prints everything else
+      the task's verbose:/silent:  a loud task in a quiet file, or the reverse
+      the file's verbose:/silent:
+
+  A command's own `silent:` is the only setting attached to THAT text, so it is
+  the only one that can promise it never reaches a screen — a token on a command
+  line. It outranks `--verbose`, and the failing-step report skips it too,
+  because a secret does not become printable by failing.
+
+  A task setting both `silent:` and `verbose:` is refused when the file loads:
+  they are opposite answers to one question, and picking a winner silently is how
+  a file ends up meaning something nobody wrote. Across LEVELS there is no
+  conflict — a task outranks its file either way, which is what lets one loud
+  task live in a quiet file.
+
   Two smaller consequences. `--dry` is untouched: it prints the commands INSTEAD
   of running them, which is the whole flag. And `silent:` now only suppresses
   chore's own progress notices — in practice the "is up to date" line — which
   also cleans up the documented value-capture pattern: a `sh:` var reading
   `{{.CHORE_EXE}} _helper` used to capture the nested chore's echoed command
-  along with the value, and needed `silent: true` on the helper to avoid it.
+  along with the value, and needed `silent: true` on the helper to avoid it. It
+  has never suppressed a command's own output, which is the task's business and
+  passes through untouched.
 
 - **`chore help timeouts` says to write the teardown idempotent, and why the
   redundancy is free.** A timeout means more than one thing may tear down the

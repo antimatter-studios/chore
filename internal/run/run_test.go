@@ -1801,3 +1801,61 @@ func TestDryRunStillPrintsTheCommands(t *testing.T) {
 		t.Error("--dry ran the command")
 	}
 }
+
+// `verbose: true` is the inverse of what `silent:` used to buy: the task whose
+// commands are part of what the operator is meant to see — a deploy, a
+// destructive migration — without anybody having to remember -v.
+func TestATaskCanAskToPrintItsOwnCommands(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"deploy": {Verbose: true, Cmds: steps("echo shipping")},
+		"quiet":  {Cmds: steps("echo working")},
+	})
+	f.mustRun("deploy", nil, nil)
+	f.mustRun("quiet", nil, nil)
+	got := f.out.String()
+	mustContain(t, got, "echo shipping", "stdout")
+	if strings.Contains(got, "echo working") {
+		t.Errorf("a task that asked for nothing printed its commands:\n%s", got)
+	}
+}
+
+// A whole file can ask, and a task still outranks it in both directions — which
+// is the point of having the field at two levels.
+func TestATaskOutranksItsFileInBothDirections(t *testing.T) {
+	f := newFixture(t, &chorefile.File{Verbose: true}, map[string]*chorefile.Task{
+		"loud":  {Cmds: steps("echo from-the-file")},
+		"quiet": {Silent: true, Cmds: steps("echo hushed")},
+	})
+	f.mustRun("loud", nil, nil)
+	f.mustRun("quiet", nil, nil)
+	got := f.out.String()
+	mustContain(t, got, "echo from-the-file", "stdout")
+	if strings.Contains(got, "echo hushed") {
+		t.Errorf("a silent task did not outrank its verbose file:\n%s", got)
+	}
+}
+
+// A command's own `silent:` is the only setting attached to THIS text, so it is
+// the only one that can promise the text never reaches a screen. It outranks
+// --verbose, and it keeps the failing-step report off too: a secret does not
+// become printable by failing.
+func TestACommandMarkedSilentIsNeverPrinted(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"deploy": {
+			Verbose: true,
+			Cmds: chorefile.Cmds{
+				// The secret is in the command's TEXT and not in its output, which
+				// is what lets one assertion tell the two apart.
+				{Cmd: "token=hunter2; echo redacted; exit 5", Silent: true},
+			},
+		},
+	})
+	f.r.Verbose = true
+	f.mustFail("deploy", nil, nil)
+	both := f.out.String() + f.err.String()
+	if strings.Contains(both, "hunter2") {
+		t.Errorf("a silent command's text reached a stream:\n%s", both)
+	}
+	// Its own output still flows — silent was never about the command's output.
+	mustContain(t, f.out.String(), "redacted", "stdout")
+}

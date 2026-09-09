@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/cli/cli.go:304 -->
+<!-- sources: internal/cli/cli.go:328 -->
 ---
 title: Ctrl-C and cleanup
 summary: what an interrupt stops, and what still runs afterwards

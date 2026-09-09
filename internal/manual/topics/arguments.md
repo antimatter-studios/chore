@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/cli/cli.go:584 -->
+<!-- sources: internal/cli/cli.go:608 -->
 ---
 title: Task arguments
 summary: declaring parameters, and the three ways to supply one

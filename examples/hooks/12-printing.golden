@@ -1,0 +1,29 @@
+$ chore quiet
+# nothing is printed but the output
+built the thing
+exit 0
+
+$ chore -v quiet
+# the same task, asked for the commands
+echo built the thing
+built the thing
+exit 0
+
+$ chore deploy
+# a task that asks for its own
+echo deploying to prod
+deploying to prod
+authenticated
+exit 0
+
+$ chore breaks
+# a failing step names itself
+first
+picking release
+(stderr) chore: breaks: failing step:
+(stderr)     case "release" in
+(stderr)       release) echo picking release; exit 4 ;;
+(stderr)       *)       echo debug ;;
+(stderr)     esac
+(stderr) chore: breaks: exit status 4
+exit 4

@@ -105,8 +105,32 @@ var BuildDate = ""
 // ignored. So a five-step task still says which line produced the status.
 //
 // `--dry` prints the commands INSTEAD of running them, and is unaffected.
-// `silent:` on a task or a file is now only about chore's own progress notices,
-// which is to say the "is up to date" line.
+//
+// ## The four settings, in the order they settle
+//
+// ```
+// a command's own silent:      never printed, --verbose included
+// --verbose                    prints everything else
+// the task's verbose:/silent:  a loud task in a quiet file, or the reverse
+// the file's verbose:/silent:
+// ```
+//
+// - **`verbose: true` on a task** prints its commands with nobody passing a
+//   flag. For the task whose commands are part of what the operator is meant to
+//   see: a deploy, a destructive migration, anything where "what exactly did it
+//   run" is the question afterwards.
+// - **`silent: true` on a command** is the only setting attached to THAT text,
+//   so it is the only one that can promise it never reaches a screen — a token on
+//   a command line. It outranks `--verbose`, and the failing-step report skips it
+//   too, because a secret does not become printable by failing.
+// - **A task setting both is refused when the file loads.** They are opposite
+//   answers to one question; picking a winner silently is how a file ends up
+//   meaning something nobody wrote. Across LEVELS there is no conflict, which is
+//   what lets one loud task live in a quiet file.
+// - **`silent:` on a task or a file** otherwise governs only chore's own progress
+//   notices now — in practice the "is up to date" line. It has never touched a
+//   command's own output: that is the task's business and passes through
+//   untouched.
 
 const usage = `chore — run tasks from a chores.yml
 

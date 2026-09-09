@@ -105,6 +105,12 @@ var cases = map[string][]run{
 		{"a task that hangs", []string{"hangs"}},
 		{"a task that finishes in time", []string{"finishes"}},
 	},
+	"12-printing.yml": {
+		{"nothing is printed but the output", []string{"quiet"}},
+		{"the same task, asked for the commands", []string{"-v", "quiet"}},
+		{"a task that asks for its own", []string{"deploy"}},
+		{"a failing step names itself", []string{"breaks"}},
+	},
 }
 
 func TestExamples(t *testing.T) {

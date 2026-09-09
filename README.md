@@ -227,6 +227,14 @@ real shell — with real `pipefail` — possible.
   off the echo was all that field did for them. What it was worth is kept — a
   failing step is printed *then*, on stderr, so a five-step task still says which
   line produced the status. `--dry` still prints commands instead of running them.
+
+  Four settings can change what you see, and they settle in one order: a
+  command's own `silent:` (never printed, `--verbose` included — the one setting
+  attached to *that* text, so the one that can keep a token off a screen), then
+  `--verbose`, then the task's `verbose:`/`silent:`, then the file's. `verbose:
+  true` on a task prints its commands with nobody passing a flag, for the task
+  whose commands are part of what the operator is meant to see — a deploy, a
+  destructive migration. A task setting both is refused when the file loads.
 - **Ctrl-C stops the task, not just chore.** A script runs in its own process
   group, which is what lets cancellation kill what the script started rather than
   only the shell — but the terminal signals the foreground group, which is chore.
@@ -373,7 +381,7 @@ checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
 
 chore-only, on top of that: `args:`, `chore_min_version:`, the nine hooks,
-`child_hooks:`, and `timeout:`/`on_timeout:`.
+`child_hooks:`, `timeout:`/`on_timeout:`, and `verbose:`.
 
 Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,
 `interactive`, output styles (go-task's group/prefixed task output), v2 schema, Windows. See [SPEC.md](SPEC.md).
