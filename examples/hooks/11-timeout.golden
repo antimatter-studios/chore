@@ -6,6 +6,8 @@ down
 failure
 after, exit 124
 (stderr) chore: hangs: timed out after 500ms — signalling process group <pgid>
+(stderr) chore: hangs: failing step:
+(stderr)     sleep 60
 exit 124
 
 $ chore finishes

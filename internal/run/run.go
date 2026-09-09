@@ -655,18 +655,51 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		return nil
 	}
 
-	echo := !r.silent(t) && !c.Silent
+	// --dry prints the command INSTEAD of running it, which is the whole point of
+	// the flag and is unaffected by everything below.
 	if r.DryRun {
 		fmt.Fprintf(r.Out, "%s\n", script)
 		return nil
 	}
-	if echo {
+	// Nothing is echoed unless somebody asked. A task's script is written for the
+	// shell, not for a reader: a `case` dispatcher, or a pipeline with a saved
+	// status and a `|| true` in the middle of it, is several lines of noise
+	// printed AHEAD of the work — so it cannot be skipped past, and it buries the
+	// output that was actually wanted. Measured on a `chore test collisions` that
+	// printed a six-line dispatcher and a compound one-liner before vitest said
+	// anything at all.
+	//
+	// `--verbose` prints them, including for a `silent:` task, which is what that
+	// flag has always promised.
+	if r.Verbose {
 		fmt.Fprintf(r.Out, "%s\n", script)
 	}
 	if err := sh.Run(ctx, script); err != nil {
+		// Name the step that failed, since it was not printed on the way in. This
+		// is the one thing echoing everything bought, and the only part worth
+		// keeping: a five-step task otherwise reports a status and leaves the
+		// reader to work out which line produced it.
+		//
+		// Not for a failure that is about to be ignored — `ignore_error` says the
+		// step is allowed to fail, and the caller already reports that in one
+		// line. Printing the script there would put the noise back for the steps
+		// least likely to deserve it.
+		if !r.Verbose && !c.IgnoreError && !t.IgnoreError {
+			fmt.Fprintf(r.Err, "chore: %s: failing step:\n%s\n", t.Name, indentScript(script))
+		}
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
 	return nil
+}
+
+// indentScript indents a script so a failure report cannot be mistaken for the
+// command's own output, which is the line above it on the same stream.
+func indentScript(script string) string {
+	lines := strings.Split(strings.TrimRight(script, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // chore:manual variables
@@ -1468,6 +1501,14 @@ func (r *Runner) shell(ctx context.Context, dir string, scope *tmpl.Scope) shell
 	return sh
 }
 
+// silent reports whether chore's own progress notices are suppressed for this
+// task — which since 0.11.0 is all `silent:` does, because commands are not
+// echoed unless `--verbose` asks for them. What is left for it to quieten is the
+// "is up to date" line.
+//
+// Kept rather than retired: it is go-task's field, files in the wild set it, and
+// refusing it would break them to no purpose. `--verbose` still outranks it, as
+// its own help text has always said.
 func (r *Runner) silent(t *chorefile.Task) bool {
 	if r.Verbose {
 		return false

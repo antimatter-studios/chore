@@ -784,7 +784,7 @@ chore [flags] <task> [args...] [-- extra]
   -l, --list          list tasks with descriptions, grouped by namespace
       --dry           print commands without running them
       --force         ignore up-to-date checks
-  -v, --verbose       echo commands even for silent tasks
+  -v, --verbose       print each command before it runs
       --no-color      plain output (also: NO_COLOR, or a non-terminal)
       --no-lifecycle  skip the file's lifecycle: hooks for this run
   -h, --help          usage, or a task's own help when a task is named

@@ -3,7 +3,6 @@
 #
 # The run still exits 7. A best-effort hook cannot swallow a failure.
 version: '3'
-silent: true
 
 tasks:
   demo:

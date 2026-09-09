@@ -2,7 +2,6 @@
 # GATE's own status (3, not 1), and on_failure fires for it — the same rule the
 # run level follows, where on_failure_all catches a failed before_all.
 version: '3'
-silent: true
 
 tasks:
   demo:

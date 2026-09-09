@@ -1726,3 +1726,78 @@ func TestBoolCallVarNormalisedUnderBothSpellings(t *testing.T) {
 		t.Errorf("force=true read as %q, want %q", got, "on")
 	}
 }
+
+// ---------- 13. what reaches the terminal ----------
+
+// The default was the other way round until 0.11.0, and every curated example in
+// this repository switched it off — which is the argument. A task's script is
+// written for the shell: `chore test collisions` printed a six-line `case`
+// dispatcher and a compound one-liner before the test runner said anything.
+func TestCommandsAreNotEchoedByDefault(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"work": {Cmds: steps("echo output-only")},
+	})
+	f.mustRun("work", nil, nil)
+	got := f.out.String()
+	if !strings.Contains(got, "output-only") {
+		t.Fatalf("the command's own output is missing:\n%s", got)
+	}
+	if strings.Contains(got, "echo output-only") {
+		t.Errorf("the command itself was echoed:\n%s", got)
+	}
+}
+
+// --verbose is the one thing that asks, and it asks for everything: a `silent:`
+// task included, which is what that flag's help has always promised.
+func TestVerboseEchoesEvenASilentTask(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"quiet": {Silent: true, Cmds: steps("echo hush")},
+	})
+	f.r.Verbose = true
+	f.mustRun("quiet", nil, nil)
+	mustContain(t, f.out.String(), "echo hush", "stdout")
+}
+
+// The one thing echoing everything bought, kept: with nothing printed on the way
+// in, a five-step task would otherwise report a status and leave the reader to
+// work out which line produced it.
+func TestAFailingStepIsNamedOnStderr(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"work": {Cmds: steps("echo first", "exit 3", "echo unreached")},
+	})
+	f.mustFail("work", nil, nil)
+	got := f.err.String()
+	mustContain(t, got, "failing step", "stderr")
+	mustContain(t, got, "exit 3", "stderr")
+	if strings.Contains(got, "echo first") {
+		t.Errorf("a step that succeeded was reported too:\n%s", got)
+	}
+}
+
+// A step allowed to fail is not a diagnostic, and the caller already reports it
+// in one line. Printing the script there would put the noise back for exactly
+// the steps least likely to deserve it.
+func TestAnIgnoredFailureIsNotReportedAsAFailingStep(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"work": {Cmds: chorefile.Cmds{{Cmd: "exit 3", IgnoreError: true}, {Cmd: "echo carried-on"}}},
+	})
+	f.mustRun("work", nil, nil)
+	mustContain(t, f.out.String(), "carried-on", "stdout")
+	if strings.Contains(f.err.String(), "failing step") {
+		t.Errorf("an ignored failure printed its script:\n%s", f.err)
+	}
+}
+
+// --dry prints the commands INSTEAD of running them. That is the whole flag, and
+// it is not affected by the echo default either way.
+func TestDryRunStillPrintsTheCommands(t *testing.T) {
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"work": {Cmds: steps("echo would-run > marker.txt")},
+	})
+	f.r.DryRun = true
+	f.mustRun("work", nil, nil)
+	mustContain(t, f.out.String(), "echo would-run", "stdout")
+	if _, err := os.Stat(filepath.Join(f.dir, "marker.txt")); err == nil {
+		t.Error("--dry ran the command")
+	}
+}

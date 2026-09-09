@@ -6,7 +6,6 @@
 # The asymmetry is deliberate: a teardown that did not happen is a resource left
 # behind, while a notification that did not send is not.
 version: '3'
-silent: true
 
 tasks:
   hook-failure-is-not-fatal:

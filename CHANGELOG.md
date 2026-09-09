@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **Commands are no longer printed unless you ask.** `--verbose` prints each one
+  before it runs; nothing does otherwise.
+
+  A task's script is written for the shell, not for a reader. Measured on a real
+  `chore test collisions`, the echo put a six-line `case` dispatcher and a
+  compound one-liner on screen before the test runner said anything:
+
+      case "collisions" in
+        "")                 pnpm vitest run ;;
+        collisions)         /opt/homebrew/bin/chore collisions ;;
+        wire|protocol)      /opt/homebrew/bin/chore wire ;;
+        *)                  pnpm vitest run "collisions" ;;
+      esac
+
+      pnpm vitest run src/world/collisions.test.ts; kept=$?; cat collision-report.txt || true; ...
+
+  Noise ahead of the work, so it cannot be skipped past, and it buries the output
+  that was wanted. The verdict was already in the repository: **ten of the eleven
+  curated examples set `silent: true`**, and switching off this echo was the only
+  thing that field did for them. A default every example disables is the wrong
+  default. Those ten no longer set it.
+
+  What the echo was worth is kept. When a step FAILS, the step is printed then —
+  after its own output, on stderr, and only when the failure is not being
+  ignored — so a five-step task still says which line produced the status:
+
+      chore: build: failing step:
+          case "release" in
+            release) echo "picking release"; exit 4 ;;
+            *)       echo "debug" ;;
+          esac
+      chore: build: exit status 4
+
+  Two smaller consequences. `--dry` is untouched: it prints the commands INSTEAD
+  of running them, which is the whole flag. And `silent:` now only suppresses
+  chore's own progress notices — in practice the "is up to date" line — which
+  also cleans up the documented value-capture pattern: a `sh:` var reading
+  `{{.CHORE_EXE}} _helper` used to capture the nested chore's echoed command
+  along with the value, and needed `silent: true` on the helper to avoid it.
+
 - **`chore help timeouts` says to write the teardown idempotent, and why the
   redundancy is free.** A timeout means more than one thing may tear down the
   same resource, with the handler usually first: `on_timeout:`, then the task's

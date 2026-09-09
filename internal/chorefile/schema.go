@@ -292,12 +292,19 @@ type Var struct {
 
 // Task is one runnable unit.
 type Task struct {
-	Desc     string   `yaml:"desc"`
-	Summary  string   `yaml:"summary"`
-	Aliases  []string `yaml:"aliases"`
-	Dir      string   `yaml:"dir"`
-	Silent   bool     `yaml:"silent"`
-	Internal bool     `yaml:"internal"`
+	Desc    string   `yaml:"desc"`
+	Summary string   `yaml:"summary"`
+	Aliases []string `yaml:"aliases"`
+	Dir     string   `yaml:"dir"`
+	// Silent suppresses chore's own progress notices for this task — which since
+	// 0.11.0 means the "is up to date" line, and nothing else. It used to switch
+	// off the echo of every command, back when commands were echoed by default;
+	// they are not, so there is nothing left for it to quieten there.
+	//
+	// Kept because it is go-task's field and files in the wild set it. `--verbose`
+	// outranks it, as that flag's help has always said.
+	Silent   bool `yaml:"silent"`
+	Internal bool `yaml:"internal"`
 	// Interactive gives the task chore's own terminal: a real stdin, and the
 	// foreground process group a full-screen program needs. Opt-in per task,
 	// because it costs the cancellation guarantee every other task has — see

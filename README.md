@@ -218,6 +218,15 @@ real shell — with real `pipefail` — possible.
     logs. Nothing suppresses it — a safety net is not advice — and it does not
     make an out-of-process backstop redundant, because a timer dies with the
     process that owns it. `chore help timeouts`.
+- **Commands are not printed unless you ask.** `--verbose` prints each one before
+  it runs; nothing does otherwise, because a task's script is written for the
+  shell rather than for a reader — a `case` dispatcher on screen before the test
+  runner says anything is noise ahead of the work, where it cannot be skipped
+  past. go-task echoes by default, and the verdict on that was already in this
+  repository: ten of eleven curated examples set `silent: true`, and switching
+  off the echo was all that field did for them. What it was worth is kept — a
+  failing step is printed *then*, on stderr, so a five-step task still says which
+  line produced the status. `--dry` still prints commands instead of running them.
 - **Ctrl-C stops the task, not just chore.** A script runs in its own process
   group, which is what lets cancellation kill what the script started rather than
   only the shell — but the terminal signals the foreground group, which is chore.
