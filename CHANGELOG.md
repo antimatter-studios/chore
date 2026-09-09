@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
 
 - **Commands are no longer printed unless you ask.** `--verbose` prints each one
   before it runs; nothing does otherwise.
