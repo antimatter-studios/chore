@@ -18,6 +18,10 @@ summary: every flag chore itself takes
     -h, --help         usage, or a task's own help when a task is named
         --version      print the version
 
+`--dry` works for a global task too, where it prints the route hop by hop and
+what would run at the end of it, without touching the network — see
+`chore help global`.
+
 `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
 
 A mistyped long flag is REFUSED rather than bound to something else. That

@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+- **`global:` tasks — a machine's own task surface, over ssh.**
+
+      chore global:                    the namespaces installed here
+      chore global:homelab:            the tasks in one
+      chore global:homelab:k3s:pods    run one
+
+  Files in `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml`, one
+  namespace per file, answered BEFORE a taskfile is required — the same position
+  `chore help` occupies. That is the whole feature: "check the cluster from
+  whatever machine I am sitting at" cannot depend on standing in a particular
+  directory. The XDG fallback is load-bearing rather than decorative, because the
+  variable is unset on macOS by default and these files are meant to arrive on
+  macOS and Linux from one dotfiles repository.
+
+      name: homelab
+
+      routes:
+        pi:
+          - { host: s1.example.com, port: 10022, user: root }
+          - { host: 127.0.0.1, port: 2222, user: chris }
+
+      tasks:
+        k3s:pods:
+          route: pi
+          exec: [kubectl, get, pods, -A]
+
+        k3s:proxy:
+          route: pi
+          forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 }
+
+  **Each hop is resolved from the previous hop.** `127.0.0.1:2222` there is s1's
+  loopback, where a reverse tunnel already lands on the homelab — not this
+  machine's. So one file holds several `127.0.0.1`s meaning different machines,
+  which is why a failure names the route and the hop by NUMBER (`route pi, hop 2
+  (chris@127.0.0.1:2222): connection refused`), why the forwarding keys are
+  spelled `remote:` and `local:`, and why `--dry` prints the hop list with
+  "dialled from" beside each one without touching the network.
+
+  The rest, each decided rather than defaulted:
+
+  - **`global:` is mandatory**, not a fallback for an unresolved name — it makes
+    the call site readable without knowing what is installed on that machine, and
+    a project defining a `homelab:` namespace cannot silently shadow it. A project
+    task named `global:…` is refused at load, since it could never be reached.
+  - **Every task names its route.** No default route, same reasoning.
+  - **`exec:` and `forward:` are mutually exclusive by key presence** rather than
+    by a `mode:` field, so a task that is both or neither cannot be written.
+  - **Authentication is your ssh-agent and nothing else.** A key never passes
+    through chore, so a secret manager keeps working without chore knowing it
+    exists. Host keys are checked against `~/.ssh/known_hosts`, never
+    `InsecureIgnoreHostKey` — the temptation to skip that is strongest while
+    debugging a three-hop chain, which is exactly when it matters.
+  - **`forward:` holds the terminal** until Ctrl-C. Its cancellation is
+    hand-written, because a tunnel is goroutines inside chore rather than a child
+    in its own process group and gets none of the interrupt guarantee the rest of
+    chore has for free.
+  - **`exec:` is an argv and chore quotes it.** Worth being exact about why, since
+    the field's shape suggests otherwise: the SSH protocol carries a command as a
+    single STRING which the far end hands to a login shell, so quoting exists
+    either way — the choice is only whether chore does it once, correctly, or
+    every task does it by hand.
+
+  Tested against real ssh servers and a real ssh-agent rather than a mocked
+  transport: a two-hop route proves the command ran at the END of it and not on
+  the way, an unknown host key is refused, a closed port names its hop number, a
+  remote failure carries its exit status, and a tunnel carries bytes and stops
+  when its context does.
+
 ## v0.11.0
 
 - **Commands are no longer printed unless you ask.** `--verbose` prints each one

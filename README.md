@@ -218,6 +218,31 @@ real shell — with real `pipefail` — possible.
     logs. Nothing suppresses it — a safety net is not advice — and it does not
     make an out-of-process backstop redundant, because a timer dies with the
     process that owns it. `chore help timeouts`.
+- **`global:` tasks belong to the machine, not to a project.** Files in
+  `~/.config/chore/global.d/*.yaml` (or `$XDG_CONFIG_HOME`) define namespaces that
+  answer from any directory, with or without a `chores.yml` in sight — which is
+  the point: "check the cluster from wherever I am standing" cannot depend on
+  where you are standing. A task names a **route**, a list of ssh hops where every
+  hop after the first is dialled *from the one before it*, and then either an
+  `exec:` argv to run at the far end or a `forward:` to bring a port back:
+
+    ```yaml
+    name: homelab
+    routes:
+      pi:
+        - { host: s1.example.com, port: 10022, user: root }
+        - { host: 127.0.0.1, port: 2222, user: chris }   # s1's loopback, not yours
+    tasks:
+      k3s:pods:   { route: pi, exec: [kubectl, get, pods, -A] }
+      k3s:proxy:  { route: pi, forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 } }
+    ```
+
+    `chore global:homelab:k3s:pods`. The prefix is mandatory so the call site is
+    readable on a machine whose contents you do not know, and so a project cannot
+    shadow it. Authentication is your ssh-agent — chore never handles a key — and
+    host keys are checked against the same `~/.ssh/known_hosts` ssh uses, with the
+    same refusal to continue when one has changed. `--dry` prints the route hop by
+    hop without touching the network. `chore help global`.
 - **Commands are not printed unless you ask.** `--verbose` prints each one before
   it runs; nothing does otherwise, because a task's script is written for the
   shell rather than for a reader — a `case` dispatcher on screen before the test

@@ -251,6 +251,16 @@ func register(entries []entry) (map[string]*chorefile.Task, error) {
 				e.file.Tasks[name] = t
 			}
 			key := qualify(e.prefix, name)
+			// `global:` belongs to the machine's own task surface, which the command
+			// line answers before it ever looks for a taskfile — so a project task
+			// under that name could never be reached. Refused where it is written
+			// rather than left to be a task that exists and cannot be run, which is
+			// the silent failure this loader exists to remove.
+			if key == "global" || strings.HasPrefix(key, "global:") {
+				return nil, fmt.Errorf("%s defines %q, but `global:` is reserved for machine-wide tasks"+
+					" (`chore help global`) and the command line answers it before any taskfile is read,"+
+					" so this task could never run — rename it", e.file.Path, key)
+			}
 			if prev, dup := tasks[key]; dup {
 				return nil, fmt.Errorf("duplicate task %q: defined in %s and in %s", key, prev.File.Path, e.file.Path)
 			}
