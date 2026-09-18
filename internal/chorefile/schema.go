@@ -333,6 +333,18 @@ type Task struct {
 	// because it costs the cancellation guarantee every other task has — see
 	// shell.Shell.Interactive.
 	Interactive bool `yaml:"interactive"`
+	// Concurrency is the name of a resource this task contends for — `cpu`,
+	// `browser`, `port:5173`. Tasks naming the same group run one at a time, across
+	// every chore on the machine, so that `chore check` twice at once is two runs in
+	// sequence rather than two runs starving each other.
+	//
+	// The name is the RESOURCE, not the task: `shots` and `playtest` share `browser`
+	// because they both want one, while a dev server contends for neither and never
+	// waits. A task inside a group it already holds runs straight away, so a
+	// coordinator built out of sub-tasks does not deadlock on itself.
+	//
+	// See `chore manual concurrency`.
+	Concurrency string `yaml:"concurrency"`
 	// Run is "always" (default) or "once": a task marked once executes one time
 	// per invocation of chore, keyed on its rendered variables.
 	Run         string   `yaml:"run"`
