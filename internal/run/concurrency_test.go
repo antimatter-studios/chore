@@ -173,6 +173,44 @@ func TestTheSameGroupIsTheSamePathEverywhere(t *testing.T) {
 	}
 }
 
+// A task waiting for the lock can still be stopped, which is the difference
+// between a queue and a hang.
+//
+// `syscall.Flock(LOCK_EX)` parks a process inside the kernel where nothing can
+// reach it. With the wait written that way a queued task ignored Ctrl-C, ignored
+// its own `timeout:`, and ignored a `timeout 8` outside it — measured at
+// twenty-five minutes against a budget of eight seconds, because chore's signal
+// handling then waits on the task it cannot stop. A busy machine had been turned
+// into a stuck one.
+func TestAWaitingTaskCanBeCancelled(t *testing.T) {
+	inItsOwnLockDir(t)
+	f := newFixture(t, &chorefile.File{}, map[string]*chorefile.Task{
+		"hog":    {Concurrency: "cpu", Cmds: steps("sleep 30")},
+		"queued": {Concurrency: "cpu", Cmds: steps("true")},
+	})
+	go f.run("hog", nil, nil)
+	time.Sleep(200 * time.Millisecond) // long enough that "hog" certainly holds it
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.r.Run(ctx, "queued", nil, nil) }()
+
+	time.Sleep(200 * time.Millisecond) // and long enough that "queued" is certainly waiting
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled wait returned success; it should report why it stopped")
+		}
+		if !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("err = %v, want it to name the cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a waiting task ignored cancellation — the wait is not interruptible")
+	}
+}
+
 func readLines(t *testing.T, path string) []string {
 	t.Helper()
 	b, err := os.ReadFile(path)
