@@ -163,6 +163,48 @@ func lockPath(group string) string {
 // prints nothing at all.
 const saidWaiting = 300 * time.Millisecond
 
+// askEvery is how often a waiting task asks for the lock again. Small enough that
+// handing over feels immediate, large enough that a task queued behind an hour of
+// benches costs a few thousand cheap syscalls rather than a spin.
+const askEvery = 50 * time.Millisecond
+
+// waitFor takes the lock, and gives up the moment the context says to.
+//
+// Asked for repeatedly rather than waited on, and that is the whole of it rather
+// than a detail. `syscall.Flock(LOCK_EX)` parks the process inside the kernel
+// where nothing can reach it: a task queued on the lock could not be interrupted
+// by Ctrl-C, by its own `timeout:`, or by a `timeout 8` outside it — measured at
+// twenty-five minutes against a budget of eight seconds, with chore's own signal
+// handling then waiting on the task it could not stop.
+//
+// A task that cannot be cancelled while it waits is worse than a task that never
+// waited, because the queue has turned a busy machine into a stuck one. So the
+// lock is asked for without blocking, on a short clock, between checks of the
+// context — which is the one thing that is allowed to end the wait early.
+func (r *Runner) waitFor(ctx context.Context, fd int, path, group, name string) error {
+	said := false
+	for began := time.Now(); ; {
+		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			return fmt.Errorf("%s: concurrency %q: %w", name, group, err)
+		}
+		// Said once, and only after a wait somebody would notice: a lock that
+		// frees immediately is not announced to a task that never really waited.
+		if !said && time.Since(began) >= saidWaiting {
+			said = true
+			fmt.Fprintf(r.Out, "  %s: waiting for %q%s\n", name, group, heldBy(path))
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: concurrency %q: %w", name, group, ctx.Err())
+		case <-time.After(askEvery):
+		}
+	}
+}
+
 // hold takes the task's concurrency group, if it has one it is not already inside.
 //
 // It returns the context children should run under and the release. Both are
@@ -187,24 +229,9 @@ func (r *Runner) hold(ctx context.Context, group, name string) (context.Context,
 	}
 	fd := int(f.Fd())
 
-	// Try without blocking first, so the ordinary case — nothing else running —
-	// costs one syscall and prints nothing.
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		go func() {
-			// Said from a goroutine rather than before the wait, so that a lock
-			// which frees immediately is not announced to somebody who never
-			// waited. See "it says when it is waiting".
-			time.Sleep(saidWaiting)
-			select {
-			case <-ctx.Done():
-			default:
-				fmt.Fprintf(r.Out, "  %s: waiting for %q%s\n", name, group, heldBy(path))
-			}
-		}()
-		if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
-			f.Close()
-			return ctx, func() {}, fmt.Errorf("%s: concurrency %q: %w", name, group, err)
-		}
+	if err := r.waitFor(ctx, fd, path, group, name); err != nil {
+		f.Close()
+		return ctx, func() {}, err
 	}
 
 	// Who is in there, for the next caller's message. Advisory only: it is read
