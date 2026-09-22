@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+- **`chore ci:gate`** — a built-in that checks one required check gates a pull
+  request, and that it stands for every job.
+
+  Branch protection names checks, and a check is a job name. Naming each job
+  means the list has to be edited whenever one is renamed, split into a matrix
+  leg or added, and until someone does, the new work is required by nobody. The
+  opposite spelling is worse: a required check no job produces reads as
+  permanently pending, and with `enforce_admins` on nothing merges and there is
+  no failure to point at. So protection names one job — `ci-ok` — which `needs:`
+  every gating job, and this is what keeps that true.
+
+  It checks four things, and reports all of them at once:
+
+      the gate workflow runs on pull_request
+      the aggregate needs: every gating job, and nothing that does not exist
+      the aggregate carries if: always(), not a narrowing of it
+      .github-guard requires the aggregate and nothing else
+
+  Plus the two-way rule: a job carrying a job-level `if:` or
+  `continue-on-error:` must be BOTH declared non-gating AND left out of
+  `needs:`. `continue-on-error: true` reports `success` however the job ended,
+  so the aggregate reads green for red; a false `if:` leaves the job `skipped`,
+  which fails the aggregate on every pull request. The declaration is checked
+  against the workflow both ways, so an exemption cannot outlive the condition
+  that justified it, and an exemption for a job that does not exist is an
+  exemption waiting to silently cover a future job of that name.
+
+  Configured by an optional top-level block, and **never by a flag**:
+
+      ci_gate:
+        workflow: .github/workflows/ci.yml
+        aggregate: ci-ok
+        guard: .github-guard
+        non_gating: [asan]
+
+  Every value there is its default bar `non_gating:`, so a repository that
+  answers the defaults writes nothing. A flag would be the thing a hand-typed
+  run omits, and then the answer someone gets at a prompt is not the answer CI
+  got. A project defining a `ci:gate` TASK still wins, the same way one defining
+  `help` or `version` does.
+
+  The workflow is parsed as YAML, not scanned as lines: a quoted key, a flow
+  mapping and a `run: |` block whose contents look like a job key are ordinary
+  YAML that a line scan reads wrongly, and a guard that misreads its input
+  reports protection it is not providing.
+
+  This arrived as a Rust crate, `am-ci-guard`, living in a driver's `tests/`
+  directory (rust-fs-core#156/#157). It was the wrong container twice over: it
+  tests nothing that repository ships, and `ci-ok` enforces per-suite
+  executed-test floors, so meta-tests inflated the counts a repository used to
+  satisfy its own gate. Half of its 651 lines were hand-rolled untyped-YAML tree
+  walking and a builder API, neither of which a typed struct needs.
+
+  Proved by mutation against two repositories' real configurations, committed
+  verbatim as fixtures: dropping a job from `needs:`, deleting `if: always()`,
+  narrowing it to a condition that can be false, and adding a second
+  `required =` each fire the specific check — and both configurations pass
+  untouched, without which the mutations would also pass against a guard that
+  fails on everything.
+
 ## v0.11.0
 
 - **Commands are no longer printed unless you ask.** `--verbose` prints each one

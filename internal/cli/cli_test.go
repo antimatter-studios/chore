@@ -1760,3 +1760,79 @@ func TestAProjectsOwnHelpTaskWins(t *testing.T) {
 		t.Errorf("a task named help must win over the manual:\n%s", got.stdout)
 	}
 }
+
+// ─── the built-in CI gate ───────────────────────────────────────────────────
+
+// A workflow and a guard that hold, so each test below mutates one thing.
+const (
+	gateWorkflow = "name: CI\n" +
+		"on:\n  push:\n    branches: [main]\n  pull_request:\n" +
+		"jobs:\n" +
+		"  fmt:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo fmt --check\n" +
+		"  asan:\n    continue-on-error: true\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n" +
+		"  ci-ok:\n    if: always()\n    needs: [fmt]\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n"
+	gateGuard = "# the rationale, which mentions required = fmt and is not a declaration\n" +
+		"[checks]\n\trequired = ci-ok\n"
+)
+
+// The exemption has to come from the FILE, because a verdict that depends on
+// what someone remembered to type is not the verdict CI reached.
+func TestCIGateReadsItsExemptionsFromTheChoresFile(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml":               "version: \"3\"\nci_gate:\n  non_gating: [asan]\ntasks:\n  build:\n    cmds: ['true']\n",
+		".github/workflows/ci.yml": gateWorkflow,
+		".github-guard":            gateGuard,
+	})
+	got := runMain(t, dir, "ci:gate")
+	if got.code != 0 {
+		t.Fatalf("code %d, stderr:\n%s", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "requires `ci-ok`") {
+		t.Errorf("stdout did not say what it verified: %q", got.stdout)
+	}
+}
+
+// Without the declaration the same repository FAILS, which is the whole point of
+// checking the exemption list against the workflow.
+func TestCIGateFailsOnAnUndeclaredNonGatingJob(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml":               "version: \"3\"\ntasks:\n  build:\n    cmds: ['true']\n",
+		".github/workflows/ci.yml": gateWorkflow,
+		".github-guard":            gateGuard,
+	})
+	got := runMain(t, dir, "ci:gate")
+	if got.code != 1 {
+		t.Fatalf("a broken gate must exit 1, got %d\nstdout: %s\nstderr: %s", got.code, got.stdout, got.stderr)
+	}
+	for _, want := range []string{"asan", "continue-on-error", "ci_gate"} {
+		if !strings.Contains(got.stderr, want) {
+			t.Errorf("the failure does not mention %q: %s", want, got.stderr)
+		}
+	}
+}
+
+// A project that defines a task by this name still wins, the same way one
+// defining `help` or `version` does.
+func TestAProjectTaskNamedCIGateWins(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml": "version: \"3\"\ntasks:\n  ci:gate:\n    cmds: ['echo the project answered']\n",
+	})
+	got := runMain(t, dir, "ci:gate")
+	if got.code != 0 || !strings.Contains(got.stdout, "the project answered") {
+		t.Fatalf("code %d, stdout %q, stderr %q", got.code, got.stdout, got.stderr)
+	}
+}
+
+// Arguments are refused rather than bound, and the refusal names where the
+// configuration goes.
+func TestCIGateTakesNoArguments(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml":               "version: \"3\"\ntasks:\n  build:\n    cmds: ['true']\n",
+		".github/workflows/ci.yml": gateWorkflow,
+		".github-guard":            gateGuard,
+	})
+	got := runMain(t, dir, "ci:gate", "--non-gating", "asan")
+	if got.code != 2 || !strings.Contains(got.stderr, "ci_gate") {
+		t.Fatalf("code %d, stderr %q", got.code, got.stderr)
+	}
+}

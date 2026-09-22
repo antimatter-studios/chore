@@ -1,0 +1,480 @@
+name: CI
+
+# EVERY JOB RUNS CHORE TASKS, so a green local `chore test` is the same
+# evidence as a green run here (see the test contract at the top of
+# chores.yml):
+#
+#   unit         `chore test:unit` on a runner with NO fixtures: the tests
+#                that need no tool, no fixture and no VM, in the debug
+#                profile that traps an arithmetic overflow. That the job
+#                passes with .vm-share empty is what proves the split.
+#   fixtures     `chore fixtures`: the kernel-made images, built in the
+#                fs-linux-test-harness VM under KVM on x86_64, and handed
+#                to the other jobs as an artifact (they are disk images,
+#                the same for every architecture and every host).
+#   test         x86_64, where GitHub gives us KVM: `chore lint` and
+#                `chore test` — the whole gate, with EVERY xfsprogs call
+#                and every kernel mount happening inside the harness VM.
+#                Nothing installs xfsprogs on the runner, and a step makes
+#                the runner's own copy unusable so that a green run is
+#                evidence of it.
+#   test-arm64   aarch64 matters on its own but GitHub's arm64 runners
+#                have NO KVM, so no VM can run: this job runs the tiers
+#                that need none — lint, the unit tier, and the
+#                fixture-reading tests.
+#   test-darwin  the target this crate SHIPS to. It builds the staticlib
+#                for aarch64-apple-darwin and runs the tiers a Mac can
+#                run, which is the same set as arm64 Linux: there is no
+#                XFS, no loop mount and no xfsprogs on a Mac at all, and
+#                the failures this job exists to catch are the ones no
+#                Linux job can see — ENOTSUP is 45 here and 95 there,
+#                `c_char` signedness at the C ABI boundary, and pointer
+#                width and alignment assumptions x86_64 Linux happens to
+#                satisfy.
+#   suite-in-vm  `chore test:vm`: the whole suite COMPILED AND RUN INSIDE
+#                the guest. That is how a Mac runs the oracle and kernel
+#                tiers at all, and this job is what keeps that path
+#                working.
+#   ci-ok        the one required check: green only when every job above
+#                ran and succeeded (failed, cancelled OR skipped fails
+#                it). #207.
+#
+# WHAT THIS REPLACES. The gate used to install xfsprogs on the runner,
+# build the fixtures there with the runner's mkfs.xfs, loop-mount them
+# with `sudo` against the runner's kernel, and name thirty-two suites by
+# hand in a `for suite in ...` list. A developer got the same fixtures
+# from a Debian VM with a different mkfs.xfs and a different kernel, so
+# the two halves of "the same suite" were graded by two different
+# oracles — which is what #211 and #212 are. There is one oracle now and
+# it is the guest's.
+#
+# THE OUTPUT BUDGET IS IN THE TASKS, so it is in this workflow too. Each
+# tier writes its full output to tmp/logs/<tier>.log and prints a
+# verdict; a tier that prints more than its measured budget FAILS (exit
+# 65), which is how a job that starts emitting thousands of lines turns
+# red here rather than being noticed by whoever scrolls it next. The
+# executed-test floors and the skip gate are in the tasks too, through
+# scripts/ci-test.sh: a suite that selected nothing, or printed a skip,
+# fails wherever it runs.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  # NO BRANCH FILTER ON PULL REQUESTS (#241). With `branches: [main]` a
+  # pull request based on anything else ran no job in this workflow, and
+  # nothing said so — PR #229, stacked on another fix, reported `CLEAN`
+  # with no checks at all beside siblings showing three. Reopened
+  # against main it ran, and found a real failure the stacked version
+  # could never have found.
+  pull_request:
+  # Callable so the release workflow runs THIS gate rather than keeping
+  # its own copy. The two previously duplicated ~150 lines of kernel
+  # validation and drifted three separate times — the release gate lost
+  # the inode dumps its own test needed, then the dmesg allowlist, then
+  # the shared fixture builder. A release gate weaker than the branch
+  # gate is worse than none, because it still reports green.
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CHORE_VERSION: "0.11.0"
+
+jobs:
+  unit:
+    name: unit (no tools, no fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        # Pinned (CHORE_VERSION) and checked against the release's
+        # checksums: the siblings, the tools and the tests all come
+        # through it.
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        # rust-fs-core (the path dependency) and fs-linux-test-harness, at
+        # the refs pinned in chores.yml.
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-unit-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: No fixtures are present
+        run: |
+          set -euo pipefail
+          if ls .vm-share/*.img >/dev/null 2>&1; then
+            echo "::error::.vm-share/ has images; this job must prove the unit tier needs none"
+            exit 1
+          fi
+      - name: chore test:unit
+        run: chore test:unit
+      - name: Keep the tier logs
+        # A tier writes its whole output to tmp/logs/<tier>.log and prints a
+        # verdict naming it; on a runner that file is deleted minutes later,
+        # so the detail a quiet run kept is the one thing nobody can read.
+        # `if: always()` — the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-unit
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  fixtures:
+    name: fixtures (harness VM, x86_64 KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore fixtures
+        run: chore fixtures
+      - name: chore vm:status (the VM is down again)
+        run: '! chore vm:status'
+      # TARRED, AND TARRED SPARSE. These are two dozen filesystem images
+      # of 400 to 500 MB each, almost all of it holes: `tar --sparse`
+      # keeps them that way, where handing actions/upload-artifact the
+      # directory would have it read every hole as zeros. The consuming
+      # jobs untar rather than downloading a directory, so the holes
+      # survive the round trip and the runner's disk is not filled with
+      # nothing.
+      - name: Pack the fixtures, keeping their holes
+        run: |
+          set -euo pipefail
+          du -sh .vm-share
+          tar --sparse -czf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share .
+          ls -lh "$RUNNER_TEMP/fixtures.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}/fixtures.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: test (x86_64, oracles in the VM)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore tools
+        run: chore tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share | wc -l | xargs echo "fixtures:"
+          ./scripts/build-fixtures.sh --check
+      # THE EVIDENCE, NOT THE CLAIM. Nothing this job runs may use the
+      # runner's own xfsprogs: the tools belong to the guest, and a test
+      # that reached for one here would be answered by a different
+      # version than every other machine gets. Each is replaced with a
+      # stub that fails loudly, so a violation turns the run red with a
+      # message saying so rather than quietly passing on the wrong
+      # version.
+      - name: Make the runner's own xfsprogs unusable
+        run: |
+          set -eu
+          for tool in mkfs.xfs xfs_db xfs_repair xfs_logprint xfs_io xfs_admin xfs_bmap xfs_info; do
+            path="$(command -v "$tool" 2>/dev/null || true)"
+            [ -n "$path" ] || continue
+            sudo mv "$path" "$path.host-copy"
+            printf '#!/bin/sh\necho "::error::%s ran on the runner; the oracle tools belong in the VM" >&2\nexit 97\n' \
+              "$tool" | sudo tee "$path" >/dev/null
+            sudo chmod +x "$path"
+            echo "poisoned $path"
+          done
+      - name: chore lint
+        run: chore lint
+      - name: chore test
+        run: chore test
+      - name: chore vm:status (the VM is down again)
+        run: '! chore vm:status'
+      - name: Keep the tier logs
+        # A tier writes its whole output to tmp/logs/<tier>.log and prints a
+        # verdict naming it; on a runner that file is deleted minutes later,
+        # so the detail a quiet run kept is the one thing nobody can read.
+        # `if: always()` — the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-x86_64
+          path: tmp/logs/*.log
+          if-no-files-found: error
+      # The volumes a kernel replay was judged on, when it went wrong.
+      # The failures these catch are ones that reproduce from the image
+      # and from nothing else.
+      - name: Keep the volumes a failing run was judged on
+        if: failure()
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/keep"
+          cp -f .vm-share/*.img "$RUNNER_TEMP/keep/" 2>/dev/null || true
+          cp -rf tmp/logs "$RUNNER_TEMP/keep/logs" 2>/dev/null || true
+          tar -czf "$RUNNER_TEMP/failed-run.tar.gz" -C "$RUNNER_TEMP" keep
+      - name: Upload them
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-run-x86_64
+          path: ${{ runner.temp }}/failed-run.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test-arm64:
+    name: test (aarch64, no KVM on this runner)
+    needs: fixtures
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share | wc -l | xargs echo "fixtures:"
+          ./scripts/build-fixtures.sh --check
+      - name: chore lint
+        run: chore lint
+      - name: chore test:unit
+        run: chore test:unit
+      # Everything that reads a fixture but needs no VM. The oracle and
+      # kernel tiers cannot run here — GitHub's arm64 runners have no
+      # /dev/kvm — and they are not architecture-specific: they read the
+      # same bytes the x86_64 job's guest reads.
+      - name: chore test:images
+        run: chore test:images
+      - name: Keep the tier logs
+        # A tier writes its whole output to tmp/logs/<tier>.log and prints a
+        # verdict naming it; on a runner that file is deleted minutes later,
+        # so the detail a quiet run kept is the one thing nobody can read.
+        # `if: always()` — the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-aarch64
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  test-darwin:
+    name: test-darwin
+    needs: fixtures
+    # arm64 by label, not by whatever macos-latest resolves to: the tests
+    # built for aarch64-apple-darwin have to run on the host.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-darwin-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share | wc -l | xargs echo "fixtures:"
+          ./scripts/build-fixtures.sh --check
+      # What DiskJockey's XFS extension links against. A break here ships
+      # to the consumer, and every Linux job stays green through it.
+      - name: Build the shipped staticlib for aarch64-apple-darwin
+        run: cargo build --locked --release --lib --target aarch64-apple-darwin
+      # NO `chore lint` HERE. `cargo fmt --check` is the same answer on
+      # every platform and the two Linux jobs already ask it, and clippy
+      # has never run on Darwin in this repository — turning it on in the
+      # same change that moves every oracle into a VM would mix a lint
+      # sweep into a migration. What this job is for is the code paths
+      # only this target compiles, and the tiers below build all of them.
+      - name: chore test:unit
+        run: chore test:unit
+      # The tiers a Mac can run, which is the same set as the arm64 Linux
+      # job. The oracle and kernel tiers need the guest, and on a Mac
+      # that is `chore test` -> `chore test:vm`, which needs a nested
+      # hypervisor GitHub's macOS runners do not give us. `suite-in-vm`
+      # runs that path on Linux instead, so it cannot rot.
+      - name: chore test:images
+        run: chore test:images
+      - name: Keep the tier logs
+        # A tier writes its whole output to tmp/logs/<tier>.log and prints a
+        # verdict naming it; on a runner that file is deleted minutes later,
+        # so the detail a quiet run kept is the one thing nobody can read.
+        # `if: always()` — the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-darwin
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  suite-in-vm:
+    name: suite in the guest (the macOS path)
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}
+      - name: Unpack the fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .vm-share
+          tar -xzf "$RUNNER_TEMP/fixtures.tar.gz" -C .vm-share
+          ls -1 .vm-share | wc -l | xargs echo "fixtures:"
+          ./scripts/build-fixtures.sh --check
+      # No Rust on the runner: the toolchain that matters is the one the
+      # guest installs from rust-toolchain.toml. That is the point of the
+      # job — on a Mac there is no usable host toolchain for these tests
+      # either.
+      - name: chore test:vm
+        run: chore test:vm
+      - name: Keep the tier logs
+        # A tier writes its whole output to tmp/logs/<tier>.log and prints a
+        # verdict naming it; on a runner that file is deleted minutes later,
+        # so the detail a quiet run kept is the one thing nobody can read.
+        # `if: always()` — the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-suite-in-vm
+          path: tmp/logs/*.log
+          if-no-files-found: error
+      - name: chore vm:status (the VM is down again)
+        run: '! chore vm:status'
+
+  ci-ok:
+    name: ci-ok
+    # THE ONE REQUIRED CHECK (#207). Requiring the gate rather than each
+    # job means a job can be renamed, split or made conditional without
+    # leaving a required check that never reports — which GitHub reads as
+    # permanently pending, with nothing to point at. It is also the only
+    # shape in which a job-level `if:` is safe.
+    if: always()
+    needs: [unit, fixtures, test, test-arm64, test-darwin, suite-in-vm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran and succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad (failed, cancelled or skipped)"
+            exit 1
+          fi
+          echo "all required jobs succeeded"
