@@ -1,0 +1,952 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  # Manual trigger — exposed as "Run workflow" in the GitHub Actions UI.
+  # Lets us run validate-mkfs-windows on demand without cutting a tag.
+  # Tweak the Rust crate, push, click "Run workflow", get real chkdsk
+  # output back in ~5 minutes. The test job runs on every push too.
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm is native ARM64, not a cross-check: `c_char` is
+        # `u8` on aarch64 Linux and `i8` on x86_64 and macOS, so a lint
+        # about a C-ABI pointer cast can fail on one and not the other (#268).
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out sibling repos
+        # Replaces `submodules: recursive`. The pins live in chores.yml,
+        # so CI and a developer's machine read the same declaration
+        # instead of restating it in YAML.
+        #
+        # chore is fetched from its release tarball at a PINNED version.
+        # An unpinned installer would make this workflow's behaviour
+        # depend on whatever chore shipped that morning, which is the
+        # opposite of what pinning the siblings is for.
+        #
+        # WINDOWS RUNNERS FALL BACK TO PLAIN CLONES. chore publishes
+        # darwin and linux builds only, and `uname -s` under Git Bash
+        # reports MINGW64_NT-*, so there is nothing to install. The
+        # fallback re-states the pins, which is exactly the duplication
+        # `chore siblings` exists to remove -- so it reads them OUT OF
+        # chores.yml rather than hardcoding them, and the single
+        # declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   asset="chore-0.11.0-linux-x86_64.tar.gz" ;;
+            Linux-aarch64)  asset="chore-0.11.0-linux-arm64.tar.gz" ;;
+            Darwin-arm64)   asset="chore-0.11.0-darwin-arm64.tar.gz" ;;
+            Darwin-x86_64)  asset="chore-0.11.0-darwin-x86_64.tar.gz" ;;
+            *)              asset="" ;;   # Windows: no chore build
+          esac
+
+          if [ -n "$asset" ]; then
+            curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v0.11.0/$asset" \
+              | sudo tar xz -C /usr/local/bin chore
+            chore siblings
+          else
+            core_ref="$(pin FS_CORE_REF)"
+            harness_ref="$(pin HARNESS_REF)"
+            echo "chore has no build for $(uname -s); cloning siblings directly"
+            echo "  am-fs-core              $core_ref"
+            echo "  fs-windows-test-harness $harness_ref"
+            git clone --quiet --depth 1 --branch "$core_ref" \
+              https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+            git clone --quiet --depth 1 --branch "$harness_ref" \
+              https://github.com/antimatter-studios/fs-windows-test-harness.git ../fs-windows-test-harness
+          fi
+      - name: Install Rust
+        # Keep in sync with rust-toolchain.toml. Explicit version here
+        # guards against rust-toolchain.toml being deleted and silently
+        # tracking a newer stable (which can introduce breaking clippy
+        # lints on unchanged code).
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # runner.arch: both Linux legs report runner.os == Linux, and a
+          # shared key would restore one architecture's target/ on the other.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo fmt --check
+
+      # cargo-deny — fail the build if any dep license drifts outside
+      # the MIT / Apache / BSD / ISC / Unicode / Zlib / CC0 / 0BSD
+      # allowlist in deny.toml, or if a yanked / advisory-flagged
+      # version creeps in. Pairs with the project's "no GPL/LGPL/AGPL"
+      # policy. Run once on ubuntu — license check doesn't vary by OS.
+      #
+      # Install on the runner (via taiki-e/install-action's prebuilt
+      # binary) instead of EmbarkStudios/cargo-deny-action. The Embark
+      # action runs in an Alpine docker image with rust 1.85-musl baked
+      # in, which fights rust-toolchain.toml's `1.95.0` pin — cargo
+      # inside the container tries to install `1.95.0-musl` and dies.
+      # Running on the runner reuses the toolchain installed above.
+      - name: Install cargo-deny
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo-deny check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo deny --all-features check
+
+      # clippy gate. Pre-commit hook runs the same invocation locally
+      # so this should never fail on a clean push; it's the second line
+      # of defence against drift via merges or rebases that bypass the
+      # hook. Lint output is NOT deterministic across architectures: the
+      # C-ABI `*mut c_char` casts are redundant exactly where `c_char` is
+      # `u8`, so ubuntu-latest alone passed while aarch64 failed (#268).
+      # Run it on both Linux architectures; macOS adds nothing x86 lacks.
+      - name: cargo clippy
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm'
+        run: scripts/tier.sh clippy -- cargo clippy --locked --all-targets -- -D warnings
+
+      # The shell tests (tests/scripts/*.sh): the scripts that turn the
+      # Windows VM's output into verdicts. By glob, like `chore test:scripts`.
+      - name: shell tests
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: for t in tests/scripts/*.sh; do bash "$t"; done
+
+      # Test scope is intentionally narrow: only tests that DON'T need
+      # the out-of-tree `test-disks/*.img` fixtures. The fixture-driven
+      # integration tests (tests/ads.rs, tests/file_data.rs, etc.)
+      # require ~3 GB of pre-baked NTFS images that aren't (and won't
+      # be) committed to git. Authoritative NTFS validation runs on
+      # Windows via chkdsk in `validate-mkfs-windows`; the Linux job's
+      # role is just "did the crate compile and do the in-memory tests
+      # pass?"
+      #
+      # `--lib` runs every unit test inside src/ (~hundreds of them).
+      # `--test mkfs_roundtrip --test mkfs_bin_smoke` runs the two
+      # integration-test files that generate their own data instead
+      # of reading fixtures. Anything else is a fixture-test and
+      # stays out of CI.
+      # --locked everywhere: cargo must NOT silently regenerate a stale
+      # Cargo.lock. If the lock drifts from Cargo.toml / the rust-fs-core
+      # submodule, these fail loudly here at PR time ("lock file needs to
+      # be updated but --locked was passed") instead of surfacing as a
+      # dirty-tree abort at `cargo publish`. Keeps the committed lock honest.
+      # EXECUTED-TEST FLOORS, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE.
+      #
+      # `cargo test` exits 0 on "0 passed; 0 failed". A filter that selects
+      # nothing, a build that produced no test binaries, and a target list
+      # that came out empty therefore report EXACTLY the green a full run
+      # reports, and every other gate in this workflow reads that green and
+      # agrees. The only thing that can see an absence is a count, so each
+      # run below counts what it executed and refuses a number that says it
+      # stopped early. #278.
+      #
+      # ONE FLOOR PER RUN SELECTION, NOT ONE PER JOB. The three `cargo test`
+      # invocations in this job select DISJOINT sets: `--lib` is the unit
+      # tests, `--test mkfs_roundtrip --test mkfs_bin_smoke` is the two
+      # fixture-free integration files, and the debug `--lib` further down is
+      # the same unit tests rebuilt with overflow checks on (it exists for
+      # the PROFILE, not for the breadth -- see the long comment above it).
+      # Any one of them can empty out while the others stay full, so a single
+      # shared total would hide precisely the case a floor is for.
+      #
+      # The counts come from the last CI run on main at the time of writing,
+      # run 34985102618, read out of the job logs on 2026-09-17. They are the
+      # same on all three legs of the matrix. Floors sit a little under the
+      # measurement so ordinary churn does not trip them, and they move UP
+      # with the suite and never down.
+      #
+      # `awk '{s+=$4}'` rather than `bc`: this job runs on macOS too, and the
+      # sibling crates run the same shape on windows-latest where the default
+      # shell is pwsh. Keep it POSIX and keep it in one pipeline.
+      #
+      # EACH RUN IS A QUIET TIER. `scripts/tier.sh <tier> -- cargo test ...`
+      # (the same line `chore test:<tier>` runs) writes the whole run to
+      # tmp/logs/<tier>.log and prints one verdict line; a failure prints the
+      # log's tail, and a pass that printed more than the tier's measured
+      # budget exits 65. The floor below reads that log. The exit status is
+      # the suite's own -- tier.sh never pipes through `tee`, which is how
+      # `cmd | tee` reports a red suite as green -- so GitHub's `bash -e`
+      # stops the step on a failure before the floor is read. Every log is
+      # uploaded as the `test-logs-*` artifact at the end of the job.
+      - name: unit tests (release) with an executed-test floor
+        run: |
+          scripts/tier.sh unit -- cargo test --release --locked --lib
+          # Measured 637 executed. Floor 600, ~6% of slack.
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' tmp/logs/unit.log | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 600)"
+          if [ "$n" -lt 600 ]; then
+              echo "::error::only $n unit tests executed, floor is 600 -- 637 ran on 2026-09-17 in run 34985102618, and a run that executes less than that stopped early rather than passed"
+              exit 1
+          fi
+      # The floor here is 8 out of a measured 9, which looks like no margin at
+      # all and is the right number anyway: this selection is two named test
+      # binaries, so it does not drift the way a `--lib` count does, and what
+      # the floor has to catch is the drop to ZERO -- a renamed file leaving
+      # `--test mkfs_roundtrip` selecting nothing, which `cargo test` reports
+      # as a clean pass. A small floor above zero catches that; a floor of
+      # zero catches nothing. Raise it when the files grow.
+      - name: fixture-free integration tests with an executed-test floor
+        run: |
+          scripts/tier.sh mkfs -- cargo test --release --locked --test mkfs_roundtrip --test mkfs_bin_smoke
+          # Measured 9 executed (mkfs_roundtrip 3 + mkfs_bin_smoke 6). Floor 8.
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' tmp/logs/mkfs.log | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 8)"
+          if [ "$n" -lt 8 ]; then
+              echo "::error::only $n tests executed, floor is 8 -- 9 ran on 2026-09-17 in run 34985102618, and a run that executes less than that stopped early rather than passed"
+              exit 1
+          fi
+
+      # AND ONCE IN DEBUG, BECAUSE `overflow-checks` IS OFF IN RELEASE.
+      #
+      # Every other `cargo test` in this repository is `--release`, and
+      # `[profile.release]` sets `lto`, `codegen-units`, `opt-level` and
+      # `panic` but not `overflow-checks`, so it defaults off. A defect
+      # whose only symptom is an arithmetic-overflow panic therefore
+      # cannot be observed by any of them: the guard and the gate live in
+      # different build profiles.
+      #
+      # This is narrower than "arithmetic is untested". The crate's 37
+      # `checked_add`/`checked_sub`/`checked_mul` sites return `None` or
+      # an error, and release observes those perfectly well. What it
+      # cannot observe is the case where the ONLY symptom is the panic —
+      # which is what `signed_bytes_needed` was before it was fixed:
+      # negating `i64::MIN` panicked in debug, wrapped in release, and
+      # the wrap happened to reach the right answer through the
+      # function's fallback. Its four tests ran in CI and could not fail
+      # there.
+      #
+      # Measured on this branch by reintroducing that defect:
+      #
+      #     cargo test --release --locked --lib   ->  EXIT=0,   615 passed
+      #     cargo test --locked --lib             ->  EXIT=101, 611 passed, 4 failed
+      #                                               "attempt to negate with overflow"
+      #
+      # With the defect fixed, both are EXIT=0 and 615 passed — so the
+      # difference is the defect, not the profile.
+      #
+      # `--lib` only: the unit tests need no fixtures, so this costs a
+      # second compile and nothing else. It is deliberately not
+      # `--release`'s twin in coverage — it exists for the profile, not
+      # for the breadth.
+      #
+      # EXPECT_OVERFLOW_CHECKS ARMS THE ONE CHECK A TEXT SCAN CANNOT DO.
+      # This run has no `--release`, so overflow-checks are on, and it is
+      # what makes every arithmetic test in this crate mean anything --
+      # `signed_bytes_needed` above is the case that proved it.
+      #
+      # The variable tells `overflow_checks::the_build_the_gate_asked_to
+      # _check_does_check` in src/lib.rs that THIS is the run that must
+      # trap an overflow -- asking the build directly rather than
+      # inferring it from which spellings of "disabled" happen to be
+      # absent from Cargo.toml.
+      #
+      # Declared as an `env:` mapping rather than inline as
+      # `VAR=1 cargo test`. This job's matrix is ubuntu + macos, so the
+      # inline form would work here; the mapping is what the
+      # cross-platform siblings require, because an inline prefix is a
+      # PowerShell syntax error on windows-latest. The guard reads both
+      # spellings, and the copies of it stay one answer rather than
+      # several.
+      #
+      # Do not add `--release` to this run, and do not drop the variable:
+      # tests/ci_profile.rs reads this file and fails if no `cargo test`
+      # in it runs without `--release` while setting this. See #248.
+      #
+      # The floor below counts this run separately from the release `--lib`
+      # above even though the two select the same tests: they are separate
+      # invocations, and an edit that empties one empties neither the other
+      # nor the evidence. See the floor commentary above the release run.
+      - name: unit tests (debug, overflow checks armed) with an executed-test floor
+        run: |
+          scripts/tier.sh unit-debug -- cargo test --locked --lib
+          # Measured 637 executed. Floor 600, ~6% of slack.
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' tmp/logs/unit-debug.log | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 600)"
+          if [ "$n" -lt 600 ]; then
+              echo "::error::only $n unit tests executed under overflow checks, floor is 600 -- 637 ran on 2026-09-17 in run 34985102618, and a run that executes less than that stopped early rather than passed"
+              exit 1
+          fi
+        env:
+          EXPECT_OVERFLOW_CHECKS: "1"
+      # The whole of every tier, kept: the terminal got a verdict line and a
+      # failure's tail, and this is the rest. always(), because a failed run
+      # is when somebody wants it.
+      - name: upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: tmp/logs/
+          if-no-files-found: ignore
+
+  # Full integration suite — every unit AND integration test, with the
+  # read-path .img fixtures generated on the runner via ntfs-3g/mkntfs.
+  # This is the SAME gate as release.yml's `crates-test`, run here on
+  # every push/PR so fixture-driven regressions (e.g. a capi error
+  # contract drifting) are caught before a release tag, not at publish
+  # time. Ubuntu-only: mkntfs/ntfs-3g author the fixtures and don't
+  # exist on macOS. Authoritative format validation is still chkdsk
+  # (validate-mkfs-windows); this proves the crate's own read paths
+  # against real ntfs-3g-authored images.
+  integration:
+    name: full test suite (fixtures + integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out sibling repos
+        # Replaces `submodules: recursive`. The pins live in chores.yml,
+        # so CI and a developer's machine read the same declaration
+        # instead of restating it in YAML.
+        #
+        # chore is fetched from its release tarball at a PINNED version.
+        # An unpinned installer would make this workflow's behaviour
+        # depend on whatever chore shipped that morning, which is the
+        # opposite of what pinning the siblings is for.
+        #
+        # WINDOWS RUNNERS FALL BACK TO PLAIN CLONES. chore publishes
+        # darwin and linux builds only, and `uname -s` under Git Bash
+        # reports MINGW64_NT-*, so there is nothing to install. The
+        # fallback re-states the pins, which is exactly the duplication
+        # `chore siblings` exists to remove -- so it reads them OUT OF
+        # chores.yml rather than hardcoding them, and the single
+        # declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   asset="chore-0.11.0-linux-x86_64.tar.gz" ;;
+            Linux-aarch64)  asset="chore-0.11.0-linux-arm64.tar.gz" ;;
+            Darwin-arm64)   asset="chore-0.11.0-darwin-arm64.tar.gz" ;;
+            Darwin-x86_64)  asset="chore-0.11.0-darwin-x86_64.tar.gz" ;;
+            *)              asset="" ;;   # Windows: no chore build
+          esac
+
+          if [ -n "$asset" ]; then
+            curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v0.11.0/$asset" \
+              | sudo tar xz -C /usr/local/bin chore
+            chore siblings
+          else
+            core_ref="$(pin FS_CORE_REF)"
+            harness_ref="$(pin HARNESS_REF)"
+            echo "chore has no build for $(uname -s); cloning siblings directly"
+            echo "  am-fs-core              $core_ref"
+            echo "  fs-windows-test-harness $harness_ref"
+            git clone --quiet --depth 1 --branch "$core_ref" \
+              https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+            git clone --quiet --depth 1 --branch "$harness_ref" \
+              https://github.com/antimatter-studios/fs-windows-test-harness.git ../fs-windows-test-harness
+          fi
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+      # Fixture toolchain: ntfs-3g ships both mkntfs (format) and ntfs-3g
+      # (loop-mount), the only tools the fixture builder needs. ntfs-3g is
+      # used ONLY to author the fixtures — the test binary reads the images
+      # raw through the crate's own reader.
+      - name: Install fixture toolchain (mkntfs + ntfs-3g)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ntfs-3g
+      # Generate the read-path .img fixtures. With these present the
+      # fixture-driven integration tests (tests/ads.rs, tests/unicode.rs,
+      # …) run instead of self-skipping. The two Windows-authored fixtures
+      # (ntfs-attrlist / ntfs-compressed) self-skip when absent.
+      - name: Generate NTFS read-path fixtures
+        run: bash test-disks/build-ntfs-feature-images.sh
+      # FULL suite — every unit AND integration test, then clippy: a true
+      # mirror of release.yml's crates-test, so the release gate never sees
+      # a failure CI didn't — including a clippy lint that only a fixture-
+      # backed integration test file would trip. (The matrix `test` job also
+      # clippies on ubuntu; running it here keeps this gate self-contained
+      # and identical to crates-test even if that job is restructured.)
+      # --no-fail-fast reports every failing test in one run instead of
+      # aborting at the first failing binary (which masks the rest).
+      # AN EXECUTED-TEST FLOOR, AND THIS IS THE JOB THAT MOST NEEDS ONE.
+      #
+      # Everything this job is for depends on a step that ran earlier:
+      # `build-ntfs-feature-images.sh` writes the read-path .img fixtures.
+      #
+      # WHAT A MISSING FIXTURE ACTUALLY DOES, measured on 2026-09-18 at
+      # 6670e25 with no fixtures present: the suite FAILS. `cargo test
+      # --release --locked --no-fail-fast` exits 101 with 414 FAILED lines,
+      # because `tests/common/mod.rs`'s `open` panics ("did you run
+      # test-disks/build-ntfs-feature-images.sh?") and files like
+      # `tests/attr_resize.rs` panic in `std::fs::copy`. Only the two
+      # Windows-authored fixtures (ntfs-attrlist / ntfs-compressed) self-skip.
+      # So a half-failed fixture builder turns this job red through the
+      # suite's own exit status, before the floor is ever read.
+      #
+      # THE FLOOR IS FOR THE OTHER CASE: a selection that stops matching. A
+      # renamed file, a changed filter, a test binary that was not built --
+      # `cargo test` exits 0 on "0 passed; 0 failed", and nothing else in
+      # this workflow can tell that from a full run. #278, #289.
+      #
+      # Measured 2026-09-17 from run 34985102618 (job 104435064811, the last
+      # CI run on main at the time of writing): 1427 executed. Floor 1350,
+      # ~5% of slack. It moves up with the suite and never down.
+      # THE KNOWN-DEFECT TESTS, REPORTED NOT GATED. Two tests sat
+      # `#[ignore]`d over a link-count defect that had already been fixed
+      # (#149) and nothing said so, because nothing ran `--ignored`
+      # (#277). A pass here is the signal: the defect is fixed and the
+      # test should lose the attribute. Advisory, because the ones left
+      # are known-bad by construction and a permanent red gates nothing
+      # and means nothing.
+      - name: known defects (the ignored tests)
+        continue-on-error: true
+        run: chore test:ignored
+
+      - name: full suite with an executed-test floor
+        run: |
+          scripts/tier.sh suite -- cargo test --release --locked --no-fail-fast
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' tmp/logs/suite.log | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 1350)"
+          if [ "$n" -lt 1350 ]; then
+              echo "::error::only $n tests executed, floor is 1350 -- 1427 ran on 2026-09-17 in run 34985102618. The suite passed, so this is not a failing test and not a missing fixture (a missing fixture makes the suite FAIL, loudly). Something stopped tests from being selected: a renamed or unbuilt test binary, or a changed filter. Read tmp/logs/suite.log, uploaded as test-logs-integration."
+              exit 1
+          fi
+      - run: scripts/tier.sh clippy -- cargo clippy --locked --all-targets -- -D warnings
+      - name: upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-integration
+          path: tmp/logs/
+          if-no-files-found: ignore
+
+  # NTFS validation runs ONLY on the Windows side via Microsoft's
+  # chkdsk. That is the only authoritative validator for NTFS, full
+  # stop. Our own crate's read-path round-trip runs on every PR via
+  # `cargo test` — that's the cheap coverage. The real verdict is
+  # chkdsk's, and chkdsk only runs on Windows.
+  #
+  # Trigger validate-mkfs-windows manually via "Run workflow" while
+  # iterating on the mkfs implementation. Setting up the Windows side is
+  # documented where the harness lives: docs/vm-setup.md in
+  # fs-windows-test-harness, which README.md's matrix section links.
+
+  # AddressSanitizer smoke test (§5.5). Catches OOB reads/writes in
+  # the raw-byte buffer manipulations (mft_io / data_runs / attr_io /
+  # ea_io) that the regular test suite would otherwise let through
+  # silently. Nightly toolchain (ASan needs -Zsanitizer=address);
+  # non-blocking via continue-on-error so nightly toolchain breakage
+  # doesn't block PRs against stable.
+  #
+  # THE NAME SAYS WHAT THE JOB IS, WHICH IT DID NOT USED TO (#278).
+  #
+  # This was `name: unit tests`, and a job's `name:` IS its check-run
+  # name, so `unit tests` was what branch protection required and what a
+  # reviewer read. It is not the unit tests -- those are the `test`
+  # matrix above, reporting as test-ubuntu-latest, test-ubuntu-24.04-arm
+  # and test-macos-latest. A green `unit tests` tick here would have
+  # stayed green with the cargo invocation below deleted.
+  #
+  # `(advisory)` is in the name on purpose, and it is the part to keep.
+  # This job must not GATE anything: the required set lives in
+  # .github-guard and deliberately does not name it, and the next person
+  # to edit that file reads this name first.
+  #
+  # ADVISORY IS NOT THE SAME AS SILENT, which is what `continue-on-error:
+  # true` on the job made it (#158). That key cannot tell "nightly stopped
+  # building this crate" -- which must not stop work on stable -- from
+  # "ASan found an out-of-bounds write", which is the entire reason the
+  # job exists. Both produced the same green tick.
+  #
+  # So the toleration is on the TOOLCHAIN STEP only. A nightly that will
+  # not install leaves the job green and says so; a sanitizer finding
+  # turns it red. Red here blocks nothing, because the job is not a
+  # required check -- it is a signal a human reads, and a signal that
+  # cannot go red is not one.
+  asan:
+    name: unit tests under ASan (nightly toolchain, advisory)
+    runs-on: ubuntu-latest
+    env:
+      # PINNED, like every other toolchain in both workflows. It floated on
+      # `@nightly` while the rest pin 1.95.0, and combined with the old
+      # blanket continue-on-error a nightly that stopped building this
+      # crate simply stopped testing it, indefinitely, with no signal.
+      # Move this deliberately; the job says when it cannot install.
+      ASAN_TOOLCHAIN: nightly-2026-09-01
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out sibling repos
+        # Replaces `submodules: recursive`. The pins live in chores.yml,
+        # so CI and a developer's machine read the same declaration
+        # instead of restating it in YAML.
+        #
+        # chore is fetched from its release tarball at a PINNED version.
+        # An unpinned installer would make this workflow's behaviour
+        # depend on whatever chore shipped that morning, which is the
+        # opposite of what pinning the siblings is for.
+        #
+        # WINDOWS RUNNERS FALL BACK TO PLAIN CLONES. chore publishes
+        # darwin and linux builds only, and `uname -s` under Git Bash
+        # reports MINGW64_NT-*, so there is nothing to install. The
+        # fallback re-states the pins, which is exactly the duplication
+        # `chore siblings` exists to remove -- so it reads them OUT OF
+        # chores.yml rather than hardcoding them, and the single
+        # declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   asset="chore-0.11.0-linux-x86_64.tar.gz" ;;
+            Linux-aarch64)  asset="chore-0.11.0-linux-arm64.tar.gz" ;;
+            Darwin-arm64)   asset="chore-0.11.0-darwin-arm64.tar.gz" ;;
+            Darwin-x86_64)  asset="chore-0.11.0-darwin-x86_64.tar.gz" ;;
+            *)              asset="" ;;   # Windows: no chore build
+          esac
+
+          if [ -n "$asset" ]; then
+            curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v0.11.0/$asset" \
+              | sudo tar xz -C /usr/local/bin chore
+            chore siblings
+          else
+            core_ref="$(pin FS_CORE_REF)"
+            harness_ref="$(pin HARNESS_REF)"
+            echo "chore has no build for $(uname -s); cloning siblings directly"
+            echo "  am-fs-core              $core_ref"
+            echo "  fs-windows-test-harness $harness_ref"
+            git clone --quiet --depth 1 --branch "$core_ref" \
+              https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+            git clone --quiet --depth 1 --branch "$harness_ref" \
+              https://github.com/antimatter-studios/fs-windows-test-harness.git ../fs-windows-test-harness
+          fi
+      - id: nightly
+        continue-on-error: true
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.ASAN_TOOLCHAIN }}
+          components: rust-src
+      - name: Say so if the pinned nightly is unavailable
+        if: steps.nightly.outcome != 'success'
+        run: |
+          echo "::notice::${ASAN_TOOLCHAIN} could not be installed, so nothing was sanitized in this run. This job is advisory and stays green; bump ASAN_TOOLCHAIN in ci.yml."
+      - name: Cache cargo registry
+        if: steps.nightly.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: asan-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run unit tests under ASan
+        # No continue-on-error: a finding here is the job's whole output.
+        if: steps.nightly.outcome == 'success'
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+        run: |
+          scripts/tier.sh asan -- cargo "+$ASAN_TOOLCHAIN" test --release --locked --lib \
+            --target x86_64-unknown-linux-gnu
+          # A floor on an ADVISORY job, which is not a contradiction. This job
+          # cannot gate a merge (it is not in .github-guard's required set),
+          # so the only thing it produces is a signal a human reads -- and a
+          # signal that reads green because it sanitized nothing is worse
+          # than no signal.
+          # ASan needs a nightly toolchain, `-Zsanitizer=address` and an
+          # explicit `--target`; every one of those can stop selecting tests
+          # without stopping the job.
+          #
+          # Measured 2026-09-17 from run 34985102618 (job 104435065061): 637
+          # executed, the same `--lib` set the stable legs run. Floor 600.
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' tmp/logs/asan.log | awk '{s+=$4} END{print s+0}')
+          echo "tests executed under ASan: $n (floor 600)"
+          if [ "$n" -lt 600 ]; then
+              echo "::error::only $n tests executed under ASan, floor is 600 -- 637 ran on 2026-09-17 in run 34985102618, and a run that executes less than that sanitized nothing rather than passed"
+              exit 1
+          fi
+      - name: upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-asan
+          path: tmp/logs/
+          if-no-files-found: ignore
+
+  # Windows-side validation: chkdsk is the canonical "is this a valid
+  # NTFS volume?" check, against the same code Microsoft ships.
+  # Triggers:
+  #   - tag pushes (release candidates)
+  #   - manual `workflow_dispatch` from the GitHub Actions UI
+  #   - a pull request that changes the code deciding the bytes on disk
+  #     (see the `changes` job below)
+  #
+  # IT IS A REQUIRED CHECK, AND A SKIPPED REQUIRED CHECK COUNTS AS
+  # SATISFIED. Until #266 it ran on tags and dispatch only, so on every
+  # pull request it reported `skipped` and the requirement was met by a
+  # job that had not run -- the format gate advertised in front of every
+  # merge had never seen one. windows-latest provisioning is ~3x slower
+  # than ubuntu, which is why it still does not run on every PR; it runs
+  # on the ones where it could catch something. A PR that touches none of
+  # those paths still satisfies the requirement by skipping, which is the
+  # residue of this design and is deliberate.
+  #
+  # Windows Mount-DiskImage doesn't accept raw .img files, so we wrap
+  # the binary's output in a VHD container via vhd_tool (from
+  # antimatter-studios/rust-img-vhd, an MIT-licensed in-house writer).
+  #
+  # Diagnostics are aggressive: we capture chkdsk's full output,
+  # Get-Volume metadata, and fsutil dumps as artifacts on every run
+  # (success or failure) so we can compare what Windows sees across
+  # commits. This is the iteration loop for finding mkfs bugs —
+  # chkdsk's error text tells us exactly which on-disk structure is
+  # wrong.
+  # Which paths a pull request touched. A tiny ubuntu job rather than a
+  # third-party action: the answer is one `git diff --name-only` against
+  # the merge base, and a filter action would be another unpinned
+  # dependency in front of the gate it decides.
+  changes:
+    name: what this pull request touches
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      mkfs: ${{ steps.filter.outputs.mkfs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # THE CODE THAT DECIDES BYTES ON DISK, plus the workflow that
+          # validates them. Deliberately not "any .rs": a change to the
+          # read path cannot make chkdsk unhappy about a volume, and
+          # paying three minutes of Windows for it teaches people to
+          # merge without reading the gate.
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          echo "$changed" | sed 's/^/  /'
+          if echo "$changed" | grep -qE '^(src/(mkfs|sds|record_build|idx_block|index_io|write)\.rs|src/bin/mkfs_ntfs\.rs|test-matrix\.json|fs-windows-test-harness\.toml|scripts/fs-windows-test-harness/|\.github/workflows/ci\.yml)'; then
+              echo "mkfs=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::this pull request changes format-relevant code, so the Windows chkdsk gate will run"
+          else
+              echo "mkfs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate-mkfs-windows:
+    name: validate rust-ntfs format (Windows chkdsk)
+    runs-on: windows-latest
+    needs: [changes]
+    # `always()` because `needs: [changes]` would otherwise skip this job
+    # whenever `changes` itself was skipped -- which is every tag push and
+    # every manual run, the two cases that must always validate.
+    if: >-
+      always() && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.mkfs == 'true'
+      )
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out sibling repos
+        # Replaces `submodules: recursive`. The pins live in chores.yml,
+        # so CI and a developer's machine read the same declaration
+        # instead of restating it in YAML.
+        #
+        # chore is fetched from its release tarball at a PINNED version.
+        # An unpinned installer would make this workflow's behaviour
+        # depend on whatever chore shipped that morning, which is the
+        # opposite of what pinning the siblings is for.
+        #
+        # WINDOWS RUNNERS FALL BACK TO PLAIN CLONES. chore publishes
+        # darwin and linux builds only, and `uname -s` under Git Bash
+        # reports MINGW64_NT-*, so there is nothing to install. The
+        # fallback re-states the pins, which is exactly the duplication
+        # `chore siblings` exists to remove -- so it reads them OUT OF
+        # chores.yml rather than hardcoding them, and the single
+        # declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)   asset="chore-0.11.0-linux-x86_64.tar.gz" ;;
+            Linux-aarch64)  asset="chore-0.11.0-linux-arm64.tar.gz" ;;
+            Darwin-arm64)   asset="chore-0.11.0-darwin-arm64.tar.gz" ;;
+            Darwin-x86_64)  asset="chore-0.11.0-darwin-x86_64.tar.gz" ;;
+            *)              asset="" ;;   # Windows: no chore build
+          esac
+
+          if [ -n "$asset" ]; then
+            curl -fsSL "https://github.com/antimatter-studios/chore/releases/download/v0.11.0/$asset" \
+              | sudo tar xz -C /usr/local/bin chore
+            chore siblings
+          else
+            core_ref="$(pin FS_CORE_REF)"
+            harness_ref="$(pin HARNESS_REF)"
+            echo "chore has no build for $(uname -s); cloning siblings directly"
+            echo "  am-fs-core              $core_ref"
+            echo "  fs-windows-test-harness $harness_ref"
+            git clone --quiet --depth 1 --branch "$core_ref" \
+              https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+            git clone --quiet --depth 1 --branch "$harness_ref" \
+              https://github.com/antimatter-studios/fs-windows-test-harness.git ../fs-windows-test-harness
+          fi
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - name: Install vhd_tool from rust-img-vhd
+        # Builds the in-house VHD writer (~30 s with no cache). Pinned
+        # so a future push to main cannot silently break CI. The binary
+        # lands in ~/.cargo/bin which is on PATH after
+        # dtolnay/rust-toolchain.
+        #
+        # v0.3.5 RATHER THAN v0.2.0. The release workflow's copy of this
+        # was three releases behind and moved; this one was left, so the
+        # two jobs built their test images with different versions of the
+        # same tool -- and this one with a version predating that crate's
+        # own hardening.
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v0.3.5 https://github.com/antimatter-studios/rust-img-vhd.git $env:RUNNER_TEMP/rust-img-vhd
+          # am-img-vhd path-deps am-fs-core (`../rust-fs-core`), so the
+          # sibling must sit beside it, at a version satisfying its
+          # `version = "0.2"` requirement.
+          git clone --depth 1 --branch v0.2.11 https://github.com/antimatter-studios/rust-fs-core.git $env:RUNNER_TEMP/rust-fs-core
+          cargo install --path $env:RUNNER_TEMP/rust-img-vhd --bin vhd_tool
+      - name: Build rust-ntfs (Windows)
+        run: cargo build --release --locked --bin rust-ntfs
+      - name: Generate raw image and wrap in GPT-partitioned VHD
+        shell: pwsh
+        run: |
+          pwsh -File scripts/fs-windows-test-harness/ci-make-image.ps1
+      - name: Mount VHD and capture pre-chkdsk diagnostics
+        id: mount
+        shell: pwsh
+        # Don't fail the step on individual cmdlet errors — fsutil reports
+        # "disk corrupt" via a non-zero exit, which causes pwsh to throw
+        # under "Stop" mode. We want to gather every diagnostic regardless.
+        continue-on-error: true
+        run: |
+          pwsh -File scripts/fs-windows-test-harness/ci-mount-and-diagnose.ps1
+      - name: Build a reference Microsoft-formatted NTFS volume + diff against ours
+        # The whole point of this step is to PROVE which bytes are
+        # wrong in our mkfs_ntfs output, not guess. We format an
+        # identically-sized volume with Microsoft's own format.exe,
+        # then dump the same byte ranges from both. Any difference
+        # in the boot sector or first few MFT records is by-definition
+        # what mkfs_ntfs got wrong vs. the canonical reference.
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          pwsh -File scripts/fs-windows-test-harness/ci-reference-volume.ps1
+      - name: chkdsk passes
+        id: chkdsk
+        shell: pwsh
+        # Always run, capture each result separately. NTFS Event 55 in
+        # iter3 confirmed the kernel detects corruption on access — we
+        # need chkdsk to actually surface what's wrong. /scan failed on
+        # 64 MiB due to shadow-copy storage; with the volume bumped to
+        # 256 MiB it should run.
+        continue-on-error: true
+        run: |
+          . scripts/fs-windows-test-harness/_verdict.ps1
+          $letter = "${{ steps.mount.outputs.letter }}"
+          New-Item -ItemType Directory -Path diag -Force | Out-Null
+          if (-not $letter) {
+              "no drive letter from mount step — skipping chkdsk" |
+                  Tee-Object diag/chkdsk-skipped.txt
+              "scan_exit=99" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              exit 0
+          }
+
+          # Pass 1: plain `chkdsk DRIVE:` — read-only, no /scan, no /F.
+          # On a volume already flagged corrupt, this surfaces detailed
+          # MFT/index/attribute errors without needing shadow copy.
+          $proc1 = Start-Process -FilePath chkdsk.exe `
+            -ArgumentList "${letter}:" `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput diag/chkdsk-readonly.txt `
+            -RedirectStandardError diag/chkdsk-readonly-stderr.txt
+          "chkdsk ${letter}: (read-only) exit: $($proc1.ExitCode)" |
+              Tee-Object diag/chkdsk-readonly-exit.txt | Out-Null
+          Show-Verdict "chkdsk ${letter}: (read-only)" diag/chkdsk-readonly.txt $proc1.ExitCode
+
+          # Pass 2: `chkdsk /scan` — needs shadow-copy space which now
+          # fits in our 256 MiB volume. Different code path than
+          # read-only and surfaces additional issues.
+          $proc2 = Start-Process -FilePath chkdsk.exe `
+            -ArgumentList "${letter}:","/scan" `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput diag/chkdsk-scan.txt `
+            -RedirectStandardError diag/chkdsk-scan-stderr.txt
+          "chkdsk ${letter}: /scan exit: $($proc2.ExitCode)" |
+              Tee-Object diag/chkdsk-scan-exit.txt | Out-Null
+          Show-Verdict "chkdsk ${letter}: /scan" diag/chkdsk-scan.txt $proc2.ExitCode
+
+          # The job verdict is the /scan exit code (chkdsk's standard).
+          # Read-only + /scan agreement = good signal; disagreement = bug.
+          $exit = $proc2.ExitCode
+          if ($exit -ne 0) {
+            Write-Host "::error::chkdsk /scan reported issues (exit $exit)"
+            "chkdsk /scan failed (exit $exit) — see diag/chkdsk-*.txt" `
+              | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+          "scan_exit=$exit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Round-trip stress (create + read + delete)
+        # Even if chkdsk /scan was clean, exercise the volume with real
+        # I/O — a malformed $Bitmap or attribute table can pass /scan
+        # but blow up on the first write. If this step fails, our mkfs
+        # produced a "looks valid but isn't usable" volume.
+        #
+        # `continue-on-error` STAYS, AND THE `id` IS WHY IT CAN (#207/#276).
+        # The deferral is deliberate: a throw here must not stop the
+        # post-round-trip scan or the diagnostics upload, because the
+        # state of the volume AFTER the failed I/O is the evidence. What
+        # was missing is the other half of the deferral — the verdict has
+        # to be collected. `id: roundtrip` is what lets the final gate
+        # read `steps.roundtrip.outcome`; without it this step's `throw`
+        # was swallowed and nothing could ever see it.
+        id: roundtrip
+        if: steps.chkdsk.outputs.scan_exit == '0'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $letter = "${{ steps.mount.outputs.letter }}"
+          $root = "${letter}:\"
+          $tiny = Join-Path $root "tiny.txt"
+          $medium = Join-Path $root "medium.bin"
+          $big = Join-Path $root "big.bin"
+          # Create a few files of varying sizes — covers resident
+          # ($DATA in MFT record), small non-resident, and one big
+          # enough to allocate multiple clusters. Use raw byte
+          # writes (no Out-File encoding nuances) for determinism.
+          [System.IO.File]::WriteAllText($tiny, "hello")
+          [System.IO.File]::WriteAllBytes($medium, (New-Object byte[] 4096))
+          [System.IO.File]::WriteAllBytes($big, (New-Object byte[] (1MB)))
+          Get-ChildItem $root | Format-List | Out-File diag/post-write-listing.txt
+          # Read back. If $Bitmap allocation lied about which clusters
+          # we got, this returns wrong bytes.
+          $readback = [System.IO.File]::ReadAllText($tiny)
+          if ($readback -ne "hello") { throw "round-trip read mismatch on tiny.txt" }
+          # Delete + verify they're gone.
+          Remove-Item $tiny, $medium, $big
+          $remaining = Get-ChildItem $root -Force | Where-Object { -not $_.PSIsContainer }
+          if ($remaining) { throw "files still present after delete" }
+          "round-trip OK" | Out-File diag/round-trip.txt
+      - name: chkdsk /scan (post round-trip)
+        # THE SCAN THAT ACTUALLY SEES A WRITE-PATH REGRESSION (#207/#276).
+        # The first scan reads a freshly formatted volume nothing has
+        # written to yet; this one reads it after real file I/O, so it is
+        # the one that notices a $Bitmap or attribute table that only
+        # corrupts itself under use. It reports its exit code the same way
+        # the first scan does — `scan_exit` on this step's outputs — so
+        # the final gate can name which scan failed rather than inferring.
+        id: chkdsk_after
+        if: steps.chkdsk.outputs.scan_exit == '0'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $letter = "${{ steps.mount.outputs.letter }}"
+          $log = "diag/chkdsk-scan-after-roundtrip.txt"
+          $proc = Start-Process -FilePath chkdsk.exe `
+            -ArgumentList "${letter}:","/scan" `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput $log
+          $exit = $proc.ExitCode
+          $n = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+          Write-Host "chkdsk /scan (post round-trip): exit $exit ($n lines) -- $log"
+          if ($exit -ne 0 -and (Test-Path $log)) {
+              Write-Host "--- last 40 lines of $log ---"
+              Get-Content $log -Tail 40
+          }
+          "chkdsk-after-roundtrip exit: $exit" | Out-File diag/chkdsk-exit-after.txt
+          if ($exit -ne 0) {
+            Write-Host "::error::chkdsk /scan after the round-trip reported issues (exit $exit) — the volume was well-formed at creation and is not now"
+            "post-round-trip chkdsk /scan failed (exit $exit) — see diag/chkdsk-scan-after-roundtrip.txt" `
+              | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+          "scan_exit=$exit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Dismount
+        if: always()
+        shell: pwsh
+        run: |
+          Dismount-DiskImage -ImagePath "$pwd\wrapper.vhd" -ErrorAction SilentlyContinue | Out-Null
+      - name: Upload diagnostics
+        # Always upload — successful runs also benefit from having the
+        # baseline metadata captured for cross-commit comparison.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntfs-windows-diag-${{ github.run_id }}
+          path: diag/
+          if-no-files-found: warn
+      - name: Fail the job if chkdsk or the round-trip found issues
+        # We deferred failure earlier (continue-on-error) so the
+        # artifact upload always fires. Fail the job here once
+        # everything is captured.
+        #
+        # THE DEFERRAL HAS TO COLLECT EVERY VERDICT, NOT ONE (#207/#276).
+        # This read `steps.chkdsk.outputs.scan_exit` alone — the scan
+        # taken BEFORE any I/O. The round-trip's `throw` and the
+        # post-round-trip scan's exit code were written to diag/ and
+        # discarded, so a volume that is well-formed at creation and then
+        # returns wrong bytes, refuses a delete, or corrupts itself under
+        # file I/O produced a green tick. In release.yml that tick is the
+        # last thing between a tag and crates.io.
+        #
+        # A skipped step's `outcome` is `skipped`, not `success`, so when
+        # the first scan fails and the two later steps do not run, the
+        # clauses below all fire and the first one names the real cause.
+        # That is why the body reports each verdict rather than throwing
+        # a single message.
+        if: >-
+          steps.chkdsk.outputs.scan_exit != '0' ||
+          steps.roundtrip.outcome != 'success' ||
+          steps.chkdsk_after.outcome != 'success' ||
+          steps.chkdsk_after.outputs.scan_exit != '0'
+        shell: pwsh
+        run: |
+          $failures = @()
+          if ($env:scan_exit -ne '0') {
+            $failures += "chkdsk /scan (pre round-trip) exit code was $($env:scan_exit)"
+          }
+          if ($env:roundtrip_outcome -ne 'success') {
+            $failures += "round-trip stress outcome was $($env:roundtrip_outcome) (create + read + delete on the mounted volume)"
+          }
+          if ($env:chkdsk_after_outcome -ne 'success' -or $env:chkdsk_after_exit -ne '0') {
+            $failures += "chkdsk /scan (post round-trip) outcome was $($env:chkdsk_after_outcome), exit code '$($env:chkdsk_after_exit)'"
+          }
+          $failures | ForEach-Object { Write-Host "::error::$_" }
+          throw "Windows validation failed: $($failures -join '; ') — see uploaded diag/ artifact"
+        env:
+          scan_exit: ${{ steps.chkdsk.outputs.scan_exit }}
+          roundtrip_outcome: ${{ steps.roundtrip.outcome }}
+          chkdsk_after_outcome: ${{ steps.chkdsk_after.outcome }}
+          chkdsk_after_exit: ${{ steps.chkdsk_after.outputs.scan_exit }}

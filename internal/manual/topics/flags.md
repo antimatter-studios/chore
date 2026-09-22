@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/cli/cli.go:69 -->
+<!-- sources: internal/cli/cli.go:70 -->
 ---
 title: Flags
 summary: every flag chore itself takes

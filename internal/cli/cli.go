@@ -23,6 +23,7 @@ import (
 
 	"github.com/antimatter-studios/chore/internal/buildinfo"
 	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/cigate"
 	"github.com/antimatter-studios/chore/internal/loader"
 	"github.com/antimatter-studios/chore/internal/manual"
 	"github.com/antimatter-studios/chore/internal/run"
@@ -148,6 +149,10 @@ flags:
   -h, --help        this text
       --version     print the version
 
+built in:
+  chore ci:gate         one required check gates a pull request, and it stands
+                        for every job — see chore help ci-gate
+
 manual:
   chore help            list the built-in manual's topics
   chore help <topic>    read one, e.g. chore help hooks
@@ -240,6 +245,32 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		errUI.Errorf("%v", err)
 		return 1
+	}
+
+	// `chore ci:gate` is built in, and takes its configuration from the file that
+	// has just loaded rather than from the command line. A project defining a task
+	// by that name still wins, the same way one defining `help` or `version` does.
+	if len(rest) > 0 && rest[0] == "ci:gate" {
+		if _, ok := project.Tasks["ci:gate"]; !ok {
+			// `chore ci:gate --help` is a question, and a flag that reads as "tell me
+			// about this" must never do anything.
+			if wantsHelp(rest[1:]) {
+				return manualHelp(out, errUI, []string{"ci-gate"})
+			}
+			if len(rest) > 1 {
+				errUI.Errorf("ci:gate takes no arguments — configure it under `ci_gate:` in %s, so a hand-typed run reaches the same verdict CI did", filepath.Base(path))
+				return 2
+			}
+			// Checked here as well as on the path that runs a task: a consumer
+			// pinning `chore_min_version:` to the release that introduced this is
+			// telling an older binary to refuse the file with a message that names
+			// the cause, rather than reporting `ci:gate` as a task it cannot find.
+			if err := checkChoreVersion(project, buildinfo.Get(Version, BuildDate)); err != nil {
+				errUI.Errorf("%v", err)
+				return 1
+			}
+			return ciGate(out, errUI, project)
+		}
 	}
 
 	// No task named, or an explicit --list: describe what is available. This is
@@ -1163,4 +1194,92 @@ func projectDefines(name, file string) bool {
 	}
 	_, ok := p.Tasks[name]
 	return ok
+}
+
+// chore:manual ci-gate
+// title: The CI gate
+// summary: one required check, and it stands for every job
+// aliases: ci, gate
+// order: 10
+//
+// # The CI gate
+//
+//     chore ci:gate
+//
+// Branch protection names checks, and a check is a job name. Naming each job
+// means the list has to be edited whenever one is renamed, split into a matrix
+// leg, or added — and until someone does, the new work is required by nobody.
+// The opposite spelling is worse: a required check no job produces reads as
+// permanently pending, and with `enforce_admins` on nothing merges and there is
+// no failure to point at.
+//
+// So protection names ONE job — `ci-ok` — which `needs:` every gating job and
+// fails unless each of them concluded success. `chore ci:gate` is what keeps
+// that true, and it reports every failure at once: a repository being brought
+// onto the gate wants the whole list in one run rather than one per push.
+//
+// ## What it checks
+//
+// - **the gate workflow runs on `pull_request`.** A `release.yml` on a tag fires
+//   after the merge it would be gating, and a nightly-cron `fuzz.yml` never sees
+//   a pull request at all. Requiring a check from either blocks every merge
+//   forever, with nothing to point at.
+// - **the aggregate `needs:` every other gating job**, and `needs:` does not name
+//   a job that does not exist — GitHub refuses to run a workflow with an
+//   unresolvable `needs:`, so the one required check never reports.
+// - **the aggregate carries `if: always()`.** `${{ always() }}` is the same
+//   expression and passes; `always() && github.event_name == 'pull_request'` does
+//   not, because a condition that can be false is a condition under which the one
+//   required check does not report.
+// - **`.github-guard` requires the aggregate and nothing else.** It is git-config
+//   format, and a `required =` inside a comment is not a requirement.
+// - **a job carrying `if:` or `continue-on-error:`** must be BOTH declared
+//   non-gating AND left out of `needs:`, and the reverse: an exemption for a job
+//   that does not exist is an exemption waiting to silently cover a future job of
+//   that name.
+//
+// ## Configuring it
+//
+// Nothing to write for a repository that answers the defaults —
+// `.github/workflows/ci.yml`, an aggregate called `ci-ok`, `.github-guard`, and
+// no exemptions. For the rest:
+//
+//     ci_gate:
+//       workflow: .github/workflows/ci.yml
+//       aggregate: ci-ok
+//       guard: .github-guard
+//       non_gating: [asan]
+//
+// **There are no flags for these, deliberately.** The gate's verdict has to be
+// the one CI got, and a flag is what a hand-typed run omits: `chore ci:gate`
+// with the exemption forgotten reports a clean gate on a repository whose
+// exemption it never read.
+//
+// `non_gating:` is checked against the workflow in both directions. A job named
+// here that carries neither key fails — exempting a job that runs
+// unconditionally takes a working gate off a job whose failures are real.
+
+// ciGate runs the built-in CI gate against the project's repository root.
+func ciGate(out, errUI *ui.UI, project *chorefile.Project) int {
+	var cfg chorefile.CIGate
+	if project.Root.CIGate != nil {
+		cfg = *project.Root.CIGate
+	}
+	cfg = cigate.Defaults(cfg)
+	failures := cigate.Check(project.RootDir, cfg)
+	if len(failures) == 0 {
+		out.Raw(fmt.Sprintf("ci:gate: %s requires `%s`, and `%s` needs every job in %s\n",
+			cfg.Guard, cfg.Aggregate, cfg.Aggregate, cfg.Workflow))
+		return 0
+	}
+	// Every failure, not the first, and each one says what it costs. A check that
+	// fires with an unhelpful message is a check that gets silenced rather than
+	// fixed.
+	var b strings.Builder
+	for _, f := range failures {
+		fmt.Fprintf(&b, "  - %s\n", f)
+	}
+	errUI.Errorf("the CI gate is not holding in %s:\n\n%s\nEach of these is a way for a job to stop gating a merge with nothing failing. `chore help ci-gate` says what each one costs.",
+		project.RootDir, b.String())
+	return 1
 }

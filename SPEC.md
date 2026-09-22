@@ -663,6 +663,7 @@ internal/shell/            (os/exec)          run and capture shell
 internal/tmpl/             (chorefile, shell) scope, precedence, rendering
 internal/loader/           (chorefile, tmpl)  read files, resolve includes
 internal/fingerprint/      (chorefile, tmpl, shell)  status/sources/generates
+internal/cigate/           (chorefile)        the built-in `chore ci:gate`
 internal/run/              (all of the above) graph, scheduling, execution
 internal/cli/              (all of the above) flags, arg binding, --list
 ```
@@ -805,6 +806,28 @@ chore [flags] <task> [args...] [-- extra]
 
 Everything after `--` becomes `.CLI_ARGS`. Unknown task → error listing near
 matches. No task → `--list`.
+
+### internal/cigate
+
+`chore ci:gate` — the one built-in that is not about chore itself. It checks that
+branch protection names ONE check and that the check stands for every job:
+the gate workflow runs on `pull_request`, the aggregate `needs:` every gating job
+and nothing that does not exist, it carries `if: always()` (and not a narrowing of
+it), `.github-guard` requires the aggregate alone, and every job carrying a
+job-level `if:` or `continue-on-error:` is both declared non-gating and left out
+of `needs:` — checked in both directions, so neither list can drift away from the
+other.
+
+Configuration is the optional top-level `ci_gate:` block and **never a flag**: the
+verdict has to be the one CI reached, and a flag is what a hand-typed run omits.
+A project defining a `ci:gate` TASK still wins, the same way one defining `help`
+or `version` does.
+
+It lives here rather than in a repository's test suite because it tests nothing
+that repository ships — it parses a YAML file and compares strings — and because
+a test suite with an executed-test floor has its own counts inflated by
+meta-tests. It was a Rust crate, `am-ci-guard`; the port dropped half of it,
+which was hand-rolled untyped-YAML tree walking a typed struct does not need.
 
 ## Acceptance
 
