@@ -290,14 +290,6 @@ real shell — with real `pipefail` — possible.
 - **No multi-target invocation.** `chore a b` does not mean "run a then b"; that is
   `chore a && chore b`, which is what people type anyway. Giving up the make grammar is
   what buys arguments.
-- **`chore ci:gate`** checks that branch protection names one check and that the
-  check stands for every job: the gate workflow runs on `pull_request`, the
-  aggregate `needs:` every gating job, it carries `if: always()` rather than a
-  narrowing of it, `.github-guard` requires the aggregate alone, and a job
-  carrying `if:` or `continue-on-error:` is both declared non-gating and left out
-  of `needs:`. Configured by an optional `ci_gate:` block and never by a flag —
-  the verdict has to be the one CI reached, and a flag is what a hand-typed run
-  omits. `chore help ci-gate`.
 
 ## Reuse without new features
 

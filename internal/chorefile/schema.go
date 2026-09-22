@@ -53,14 +53,6 @@ type File struct {
 	Env       map[string]Var      `yaml:"env"`
 	Tasks     map[string]*Task    `yaml:"tasks"`
 	Lifecycle *Lifecycle          `yaml:"lifecycle"`
-	// CIGate configures `chore ci:gate`, and is optional: with no block at all
-	// the defaults are what every repository in the family already uses.
-	//
-	// It is a FILE key rather than a set of flags on purpose. The gate's verdict
-	// has to be the same one CI got, and a flag is a thing a hand-typed run omits
-	// — `chore ci:gate` with the exemption flag forgotten reports a clean gate on
-	// a repository whose exemption it never read.
-	CIGate *CIGate `yaml:"ci_gate"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -96,32 +88,6 @@ type File struct {
 	// so a global config can be declared once at the root without every include
 	// listing every name, and a file still wins on any name it defines itself.
 	Inherit bool `yaml:"-"`
-}
-
-// CIGate is the per-repository half of `chore ci:gate` — the three things that
-// genuinely differ between repositories, and nothing else. An option nobody
-// needs is an option that lets a repository opt out of the rule.
-type CIGate struct {
-	// Workflow that gates, relative to the repository root. Whatever it is, it
-	// has to run on `pull_request`; nothing else can gate a pull request.
-	// Default `.github/workflows/ci.yml`.
-	Workflow string `yaml:"workflow"`
-	// Aggregate job's id — the single check branch protection names.
-	// Default `ci-ok`.
-	Aggregate string `yaml:"aggregate"`
-	// Guard is the file declaring what protection requires, in git-config format.
-	// Default `.github-guard`.
-	Guard string `yaml:"guard"`
-	// NonGating names the jobs that deliberately do not gate, and so are left out
-	// of the aggregate's `needs:`.
-	//
-	// Each one must carry a job-level `if:` or `continue-on-error:` — the
-	// declaration is checked against the workflow BOTH ways, so a job that stops
-	// being conditional and a list nobody updated cannot disagree in silence. The
-	// canonical case is rust-fs-ntfs's `asan`: an AddressSanitizer build on the
-	// nightly toolchain, `continue-on-error: true` so nightly breakage cannot
-	// block a pull request against stable.
-	NonGating []string `yaml:"non_gating"`
 }
 
 // chore:manual hooks
