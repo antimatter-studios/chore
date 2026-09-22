@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/cli/cli.go:1186 -->
+<!-- sources: internal/cli/cli.go:1199 -->
 ---
 title: The CI gate
 summary: one required check, and it stands for every job

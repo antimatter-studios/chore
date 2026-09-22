@@ -1836,3 +1836,33 @@ func TestCIGateTakesNoArguments(t *testing.T) {
 		t.Fatalf("code %d, stderr %q", got.code, got.stderr)
 	}
 }
+
+// `chore ci:gate --help` is a question, and answers with the manual rather than
+// running anything.
+func TestCIGateHelpAnswersAndRunsNothing(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml": "version: \"3\"\ntasks:\n  build:\n    cmds: ['true']\n",
+	})
+	got := runMain(t, dir, "ci:gate", "--help")
+	if got.code != 0 || !strings.Contains(got.stdout, "The CI gate") {
+		t.Fatalf("code %d, stdout %q, stderr %q", got.code, got.stdout, got.stderr)
+	}
+}
+
+// A `chore_min_version:` too new refuses the file by name rather than reporting
+// ci:gate as a task it cannot find.
+func TestCIGateHonoursChoreMinVersion(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"chores.yml":               "version: \"3\"\nchore_min_version: 999.0.0\ntasks:\n  build:\n    cmds: ['true']\n",
+		".github/workflows/ci.yml": gateWorkflow,
+		".github-guard":            gateGuard,
+	})
+	saved := Version
+	Version = "0.12.0"
+	defer func() { Version = saved }()
+
+	got := runMain(t, dir, "ci:gate")
+	if got.code != 1 || !strings.Contains(got.stderr, "too old") {
+		t.Fatalf("code %d, stderr %q", got.code, got.stderr)
+	}
+}

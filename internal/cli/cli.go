@@ -252,9 +252,22 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// by that name still wins, the same way one defining `help` or `version` does.
 	if len(rest) > 0 && rest[0] == "ci:gate" {
 		if _, ok := project.Tasks["ci:gate"]; !ok {
+			// `chore ci:gate --help` is a question, and a flag that reads as "tell me
+			// about this" must never do anything.
+			if wantsHelp(rest[1:]) {
+				return manualHelp(out, errUI, []string{"ci-gate"})
+			}
 			if len(rest) > 1 {
 				errUI.Errorf("ci:gate takes no arguments — configure it under `ci_gate:` in %s, so a hand-typed run reaches the same verdict CI did", filepath.Base(path))
 				return 2
+			}
+			// Checked here as well as on the path that runs a task: a consumer
+			// pinning `chore_min_version:` to the release that introduced this is
+			// telling an older binary to refuse the file with a message that names
+			// the cause, rather than reporting `ci:gate` as a task it cannot find.
+			if err := checkChoreVersion(project, buildinfo.Get(Version, BuildDate)); err != nil {
+				errUI.Errorf("%v", err)
+				return 1
 			}
 			return ciGate(out, errUI, project)
 		}
