@@ -84,6 +84,10 @@ var BuildDate = ""
 //     -h, --help         usage, or a task's own help when a task is named
 //         --version      print the version
 //
+// `--dry` works for a global task too, where it prints the route hop by hop and
+// what would run at the end of it, without touching the network — see
+// `chore help global`.
+//
 // `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
 //
 // A mistyped long flag is REFUSED rather than bound to something else. That
@@ -151,6 +155,11 @@ flags:
 manual:
   chore help            list the built-in manual's topics
   chore help <topic>    read one, e.g. chore help hooks
+
+machine-wide:
+  chore global:                  namespaces in ~/.config/chore/global.d
+  chore global:<ns>:             the tasks in one
+  chore global:<ns>:<task>       run one, over ssh, from any directory
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -224,6 +233,20 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// taskfile cannot make the manual unreachable.
 	if len(rest) > 0 && rest[0] == "help" && !projectDefines("help", opts.file) {
 		return manualHelp(out, errUI, rest[1:])
+	}
+
+	// `chore global:…` belongs to the MACHINE, not to a project, and is answered
+	// before a taskfile is required — the same reason `chore help` is. The whole
+	// point of a global task is "check the cluster from wherever I am standing",
+	// and demanding a chores.yml in the current directory would defeat it in
+	// exactly the case it exists for.
+	//
+	// The prefix is mandatory rather than a fallback for an unresolved name: it
+	// makes the call site readable without knowing what is installed on the
+	// machine, and it means a project that happens to define a `homelab:`
+	// namespace cannot shadow one silently.
+	if len(rest) > 0 && strings.HasPrefix(rest[0], globalPrefix) {
+		return globalMain(out, errUI, rest, opts)
 	}
 
 	path, err := findTaskfile(opts.file)

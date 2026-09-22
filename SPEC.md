@@ -532,6 +532,135 @@ timeout test. So the inner net is proven to fire and the outer one is so far onl
 proven to be set. That is worth knowing before leaning on it, and a reason to
 watch one fire on purpose — not a reason to drop it.
 
+## `global:` — tasks that belong to the machine
+
+```
+chore global:                    the namespaces installed here
+chore global:homelab:            the tasks in one
+chore global:homelab:k3s:pods    run one
+```
+
+Files in `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml`, one namespace
+per file, answered **before a taskfile is required** — the same position
+`chore help` occupies, and for the same reason: "check the cluster from whatever
+machine I am sitting at" cannot depend on standing in a particular directory. The
+XDG fallback is load-bearing rather than decorative, because the variable is
+unset on macOS by default and these files arrive on macOS and Linux from one
+dotfiles repository.
+
+```yaml
+name: homelab
+
+routes:
+  lan: [ { host: 192.168.0.47, user: chris } ]
+  pi:
+    - { host: s1.example.com, port: 10022, user: root }
+    - { host: 127.0.0.1, port: 2222, user: chris }
+
+  home: { if: on-lan, then: lan, else: pi }
+
+tasks:
+  on-lan:
+    desc: this machine is on the home network
+    cmd: ifconfig | grep -q 'inet 192.168.0.'
+
+  k3s:pods:
+    route: home
+    deps: [global:ssh:unlock]
+    cmd: [kubectl, get, pods, -A]
+
+  k3s:proxy:
+    route: pi
+    forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 }
+```
+
+### Each hop is resolved from the previous hop
+
+`127.0.0.1:2222` above is **s1's** loopback, where a reverse tunnel already lands
+on the homelab — not this machine's. One file therefore holds several
+`127.0.0.1`s meaning different machines:
+
+```
+routes.pi[1].host   127.0.0.1  ->  s1's loopback
+forward.remote      127.0.0.1  ->  the homelab's loopback
+forward.local       127.0.0.1  ->  the machine you are sitting at
+```
+
+Which is why a failure names the route and the hop by NUMBER — `route pi, hop 2
+(chris@127.0.0.1:2222): connection refused` — and why the forwarding keys are
+spelled `remote:` and `local:`. It is also why `--dry` prints the hop list with
+"dialled from" beside each one: that is the part a reader most often gets wrong,
+and it costs nothing to check before a machine is involved.
+
+The implementation is a fold: hop 1 is dialled from here, and every later hop is
+dialled through the client before it (`prev.Dial` for the TCP connection,
+`ssh.NewClientConn` over it). One hop and five are the same loop, and a direct
+connection is a route of length one.
+
+### Fixed decisions
+
+- **`global:` is mandatory**, not a fallback for an unresolved name. It makes the
+  call site readable without knowing what is installed on the machine, and it
+  means a project defining a `homelab:` namespace cannot silently shadow one — a
+  README documenting the command stays true everywhere. A project task named
+  `global:…` is refused at load, since it could never be reached.
+- **A task says where it goes.** No default route: a task with a `route:` runs at
+  the far end of it, and one without runs here.
+- **A route may be a choice**, written `{ if: <task>, then: <route>, else: <route> }`.
+  `if:` names a TASK and never a shell line: the question then has a `desc:`, can
+  be run on its own to see which branch you are on, and keeps shell out of the
+  routing table. A predicate should NOT be `internal:` — that refuses it from the
+  command line, and running it is the only way to learn which branch applies,
+  since `--dry` refuses to run anything. A command **succeeds** when it exits 0, and an `if:` is true when
+  its task succeeds — the same word `ignore_error:`, `on_failure` and `status:`
+  already mean. `else:` is required, which is also why no `not:` exists: negation
+  is swapping the two names.
+- **A predicate may not carry a `route:`**, refused at load. Measured on the route
+  this was built for, a hop is 326–377 ms against 0.65 ms on the LAN, so one that
+  travelled would pay a connection to answer a question about this machine — and
+  it would read as slowness rather than as a mistake.
+- **A predicate exiting non-zero has answered**, not failed: nothing is reported,
+  `else:` is taken, and the answer is remembered for the rest of the run.
+- **`--dry` resolves nothing.** A predicate is an ordinary task and may modify
+  data, so `--dry` prints both branches as a tree rather than running one.
+- **`deps:` and `if:` may name another namespace's task** as `global:<ns>:<task>`,
+  the same spelling the command line uses, checked once every namespace has
+  loaded. A task may not be NAMED with the prefix.
+- **`cmd:` and `forward:` are mutually exclusive by key presence** rather than by
+  a `mode:` field, so a task that is both or neither cannot be written.
+- **`cmd:` may be an argv**, and chore quotes it. Note what that does not mean: the
+  SSH protocol carries a command as a single string which the far end hands to a
+  login shell, so quoting exists either way — the choice is only whether chore
+  does it once, correctly, or every task does it by hand.
+- **Authentication is the ssh-agent, over `$SSH_AUTH_SOCK`, and nothing else.** A
+  key never passes through chore, so a secret manager keeps working without chore
+  knowing it exists.
+- **Host keys are checked against `~/.ssh/known_hosts`**, never
+  `InsecureIgnoreHostKey`. The temptation to skip it is strongest while debugging
+  a three-hop chain, which is exactly when it matters: later hops are reached
+  through a machine already trusted, and an unverified one there is a place to
+  stand.
+- **`forward:` holds the terminal** until Ctrl-C. Daemonising would mean a stop
+  verb, a registry, pid files and a story for a tunnel that died — machinery to
+  save one terminal tab, all of it state that can disagree with reality. Its
+  cancellation is hand-written, because a tunnel is goroutines inside chore
+  rather than a child in its own process group, and so gets none of the interrupt
+  guarantee the rest of chore has for free.
+- **`internal: true` works here too**, meaning what it means for a project task:
+  callable as part of something, not part of the surface a person types at.
+
+### Deliberately absent
+
+A shared `hops:` block, several routes per task, `default_route`, `forwards:` as
+a list, a `with:` mode running a local command for a tunnel's lifetime, and a
+`wrap:` field for secret managers. Each is a backwards-compatible addition later
+if `routes:` grows a string reference alongside inline objects. The wrap case
+needs no schema at all — external wrapping already works:
+
+```
+trove exec --env homelab/kubeconfig -- chore global:homelab:k3s:pods
+```
+
 ## Fixed semantics
 
 1. **Arguments.** `args:` declares a task's parameters — a bare name, or an

@@ -696,3 +696,29 @@ func TestResolveIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A cycle is a mistake in the file, so nothing should happen because of it.
+//
+// The pass-based loop found one only when a pass made no progress — by which
+// point an unrelated but resolvable `sh:` var had already been run for its side
+// effects. Checking the dependency graph before resolving anything is what
+// makes "nothing ran" true.
+func TestACycleIsReportedBeforeAnyShellRuns(t *testing.T) {
+	cap := &fakeCapturer{out: map[string]string{"date": "today"}}
+	vars := map[string]chorefile.Var{
+		"WHEN": {Sh: "date"},      // resolvable, and would run on the first pass
+		"A":    {Value: "{{.B}}"}, // the cycle
+		"B":    {Value: "{{.A}}"},
+	}
+
+	_, err := New(nil).Resolve(t.Context(), vars, cap)
+	if err == nil {
+		t.Fatal("Resolve accepted a cycle")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error does not call it a cycle: %v", err)
+	}
+	if len(cap.scripts) != 0 {
+		t.Errorf("a shell ran before the cycle was reported: %q", cap.scripts)
+	}
+}
