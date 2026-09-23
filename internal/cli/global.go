@@ -54,6 +54,11 @@ func globalMain(stdout, stderr io.Writer, out, errUI *ui.UI, rest []string, opts
 		listOpts.list = true
 		return runProject(namespace.Project, nil, listOpts, stdout, stderr, out, errUI)
 	}
+	if _, ok := namespace.Project.Tasks[taskName]; !ok {
+		_, _, _, err := set.Lookup(global.Address(namespaceName, taskName))
+		errUI.Errorf("%v", err)
+		return 1
+	}
 
 	// Strip only the namespace prefix. Colons inside the actual task name retain
 	// their ordinary meaning to chore's namespaced task resolver.
