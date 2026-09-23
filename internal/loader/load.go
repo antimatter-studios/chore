@@ -83,6 +83,20 @@ var Filenames = []string{"chores.yml", "chores.yaml", "Taskfile.yml", "Taskfile.
 // Load reads the Taskfile at path — a file, or a directory holding
 // Taskfile.yml — and every file it includes, and returns the flattened project.
 func Load(path string) (*chorefile.Project, error) {
+	return loadPath(path, false)
+}
+
+// LoadGlobal reads a machine-wide taskfile. Its root `name:` is the namespace
+// name; included files keep ordinary taskfile semantics.
+func LoadGlobal(path string) (string, *chorefile.Project, error) {
+	project, err := loadPath(path, true)
+	if err != nil {
+		return "", nil, err
+	}
+	return project.Root.Name, project, nil
+}
+
+func loadPath(path string, global bool) (*chorefile.Project, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("taskfile %s: %w", path, err)
@@ -96,12 +110,22 @@ func Load(path string) (*chorefile.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	tasks, err := register(entries)
+	tasks, err := register(entries, global)
 	if err != nil {
 		return nil, err
 	}
 
 	root := entries[0].file
+	if !global && root.Name != "" {
+		return nil, fmt.Errorf("%s: `name:` is only valid in a machine-wide taskfile under global.d", root.Path)
+	}
+	if global {
+		for _, e := range entries[1:] {
+			if e.file.Name != "" {
+				return nil, fmt.Errorf("%s: included taskfiles cannot declare `name:`; the global namespace belongs to %s", e.file.Path, root.Path)
+			}
+		}
+	}
 	return &chorefile.Project{
 		Root:  root,
 		Tasks: tasks,
@@ -238,7 +262,7 @@ func childRequest(f *chorefile.File, name string, inc *chorefile.Include, prefix
 // the loader owns (Name, File). It takes the whole entry list because aliases
 // are resolved in a second pass: an alias must never shadow a real task just
 // because its file happened to be included first.
-func register(entries []entry) (map[string]*chorefile.Task, error) {
+func register(entries []entry, globalTaskfile bool) (map[string]*chorefile.Task, error) {
 	tasks := make(map[string]*chorefile.Task)
 
 	for _, e := range entries {
@@ -256,7 +280,7 @@ func register(entries []entry) (map[string]*chorefile.Task, error) {
 			// under that name could never be reached. Refused where it is written
 			// rather than left to be a task that exists and cannot be run, which is
 			// the silent failure this loader exists to remove.
-			if key == "global" || strings.HasPrefix(key, "global:") {
+			if !globalTaskfile && (key == "global" || strings.HasPrefix(key, "global:")) {
 				return nil, fmt.Errorf("%s defines %q, but `global:` is reserved for machine-wide tasks"+
 					" (`chore help global`) and the command line answers it before any taskfile is read,"+
 					" so this task could never run — rename it", e.file.Path, key)

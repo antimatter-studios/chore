@@ -27,6 +27,9 @@ type Project struct {
 
 // File is one Taskfile on disk.
 type File struct {
+	// Name identifies a machine-wide task namespace. The ordinary taskfile loader
+	// rejects it; loader.LoadGlobal consumes it for files in global.d.
+	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
 	// ChoreMinVersion is the oldest chore that may run this file. Optional: with
 	// no value there is no restriction, which is what every existing file wants.

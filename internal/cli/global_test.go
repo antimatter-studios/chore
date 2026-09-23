@@ -25,22 +25,14 @@ func installGlobal(t *testing.T, files map[string]string) string {
 
 const homelabNamespace = `
 name: homelab
-routes:
-  pi:
-    - { host: s1.example.com, port: 10022, user: root }
-    - { host: 127.0.0.1, port: 2222, user: chris }
+version: '3'
 tasks:
   k3s:pods:
     desc: pods across every namespace
-    route: pi
-    exec: [kubectl, get, pods, -A]
-  k3s:proxy:
-    route: pi
-    forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 }
+    cmds: [echo pods]
   _helper:
     internal: true
-    route: pi
-    exec: [true]
+    cmds: [echo helper]
 `
 
 // The point of a global task: it answers from a directory with no chores.yml in
@@ -65,26 +57,15 @@ func TestGlobalWorksWithNoTaskfileAnywhere(t *testing.T) {
 	}
 }
 
-// --dry answers the question a route makes hard to check by eye: which machine
-// is each hop dialled FROM. It touches no network.
-func TestGlobalDryRunPrintsTheRouteWithoutDialling(t *testing.T) {
+// Global tasks use the ordinary chore task execution model.
+func TestGlobalDryRunUsesTheOrdinaryTaskRunner(t *testing.T) {
 	installGlobal(t, map[string]string{"homelab.yaml": homelabNamespace})
 
 	got := runMain(t, t.TempDir(), "--dry", "global:homelab:k3s:pods")
 	checkCode(t, got, 0)
 	checkContains(t, got, "stdout", got.stdout,
-		"hop 1", "root@s1.example.com:10022",
-		"hop 2", "chris@127.0.0.1:2222",
-		"dialled from hop 1",
-		"'kubectl' 'get' 'pods' '-A'",
+		"echo pods",
 	)
-}
-
-func TestGlobalDryRunPrintsAForward(t *testing.T) {
-	installGlobal(t, map[string]string{"homelab.yaml": homelabNamespace})
-	got := runMain(t, t.TempDir(), "--dry", "global:homelab:k3s:proxy")
-	checkCode(t, got, 0)
-	checkContains(t, got, "stdout", got.stdout, "127.0.0.1:6443 on this machine", "at the far end")
 }
 
 // A namespace or task that is not there says so, and says what IS there —
@@ -98,7 +79,7 @@ func TestGlobalNamesWhatIsInstalled(t *testing.T) {
 
 	got = runMain(t, t.TempDir(), "global:homelab:k3s:nodes")
 	checkCode(t, got, 1)
-	checkContains(t, got, "stderr", got.stderr, "no task", "it has: k3s:pods, k3s:proxy")
+	checkContains(t, got, "stderr", got.stderr, "no task", "it has: k3s:pods")
 }
 
 // An internal task is refused from the command line, exactly as a project's is.
@@ -114,8 +95,8 @@ func TestGlobalInternalTaskIsRefused(t *testing.T) {
 // without saying so.
 func TestABrokenNamespaceIsReportedNotSkipped(t *testing.T) {
 	installGlobal(t, map[string]string{
-		"good.yaml":   "name: good\nroutes:\n  r: [ { host: h } ]\ntasks:\n  t: { route: r, exec: [true] }\n",
-		"broken.yaml": "name: broken\ntasks:\n  t: { route: nope, exec: [true] }\n",
+		"good.yaml":   "name: good\nversion: '3'\ntasks:\n  t: { cmds: [true] }\n",
+		"broken.yaml": "name: broken\nversion: '3'\ntasks:\n  t: { typo: true }\n",
 	})
 	got := runMain(t, t.TempDir(), "global:")
 	checkCode(t, got, 1)

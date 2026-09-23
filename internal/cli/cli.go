@@ -84,10 +84,6 @@ var BuildDate = ""
 //     -h, --help         usage, or a task's own help when a task is named
 //         --version      print the version
 //
-// `--dry` works for a global task too, where it prints the route hop by hop and
-// what would run at the end of it, without touching the network — see
-// `chore help global`.
-//
 // `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
 //
 // A mistyped long flag is REFUSED rather than bound to something else. That
@@ -159,7 +155,7 @@ manual:
 machine-wide:
   chore global:                  namespaces in ~/.config/chore/global.d
   chore global:<ns>:             the tasks in one
-  chore global:<ns>:<task>       run one, over ssh, from any directory
+  chore global:<ns>:<task>       run one from any directory
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -235,18 +231,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return manualHelp(out, errUI, rest[1:])
 	}
 
-	// `chore global:…` belongs to the MACHINE, not to a project, and is answered
-	// before a taskfile is required — the same reason `chore help` is. The whole
-	// point of a global task is "check the cluster from wherever I am standing",
-	// and demanding a chores.yml in the current directory would defeat it in
-	// exactly the case it exists for.
+	// `chore global:…` names a taskfile installed for the user, so it can be
+	// addressed from any working directory and does not depend on a project
+	// taskfile being present.
 	//
 	// The prefix is mandatory rather than a fallback for an unresolved name: it
 	// makes the call site readable without knowing what is installed on the
 	// machine, and it means a project that happens to define a `homelab:`
 	// namespace cannot shadow one silently.
 	if len(rest) > 0 && strings.HasPrefix(rest[0], globalPrefix) {
-		return globalMain(out, errUI, rest, opts)
+		return globalMain(stdout, stderr, out, errUI, rest, opts)
 	}
 
 	path, err := findTaskfile(opts.file)
@@ -265,6 +259,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	return runProject(project, rest, opts, stdout, stderr, out, errUI)
+}
+
+// runProject applies the ordinary task invocation path to a loaded project.
+// Global taskfiles use it too, so global addressing does not define a second
+// task execution model.
+func runProject(project *chorefile.Project, rest []string, opts options, stdout, stderr io.Writer, out, errUI *ui.UI) int {
 	// No task named, or an explicit --list: describe what is available. This is
 	// the same answer, so `chore` on its own is never a mystery.
 	if len(rest) == 1 && rest[0] == "version" {
