@@ -56,6 +56,7 @@ type File struct {
 	Env       map[string]Var      `yaml:"env"`
 	Tasks     map[string]*Task    `yaml:"tasks"`
 	Lifecycle *Lifecycle          `yaml:"lifecycle"`
+	Routes    map[string]Route    `yaml:"routes"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -285,6 +286,23 @@ type Include struct {
 	Vars     map[string]Var `yaml:"vars"`
 }
 
+// Route is a sequence of SSH hops. These fields are only valid in a global
+// taskfile; the loader rejects them in ordinary project taskfiles.
+type Route []Hop
+
+// Hop is one SSH host in a route.
+type Hop struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	User string `yaml:"user"`
+}
+
+// Forward describes a local TCP listener carried to the far end of an SSH route.
+type Forward struct {
+	Remote string `yaml:"remote"`
+	Local  string `yaml:"local"`
+}
+
 // Var is a variable value: either a literal or a shell command to capture.
 //
 // YAML accepts both forms:
@@ -374,6 +392,12 @@ type Task struct {
 
 	Deps Deps `yaml:"deps"`
 	Cmds Cmds `yaml:"cmds"`
+
+	// Route, Exec and Forward are the optional SSH execution form for a global
+	// task. A task uses either ordinary cmds or one SSH operation.
+	Route   string   `yaml:"route"`
+	Exec    []string `yaml:"exec"`
+	Forward *Forward `yaml:"forward"`
 
 	// The per-task half of the lifecycle. Same four names the file-level block
 	// uses, minus the `_all` that marks a hook as per-invocation, and they fire

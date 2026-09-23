@@ -233,6 +233,10 @@ real shell — with real `pipefail` — possible.
     Run it as `chore global:homelab:status`. The global address says where the
     task was declared; dependencies, arguments, hooks and commands keep their
     ordinary chore behavior. `chore help global`.
+- **Global tasks can optionally use SSH.** A global task may declare a route of
+  SSH hops and either a remote `exec:` argv or a local `forward:` listener.
+  Ordinary global tasks do not need SSH and retain the normal chore task
+  schema. `chore help ssh-tasks`.
 - **Commands are not printed unless you ask.** `--verbose` prints each one before
   it runs; nothing does otherwise, because a task's script is written for the
   shell rather than for a reader — a `case` dispatcher on screen before the test

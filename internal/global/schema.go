@@ -52,7 +52,12 @@ type Namespace struct {
 	Name    string
 	Path    string
 	Project *chorefile.Project
+	Routes  map[string]Route
 }
+
+type Hop = chorefile.Hop
+type Route = chorefile.Route
+type Forward = chorefile.Forward
 
 // Task looks up a namespace-local task name, which may itself contain colons.
 func (n *Namespace) Task(name string) (*chorefile.Task, bool) {

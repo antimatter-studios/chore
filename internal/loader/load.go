@@ -110,6 +110,18 @@ func loadPath(path string, global bool) (*chorefile.Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !global {
+		for _, e := range entries {
+			if len(e.file.Routes) > 0 {
+				return nil, fmt.Errorf("%s: `routes:` is only valid in a machine-wide taskfile under global.d", e.file.Path)
+			}
+			for name, task := range e.file.Tasks {
+				if task != nil && (task.Route != "" || len(task.Exec) > 0 || task.Forward != nil) {
+					return nil, fmt.Errorf("%s: task %q uses SSH fields that are only valid in a machine-wide taskfile under global.d", e.file.Path, name)
+				}
+			}
+		}
+	}
 	tasks, err := register(entries, global)
 	if err != nil {
 		return nil, err
