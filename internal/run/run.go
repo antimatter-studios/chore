@@ -319,6 +319,16 @@ func childHooksSuppressed(ctx context.Context) bool {
 // advice, and a safety net is not advice — the same rule that keeps `defer:`
 // running inside a suppressed subtree.
 func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
+	// The gate before anything else, including `before:`. A gate that compiles
+	// something is part of the heavy work the group is protecting, and a task that
+	// took the lock only for its body would run half of itself alongside the very
+	// thing it was told to wait for. See concurrency.go.
+	ctx, release, err := r.hold(ctx, t.Concurrency, t.Name)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	// Whether THIS task's hooks run was settled by an ancestor. Whether its
 	// children's do is settled here, and only ever downwards.
 	run := t.HasHooks() && !r.NoLifecycle && !childHooksSuppressed(ctx)
@@ -1521,6 +1531,12 @@ func (r *Runner) shell(ctx context.Context, dir string, scope *tmpl.Scope) shell
 	// local one, which is how a fix appears not to work.
 	if exe, err := os.Executable(); err == nil {
 		env = append(env, "CHORE_BIN="+exe)
+	}
+	// CHORE_HELD is which concurrency groups this task is already inside, so a
+	// chore that a task STARTS does not queue behind the chore that started it.
+	// See concurrency.go, "a task never waits for itself".
+	if groups := heldList(heldIn(ctx)); groups != "" {
+		env = append(env, "CHORE_HELD="+groups)
 	}
 	for k, v := range scope.All() {
 		if isEnvName(k) {
