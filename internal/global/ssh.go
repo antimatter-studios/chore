@@ -43,10 +43,11 @@ type Dialer struct {
 //
 // This is also why `127.0.0.1` in hop 2 means hop 1's loopback and not ours.
 func (d Dialer) Dial(ctx context.Context, routeName string, route Route) (*ssh.Client, error) {
-	auth, err := d.agentAuth()
+	auth, agentConn, err := d.agentAuth()
 	if err != nil {
 		return nil, err
 	}
+	defer agentConn.Close()
 	hostKey, err := d.hostKeyCallback()
 	if err != nil {
 		return nil, err
@@ -54,36 +55,57 @@ func (d Dialer) Dial(ctx context.Context, routeName string, route Route) (*ssh.C
 
 	var client *ssh.Client
 	for i, hop := range route {
+		hopCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 		cfg := &ssh.ClientConfig{
 			User:            hop.User,
 			Auth:            []ssh.AuthMethod{auth},
 			HostKeyCallback: hostKey,
-			Timeout:         dialTimeout,
 		}
 		var conn net.Conn
 		if client == nil {
 			// The first hop is the only one this machine dials itself.
-			dialer := net.Dialer{Timeout: dialTimeout}
-			conn, err = dialer.DialContext(ctx, "tcp", hopAddress(hop))
+			conn, err = (&net.Dialer{}).DialContext(hopCtx, "tcp", hopAddress(hop))
 		} else {
-			// And every later one is dialled from the hop before it. Note the
-			// absence of ctx: x/crypto/ssh has no context-aware Dial, so a hop that
-			// hangs is bounded by cfg.Timeout below rather than by cancellation.
-			conn, err = client.Dial("tcp", hopAddress(hop))
+			// DialContext returns on cancellation. Closing its parent also unblocks
+			// the underlying SSH channel request if the server never answers.
+			parent := client
+			stopParentClose := context.AfterFunc(hopCtx, func() { closeQuietly(parent) })
+			conn, err = parent.DialContext(hopCtx, "tcp", hopAddress(hop))
+			stopParentClose()
+			if err == nil {
+				conn = &ownedConn{Conn: conn, closeOwner: func() { closeQuietly(parent) }}
+			}
 		}
 		if err != nil {
+			cancel()
 			closeQuietly(client)
 			return nil, hopError(routeName, i, hop, err)
 		}
+		if deadline, ok := hopCtx.Deadline(); ok {
+			_ = conn.SetDeadline(deadline)
+		}
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, hopAddress(hop), cfg)
+		cancel()
 		if err != nil {
 			_ = conn.Close()
 			closeQuietly(client)
 			return nil, hopError(routeName, i, hop, err)
 		}
+		_ = conn.SetDeadline(time.Time{})
 		client = ssh.NewClient(sshConn, chans, reqs)
 	}
 	return client, nil
+}
+
+type ownedConn struct {
+	net.Conn
+	closeOwner func()
+}
+
+func (c *ownedConn) Close() error {
+	err := c.Conn.Close()
+	c.closeOwner()
+	return err
 }
 
 func hopAddress(hop Hop) string { return net.JoinHostPort(hop.Host, strconv.Itoa(hop.Port)) }
@@ -120,19 +142,23 @@ func explainKeyError(hop Hop, err *knownhosts.KeyError) string {
 // agentAuth is the only authentication chore offers, and that is the point: a
 // key never passes through this program, so whatever manages the user's secrets
 // keeps working without chore knowing it exists.
-func (d Dialer) agentAuth() (ssh.AuthMethod, error) {
-	sock := d.AgentSock
+func (d Dialer) agentAuth() (ssh.AuthMethod, net.Conn, error) {
+	sock := d.agentSocket()
 	if sock == "" {
-		sock = os.Getenv("SSH_AUTH_SOCK")
-	}
-	if sock == "" {
-		return nil, errors.New("no SSH_AUTH_SOCK: chore authenticates through your ssh-agent and never handles a key itself — start an agent and add the key you would use for `ssh`")
+		return nil, nil, errors.New("no SSH_AUTH_SOCK: chore authenticates through your ssh-agent and never handles a key itself — start an agent and add the key you would use for `ssh`")
 	}
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to the ssh-agent at %s: %w", sock, err)
+		return nil, nil, fmt.Errorf("connecting to the ssh-agent at %s: %w", sock, err)
 	}
-	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), nil
+	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), conn, nil
+}
+
+func (d Dialer) agentSocket() string {
+	if d.AgentSock != "" {
+		return d.AgentSock
+	}
+	return os.Getenv("SSH_AUTH_SOCK")
 }
 
 // hostKeyCallback verifies against the same file ssh does.

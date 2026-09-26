@@ -40,6 +40,7 @@ func RunForward(ctx context.Context, client *ssh.Client, f Forward, announce fun
 
 	var wg sync.WaitGroup
 	var conns sync.Map // net.Conn -> struct{}, so cancellation can close what is open
+	var connsMu sync.Mutex
 
 	// Closing the listener is what unblocks Accept below; there is no
 	// AcceptContext to select on.
@@ -47,10 +48,12 @@ func RunForward(ctx context.Context, client *ssh.Client, f Forward, announce fun
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
+		connsMu.Lock()
 		conns.Range(func(k, _ any) bool {
 			_ = k.(net.Conn).Close()
 			return true
 		})
+		connsMu.Unlock()
 		close(stopped)
 	}()
 
@@ -74,8 +77,15 @@ func RunForward(ctx context.Context, client *ssh.Client, f Forward, announce fun
 			}
 			return fmt.Errorf("accepting on %s: %w", f.Local, err)
 		}
+		connsMu.Lock()
+		if ctx.Err() != nil {
+			connsMu.Unlock()
+			_ = local.Close()
+			continue
+		}
 		conns.Store(local, struct{}{})
 		wg.Add(1)
+		connsMu.Unlock()
 		go func() {
 			defer wg.Done()
 			defer conns.Delete(local)
@@ -83,7 +93,7 @@ func RunForward(ctx context.Context, client *ssh.Client, f Forward, announce fun
 			// Dialled from the far end of the route, which is what makes
 			// `remote: 127.0.0.1:6443` mean the cluster's loopback and not this
 			// machine's.
-			remote, err := client.Dial("tcp", f.Remote)
+			remote, err := client.DialContext(ctx, "tcp", f.Remote)
 			if err != nil {
 				return
 			}

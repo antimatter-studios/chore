@@ -1,4 +1,3 @@
-
 package global
 
 import (
