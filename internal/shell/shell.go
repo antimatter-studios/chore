@@ -97,7 +97,7 @@ func (s Shell) Capture(ctx context.Context, script string) (string, error) {
 		return "", fmt.Errorf("shell capture exceeded the %d-byte stdout limit", maxCaptureBytes)
 	}
 	if err != nil {
-		return "", err
+		return strings.TrimRight(buf.buf.String(), "\n"), err
 	}
 	return strings.TrimRight(buf.buf.String(), "\n"), nil
 }
