@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0
 
 - **Global task namespaces.** User-wide taskfiles in
   `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml` are available from
