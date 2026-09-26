@@ -563,6 +563,16 @@ includes, lifecycle hooks, `--dry`, and working-directory rules keep their
 ordinary meanings. The `global:` prefix is reserved so a project task cannot be
 shadowed by the machine-wide command surface.
 
+### Optional SSH execution
+
+Global taskfiles may additionally declare SSH `routes:`. A task can reference a
+route and use either `exec:` for a remote command or `forward:` for a local TCP
+listener carried to the final hop. This is an optional execution form for
+global tasks; ordinary global task declarations have no SSH requirement and
+continue to run through chore's regular task runner. SSH-specific fields are
+rejected in project taskfiles. See `chore help ssh-tasks` for the schema and
+execution limits.
+
 ## Fixed semantics
 
 1. **Arguments.** `args:` declares a task's parameters — a bare name, or an

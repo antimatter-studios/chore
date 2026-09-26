@@ -7,6 +7,10 @@
   any working directory as `chore global:<namespace>:<task>`. They use the
   ordinary chore task schema and execution model; global support only discovers
   the files and adds the address prefix.
+- **Optional SSH tasks and port forwarding for global tasks.** Global taskfiles
+  can declare SSH routes for tasks that run a remote command or expose a local
+  TCP forward. This is independent of ordinary global tasks, which need no SSH
+  configuration.
 
 
 ## v0.11.0
