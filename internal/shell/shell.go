@@ -89,14 +89,49 @@ func (s Shell) Capture(ctx context.Context, script string) (string, error) {
 	// the keystrokes intended for the task itself. The receiver is a value, so
 	// this is local to the call.
 	s.Interactive = false
-	var buf strings.Builder
-	err := s.exec(ctx, script, &buf)
-	return strings.TrimRight(buf.String(), "\n"), err
+	captureCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	buf := &captureBuffer{cancel: cancel}
+	err := s.exec(captureCtx, script, buf)
+	if buf.exceeded {
+		return "", fmt.Errorf("shell capture exceeded the %d-byte stdout limit", maxCaptureBytes)
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.buf.String(), "\n"), nil
 }
 
 // scriptName is what a script sees as $0, and what the shell prefixes its own
 // diagnostics with. `sh -c script name` sets argv[0] for the script.
 const scriptName = "chore"
+
+// maxCaptureBytes bounds values produced by `sh:` variables. Captured stdout is
+// retained in the chore process until the command exits, so a noisy command
+// that never exits must be stopped before it can exhaust the machine.
+const maxCaptureBytes = 64 << 10
+
+type captureBuffer struct {
+	buf      strings.Builder
+	exceeded bool
+	cancel   context.CancelFunc
+}
+
+func (b *captureBuffer) Write(p []byte) (int, error) {
+	if b.exceeded {
+		return len(p), nil
+	}
+	remaining := maxCaptureBytes - b.buf.Len()
+	if len(p) > remaining {
+		if remaining > 0 {
+			_, _ = b.buf.Write(p[:remaining])
+		}
+		b.exceeded = true
+		b.cancel()
+		return len(p), nil
+	}
+	return b.buf.Write(p)
+}
 
 func (s Shell) exec(ctx context.Context, script string, out io.Writer) error {
 	cmd := exec.CommandContext(ctx, s.bin(), "-c", script, scriptName)

@@ -338,7 +338,10 @@ func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	// The clock starts before the gate, not after it: a `before:` that hangs is a
 	// task that never starts and never ends, which is the case this is for.
 	inner, deadline := r.arm(inner, t, scope, dir)
-	defer deadline.disarm()
+	defer func() {
+		deadline.disarm()
+		deadline.release()
+	}()
 
 	var runErr error
 	if run {

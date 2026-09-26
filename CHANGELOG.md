@@ -11,6 +11,9 @@
   can declare SSH routes for tasks that run a remote command or expose a local
   TCP forward. This is independent of ordinary global tasks, which need no SSH
   configuration.
+- **Bound shell captures.** A `sh:` value can capture at most 64 KiB of stdout;
+  chore stops the command and reports an error if it exceeds that limit. Timed
+  tasks also release their child contexts when their hooks finish.
 
 
 ## v0.11.0

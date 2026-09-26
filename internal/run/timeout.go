@@ -276,6 +276,7 @@ type deadline struct {
 	// returning while all that is still going, so nothing the timeout prints or
 	// signals arrives after the run has moved on to something else.
 	settled chan struct{}
+	cancel  context.CancelFunc
 }
 
 // deadlineKey carries the innermost deadline in the context, so a script started
@@ -361,6 +362,15 @@ func (d *deadline) disarm() {
 	d.off = true
 	if d.timer != nil {
 		d.timer.Stop()
+	}
+}
+
+// release detaches this deadline's child context from its parent. It runs when
+// the task and its outcome hooks have finished, so hooks can still use the task
+// context after disarm stops the timer.
+func (d *deadline) release() {
+	if d != nil && d.cancel != nil {
+		d.cancel()
 	}
 }
 
@@ -453,14 +463,15 @@ func (r *Runner) arm(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, 
 		return ctx, nil
 	}
 	after := time.Duration(t.Timeout)
+	inner, cancel := context.WithCancel(ctx)
 	d := &deadline{
 		task:    t,
 		after:   after,
 		parent:  deadlineFrom(ctx),
 		live:    map[int]int{},
 		settled: make(chan struct{}),
+		cancel:  cancel,
 	}
-	inner, cancel := context.WithCancel(ctx)
 	// The handler is deliberately given ctx, the PARENT — it runs before the
 	// cancellation, on a context that is still healthy, because a hook issued on a
 	// cancelled one cannot start a process at all.
