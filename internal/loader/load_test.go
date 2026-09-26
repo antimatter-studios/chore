@@ -671,7 +671,7 @@ func TestRegister(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tasks, err := register(tc.entries)
+			tasks, err := register(tc.entries, false)
 			if len(tc.wantErr) > 0 {
 				if err == nil {
 					t.Fatalf("want error, got %v", slices.Sorted(maps.Keys(tasks)))

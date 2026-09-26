@@ -218,6 +218,21 @@ real shell — with real `pipefail` — possible.
     logs. Nothing suppresses it — a safety net is not advice — and it does not
     make an out-of-process backstop redundant, because a timer dies with the
     process that owns it. `chore help timeouts`.
+- **`global:` tasks are available from any directory.** Files in
+  `~/.config/chore/global.d/*.yaml` (or `$XDG_CONFIG_HOME`) declare namespaces of
+  ordinary chore tasks, independent of the project in the current directory:
+
+    ```yaml
+    name: homelab
+    tasks:
+      status:
+        desc: show cluster status
+        cmds: [kubectl get nodes]
+    ```
+
+    Run it as `chore global:homelab:status`. The global address says where the
+    task was declared; dependencies, arguments, hooks and commands keep their
+    ordinary chore behavior. `chore help global`.
 - **Commands are not printed unless you ask.** `--verbose` prints each one before
   it runs; nothing does otherwise, because a task's script is written for the
   shell rather than for a reader — a `case` dispatcher on screen before the test

@@ -532,6 +532,37 @@ timeout test. So the inner net is proven to fire and the outer one is so far onl
 proven to be set. That is worth knowing before leaning on it, and a reason to
 watch one fire on purpose — not a reason to drop it.
 
+## `global:` — tasks available from any directory
+
+```
+chore global:                       list installed namespaces
+chore global:homelab:               list the namespace's tasks
+chore global:homelab:status         run an ordinary chore task
+```
+
+Files in `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml`, one namespace
+per file, answered **before a taskfile is required** — the same position
+`chore help` occupies, and for the same reason: "check the cluster from whatever
+machine I am sitting at" cannot depend on standing in a particular directory. The
+XDG fallback is load-bearing rather than decorative, because the variable is
+unset on macOS by default and these files arrive on macOS and Linux from one
+dotfiles repository.
+
+```yaml
+name: homelab
+version: '3'
+
+tasks:
+  status:
+    desc: show cluster status
+    cmds: [kubectl get nodes]
+```
+
+Global taskfiles use the regular taskfile schema. Arguments, dependencies,
+includes, lifecycle hooks, `--dry`, and working-directory rules keep their
+ordinary meanings. The `global:` prefix is reserved so a project task cannot be
+shadowed by the machine-wide command surface.
+
 ## Fixed semantics
 
 1. **Arguments.** `args:` declares a task's parameters — a bare name, or an

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Global task namespaces.** User-wide taskfiles in
+  `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml` are available from
+  any working directory as `chore global:<namespace>:<task>`. They use the
+  ordinary chore task schema and execution model; global support only discovers
+  the files and adds the address prefix.
+
+
 ## v0.11.0
 
 - **Commands are no longer printed unless you ask.** `--verbose` prints each one

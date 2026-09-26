@@ -152,6 +152,11 @@ manual:
   chore help            list the built-in manual's topics
   chore help <topic>    read one, e.g. chore help hooks
 
+machine-wide:
+  chore global:                  namespaces in ~/.config/chore/global.d
+  chore global:<ns>:             the tasks in one
+  chore global:<ns>:<task>       run one from any directory
+
 arguments:
   A task declares its parameters and receives them positionally:
 
@@ -226,6 +231,18 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return manualHelp(out, errUI, rest[1:])
 	}
 
+	// `chore global:…` names a taskfile installed for the user, so it can be
+	// addressed from any working directory and does not depend on a project
+	// taskfile being present.
+	//
+	// The prefix is mandatory rather than a fallback for an unresolved name: it
+	// makes the call site readable without knowing what is installed on the
+	// machine, and it means a project that happens to define a `homelab:`
+	// namespace cannot shadow one silently.
+	if len(rest) > 0 && strings.HasPrefix(rest[0], globalPrefix) {
+		return globalMain(stdout, stderr, out, errUI, rest, opts)
+	}
+
 	path, err := findTaskfile(opts.file)
 	if err != nil {
 		errUI.Errorf("%v", err)
@@ -242,6 +259,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	return runProject(project, rest, opts, stdout, stderr, out, errUI)
+}
+
+// runProject applies the ordinary task invocation path to a loaded project.
+// Global taskfiles use it too, so global addressing does not define a second
+// task execution model.
+func runProject(project *chorefile.Project, rest []string, opts options, stdout, stderr io.Writer, out, errUI *ui.UI) int {
 	// No task named, or an explicit --list: describe what is available. This is
 	// the same answer, so `chore` on its own is never a mystery.
 	if len(rest) == 1 && rest[0] == "version" {
