@@ -15,7 +15,7 @@ import (
 // chore:manual concurrency
 // title: Concurrency groups
 // summary: concurrency: — one heavy task at a time, across every chore on the machine
-// aliases: concurrency lock serialise serialize queue parallel overload
+// aliases: lock serialise serialize queue parallel overload
 // order: 11
 //
 // # Concurrency groups
