@@ -11,6 +11,7 @@ import (
 	"text/template/parse"
 
 	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/graph"
 )
 
 // funcs is the whole function set: Go's builtins plus `default`.
@@ -126,6 +127,34 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 		return out, nil
 	}
 
+	// The dependency graph is checked BEFORE anything is resolved, which is a
+	// change in behaviour and the point of it: the loop below discovers a cycle
+	// only when a pass makes no progress, and an unrelated but resolvable `sh:`
+	// var has already been run for its side effects by then. A cycle is a
+	// mistake in the file, so nothing should happen because of it.
+	g := graph.New()
+	for _, name := range graph.Sorted(vars) {
+		g.Describe("var:"+name, name)
+		text, _ := source(vars[name])
+		refs, err := references(text)
+		if err != nil {
+			return nil, fmt.Errorf("var %s: %w", name, err)
+		}
+		for _, r := range refs {
+			// A var may reference its own name to read the inherited value from
+			// the scope below, which is not a cycle.
+			if r == name {
+				continue
+			}
+			if _, ours := vars[r]; ours {
+				g.Edge("var:"+name, "var:"+r)
+			}
+		}
+	}
+	if err := g.Check(); err != nil {
+		return nil, fmt.Errorf("variable dependency %w", err)
+	}
+
 	// cur carries the values resolved so far, without touching s.
 	cur := s.Push(nil)
 	pending := make(map[string]bool, len(vars))
@@ -171,7 +200,10 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 			progressed = true
 		}
 		if !progressed {
-			return nil, cycleError(vars, pending)
+			// Unreachable: the graph above has already refused every cycle. A
+			// guard rather than a panic, because being wrong about that should
+			// not take the program down.
+			return nil, fmt.Errorf("variable dependency cycle among %s", strings.Join(slices.Sorted(maps.Keys(pending)), ", "))
 		}
 	}
 	return out, nil
@@ -274,22 +306,4 @@ func walkBranch(b *parse.BranchNode, fn func(parse.Node)) {
 	walk(b.Pipe, fn)
 	walk(b.List, fn)
 	walk(b.ElseList, fn)
-}
-
-// cycleError names every variable still pending and what it is waiting for, so
-// the message points at the edit that fixes it.
-func cycleError(vars map[string]chorefile.Var, pending map[string]bool) error {
-	parts := make([]string, 0, len(pending))
-	for _, name := range slices.Sorted(maps.Keys(pending)) {
-		text, _ := source(vars[name])
-		refs, _ := references(text) // already parsed cleanly, so this cannot fail
-		var blocking []string
-		for _, r := range refs {
-			if r != name && pending[r] {
-				blocking = append(blocking, r)
-			}
-		}
-		parts = append(parts, fmt.Sprintf("%s references %s", name, strings.Join(blocking, " and ")))
-	}
-	return fmt.Errorf("variable dependency cycle: %s", strings.Join(parts, "; "))
 }

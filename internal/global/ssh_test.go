@@ -16,14 +16,14 @@ func TestDialOneHopRunsACommand(t *testing.T) {
 	server := newTestServer(t, pub)
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", Route{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	if err := Exec(context.Background(), client, []string{"echo", "hello"}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, Cmd{Argv: []string{"echo", "hello"}}, nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v (stderr %q)", err, errOut.String())
 	}
 	if got := strings.TrimSpace(out.String()); got != `'echo' 'hello'` {
@@ -40,14 +40,14 @@ func TestDialFoldsThroughEveryHop(t *testing.T) {
 	second := newTestServer(t, pub)
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, first, second)}
 
-	client, err := d.Dial(context.Background(), "pi", Route{hopTo(t, first), hopTo(t, second)})
+	client, err := d.Dial(context.Background(), "pi", []Hop{hopTo(t, first), hopTo(t, second)})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	if err := Exec(context.Background(), client, []string{"kubectl", "get", "pods", "-A"}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, Cmd{Argv: []string{"kubectl", "get", "pods", "-A"}}, nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	// The command ran at the END of the route and nowhere else. A fold that
@@ -71,7 +71,7 @@ func TestAFailedHopNamesItsNumber(t *testing.T) {
 	dead := Hop{Host: "127.0.0.1", Port: closedPort(t), User: "tester"}
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, first)}
 
-	_, err := d.Dial(context.Background(), "pi", Route{hopTo(t, first), dead})
+	_, err := d.Dial(context.Background(), "pi", []Hop{hopTo(t, first), dead})
 	if err == nil {
 		t.Fatal("dialling a closed port must fail")
 	}
@@ -91,7 +91,7 @@ func TestAnUnknownHostKeyIsRefused(t *testing.T) {
 	other := newTestServer(t, pub) // in known_hosts; the one we dial is not
 
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, other)}
-	_, err := d.Dial(context.Background(), "direct", Route{hopTo(t, server)})
+	_, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
 	if err == nil {
 		t.Fatal("an unverified host key must refuse the connection")
 	}
@@ -105,7 +105,7 @@ func TestAnUnknownHostKeyIsRefused(t *testing.T) {
 func TestNoAgentIsAClearFailure(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	d := Dialer{KnownHosts: knownHostsFor(t)}
-	_, err := d.Dial(context.Background(), "direct", Route{{Host: "127.0.0.1", Port: 22, User: "x"}})
+	_, err := d.Dial(context.Background(), "direct", []Hop{{Host: "127.0.0.1", Port: 22, User: "x"}})
 	if err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 		t.Fatalf("err = %v, want it to name SSH_AUTH_SOCK", err)
 	}
@@ -117,14 +117,14 @@ func TestARemoteFailureCarriesItsExitStatus(t *testing.T) {
 	server := newTestServer(t, pub)
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", Route{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	err = Exec(context.Background(), client, []string{"please", "fail"}, nil, &out, &errOut)
+	err = Exec(context.Background(), client, Cmd{Argv: []string{"please", "fail"}}, nil, &out, &errOut)
 	var exit *ExitError
 	if err == nil {
 		t.Fatal("a failing remote command must be an error")
@@ -156,6 +156,29 @@ func TestArgvSurvivesQuoting(t *testing.T) {
 	}
 }
 
+// The string form is passed through as written, so a pipe reaches the far end's
+// shell intact — which the list form cannot express at all.
+func TestAShellLineIsPassedThroughWhole(t *testing.T) {
+	sock, pub := testAgent(t)
+	server := newTestServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+
+	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var out, errOut bytes.Buffer
+	line := "kubectl get pods -A | wc -l"
+	if err := Exec(context.Background(), client, Cmd{Line: line}, nil, &out, &errOut); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != line {
+		t.Errorf("the far end received %q, want it byte for byte", got)
+	}
+}
+
 // A tunnel carries bytes from a local port to an address resolved at the FAR
 // END, and stops when its context does — which is hand-written, because a
 // tunnel is goroutines inside chore rather than a child in its own process
@@ -165,7 +188,7 @@ func TestForwardCarriesBytesAndStopsOnCancel(t *testing.T) {
 	server := newTestServer(t, pub)
 	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", Route{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}

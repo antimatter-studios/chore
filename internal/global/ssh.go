@@ -2,12 +2,13 @@ package global
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,73 +43,53 @@ type Dialer struct {
 // and five are the same loop, and a direct connection is a route of length one.
 //
 // This is also why `127.0.0.1` in hop 2 means hop 1's loopback and not ours.
-func (d Dialer) Dial(ctx context.Context, routeName string, route Route) (*ssh.Client, error) {
-	auth, agentConn, err := d.agentAuth()
+func (d Dialer) Dial(ctx context.Context, routeName string, hops []Hop) (*ssh.Client, error) {
+	auth, err := d.agentAuth()
 	if err != nil {
 		return nil, err
 	}
-	defer agentConn.Close()
 	hostKey, err := d.hostKeyCallback()
 	if err != nil {
 		return nil, err
 	}
 
 	var client *ssh.Client
-	for i, hop := range route {
-		hopCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	for i, hop := range hops {
 		cfg := &ssh.ClientConfig{
 			User:            hop.User,
 			Auth:            []ssh.AuthMethod{auth},
 			HostKeyCallback: hostKey,
+			Timeout:         dialTimeout,
+			// Ask for the key types known_hosts actually holds for this host. See
+			// knownAlgorithms: without it a server that offers several types hands
+			// over whichever x/crypto prefers, which is rarely the one recorded.
+			HostKeyAlgorithms: knownAlgorithms(hostKey, hop.Addr()),
 		}
 		var conn net.Conn
 		if client == nil {
 			// The first hop is the only one this machine dials itself.
-			conn, err = (&net.Dialer{}).DialContext(hopCtx, "tcp", hopAddress(hop))
+			dialer := net.Dialer{Timeout: dialTimeout}
+			conn, err = dialer.DialContext(ctx, "tcp", hop.Addr())
 		} else {
-			// DialContext returns on cancellation. Closing its parent also unblocks
-			// the underlying SSH channel request if the server never answers.
-			parent := client
-			stopParentClose := context.AfterFunc(hopCtx, func() { closeQuietly(parent) })
-			conn, err = parent.DialContext(hopCtx, "tcp", hopAddress(hop))
-			stopParentClose()
-			if err == nil {
-				conn = &ownedConn{Conn: conn, closeOwner: func() { closeQuietly(parent) }}
-			}
+			// And every later one is dialled from the hop before it. Note the
+			// absence of ctx: x/crypto/ssh has no context-aware Dial, so a hop that
+			// hangs is bounded by cfg.Timeout below rather than by cancellation.
+			conn, err = client.Dial("tcp", hop.Addr())
 		}
 		if err != nil {
-			cancel()
 			closeQuietly(client)
 			return nil, hopError(routeName, i, hop, err)
 		}
-		if deadline, ok := hopCtx.Deadline(); ok {
-			_ = conn.SetDeadline(deadline)
-		}
-		sshConn, chans, reqs, err := ssh.NewClientConn(conn, hopAddress(hop), cfg)
-		cancel()
+		sshConn, chans, reqs, err := ssh.NewClientConn(conn, hop.Addr(), cfg)
 		if err != nil {
 			_ = conn.Close()
 			closeQuietly(client)
 			return nil, hopError(routeName, i, hop, err)
 		}
-		_ = conn.SetDeadline(time.Time{})
 		client = ssh.NewClient(sshConn, chans, reqs)
 	}
 	return client, nil
 }
-
-type ownedConn struct {
-	net.Conn
-	closeOwner func()
-}
-
-func (c *ownedConn) Close() error {
-	err := c.Conn.Close()
-	c.closeOwner()
-	return err
-}
-
-func hopAddress(hop Hop) string { return net.JoinHostPort(hop.Host, strconv.Itoa(hop.Port)) }
 
 // hopError names the route and the hop by NUMBER as well as by address.
 //
@@ -119,9 +100,9 @@ func hopAddress(hop Hop) string { return net.JoinHostPort(hop.Host, strconv.Itoa
 func hopError(routeName string, i int, hop Hop, err error) error {
 	var keyErr *knownhosts.KeyError
 	if errors.As(err, &keyErr) {
-		return fmt.Errorf("route %s, hop %d (%s@%s): %s", routeName, i+1, hop.User, hopAddress(hop), explainKeyError(hop, keyErr))
+		return fmt.Errorf("route %s, hop %d (%s@%s): %s", routeName, i+1, hop.User, hop.Addr(), explainKeyError(hop, keyErr))
 	}
-	return fmt.Errorf("route %s, hop %d (%s@%s): %w", routeName, i+1, hop.User, hopAddress(hop), err)
+	return fmt.Errorf("route %s, hop %d (%s@%s): %w", routeName, i+1, hop.User, hop.Addr(), err)
 }
 
 // explainKeyError says which of the two very different host-key failures this is,
@@ -131,7 +112,7 @@ func explainKeyError(hop Hop, err *knownhosts.KeyError) string {
 	if len(err.Want) > 0 {
 		return fmt.Sprintf("the host key CHANGED — known_hosts has a different key for %s."+
 			" Either the machine was rebuilt, or this is not the machine you think it is."+
-			" chore will not continue past this, exactly as ssh would not", hopAddress(hop))
+			" chore will not continue past this, exactly as ssh would not", hop.Addr())
 	}
 	return fmt.Sprintf("host key not in known_hosts. Connect once with ssh so the key is recorded" +
 		" — chore checks the same file and will not invent an exception." +
@@ -142,23 +123,19 @@ func explainKeyError(hop Hop, err *knownhosts.KeyError) string {
 // agentAuth is the only authentication chore offers, and that is the point: a
 // key never passes through this program, so whatever manages the user's secrets
 // keeps working without chore knowing it exists.
-func (d Dialer) agentAuth() (ssh.AuthMethod, net.Conn, error) {
-	sock := d.agentSocket()
+func (d Dialer) agentAuth() (ssh.AuthMethod, error) {
+	sock := d.AgentSock
 	if sock == "" {
-		return nil, nil, errors.New("no SSH_AUTH_SOCK: chore authenticates through your ssh-agent and never handles a key itself — start an agent and add the key you would use for `ssh`")
+		sock = os.Getenv("SSH_AUTH_SOCK")
+	}
+	if sock == "" {
+		return nil, errors.New("no SSH_AUTH_SOCK: chore authenticates through your ssh-agent and never handles a key itself — start an agent and add the key you would use for `ssh`")
 	}
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connecting to the ssh-agent at %s: %w", sock, err)
+		return nil, fmt.Errorf("connecting to the ssh-agent at %s: %w", sock, err)
 	}
-	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), conn, nil
-}
-
-func (d Dialer) agentSocket() string {
-	if d.AgentSock != "" {
-		return d.AgentSock
-	}
-	return os.Getenv("SSH_AUTH_SOCK")
+	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), nil
 }
 
 // hostKeyCallback verifies against the same file ssh does.
@@ -185,7 +162,134 @@ func (d Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return cb, nil
+	return withoutPortFallback(cb), nil
+}
+
+// withoutPortFallback adds the lookup rule OpenSSH has and x/crypto does not:
+// when there is no entry for `[host]:port`, try the bare `host`.
+//
+// Reading the same FILE is not the same as doing the same LOOKUP, and the
+// difference is not academic. Measured against a real route: a host had been
+// recorded on port 22, the route reaches it on 10022, `ssh` connected happily —
+// its own debug output says `found matching key w/out port` — and chore refused,
+// claiming a key was unknown that ssh had just accepted from the very same file.
+// A tool that says it checks what ssh checks has to answer the same way, or the
+// promise is worse than useless: it teaches the user their file is wrong.
+//
+// The fallback is deliberately narrow. It applies only when there is NO entry for
+// the address at all, never when one exists and disagrees — a changed key stays a
+// refusal, because that is the case the check exists for.
+func withoutPortFallback(cb ssh.HostKeyCallback) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := cb(hostname, remote, key)
+		if err == nil {
+			return nil
+		}
+		var keyErr *knownhosts.KeyError
+		if !errors.As(err, &keyErr) || len(keyErr.Want) > 0 {
+			// Either a different kind of failure, or — the important one — an
+			// entry that exists and does not match. Never fall back past that.
+			return err
+		}
+		host, _, splitErr := net.SplitHostPort(hostname)
+		if splitErr != nil {
+			return err
+		}
+		// Port 22 rather than a bare host, and the difference is not cosmetic:
+		// x/crypto's check() calls net.SplitHostPort on whatever it is given and
+		// fails outright on an address without one, so a bare host never reaches
+		// the lookup at all. Port 22 is what its Normalize turns into the
+		// unbracketed entry — which is exactly the line OpenSSH means by "found
+		// matching key w/out port".
+		if bare := cb(net.JoinHostPort(host, "22"), remote, key); bare == nil {
+			return nil
+		}
+		return err
+	}
+}
+
+// knownAlgorithms returns the host key types known_hosts holds for an address,
+// in the order to ask for them.
+//
+// This is what OpenSSH does and x/crypto does not, and leaving it out produces a
+// failure that reads as an attack. A server offers several host key types;
+// x/crypto picks by its own fixed preference (ECDSA first), while OpenSSH asks
+// for the type it has already recorded. So against a host recorded as ed25519,
+// chore was handed an ECDSA key, found the ed25519 entry, and reported that the
+// host key had CHANGED — for a host `ssh` connects to happily from the same file,
+// with nothing wrong anywhere.
+//
+// The lookup is done by asking the callback about a key it cannot possibly match
+// and reading the entries back out of the KeyError it returns. x/crypto exposes
+// no way to enumerate the file, and reimplementing its parser — hashed entries,
+// certificate authorities, revocations, wildcards — to answer one question would
+// be a second source of truth for the thing that must not have one.
+func knownAlgorithms(cb ssh.HostKeyCallback, address string) []string {
+	// Any key the file cannot contain will do; a fresh one cannot be in it.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+	probe, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		return nil
+	}
+	// The callback splits this before it looks at anything else, so it has to
+	// parse — its value is never used, since a non-empty address wins over it.
+	unused := &net.TCPAddr{IP: net.IPv4zero, Port: 0}
+
+	var known []string
+	for _, addr := range []string{address, portTwentyTwo(address)} {
+		if addr == "" {
+			continue
+		}
+		var keyErr *knownhosts.KeyError
+		if errors.As(cb(addr, unused, probe.PublicKey()), &keyErr) {
+			for _, want := range keyErr.Want {
+				known = append(known, expandRSA(want.Key.Type())...)
+			}
+		}
+		if len(known) > 0 {
+			// The exact address wins outright: falling through to the bare host
+			// would mix in types recorded for a DIFFERENT port on the same host.
+			break
+		}
+	}
+	return dedupe(known)
+}
+
+// portTwentyTwo rewrites an address to the port-22 form, which is how the
+// unbracketed known_hosts entry is addressed. Empty when there is no port to
+// replace, so the caller skips it.
+func portTwentyTwo(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "22" {
+		return ""
+	}
+	return net.JoinHostPort(host, "22")
+}
+
+// expandRSA turns the one type known_hosts records for an RSA key into the three
+// algorithms a modern server may negotiate with it. The file says `ssh-rsa`
+// whichever signature algorithm is used, so asking for only that name would
+// refuse the SHA-2 signatures every current sshd prefers.
+func expandRSA(keyType string) []string {
+	if keyType == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	}
+	return []string{keyType}
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Exec runs argv at the far end of a client and streams its output.
@@ -196,7 +300,7 @@ func (d Dialer) hostKeyCallback() (ssh.HostKeyCallback, error) {
 // login shell. There is no argv on the wire and no way to avoid quoting — the
 // choice is only whether chore does it once, correctly, or whether every task
 // does it by hand. Taking argv in the file is chore doing it.
-func Exec(ctx context.Context, client *ssh.Client, argv []string, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
+func Exec(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("opening a session: %w", err)
@@ -208,8 +312,11 @@ func Exec(ctx context.Context, client *ssh.Client, argv []string, in *os.File, o
 		session.Stdin = in
 	}
 
-	if err := session.Start(quoteArgv(argv)); err != nil {
-		return fmt.Errorf("starting %s: %w", argv[0], err)
+	// One string either way, because that is all the protocol carries. An argv is
+	// quoted so the far end's shell reconstructs it; a shell line is handed over
+	// as written, which is what makes a pipe possible.
+	if err := session.Start(command.String()); err != nil {
+		return fmt.Errorf("starting %s: %w", command, err)
 	}
 
 	// Wait in a goroutine so an interrupt can close the session out from under it:

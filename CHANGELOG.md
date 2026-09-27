@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.13.0
+
+- **Global tasks can make local decisions before taking a route.** A route may
+  select between named routes with `if`, `then`, and `else`; the predicate is a
+  normal task, so it can have dependencies and is evaluated once per run. `--dry`
+  shows both branches without running the predicate or contacting a host.
+- **Global tasks can run local commands and pass values between tasks.** Tasks
+  support `cmd` and `exports`, alongside dependencies. This lets a machine-wide
+  task check local state, choose a route, and then run the appropriate remote
+  action. Cross-namespace references are validated when the files load.
+- **Safer dependency and route handling.** Dependencies are deduplicated by
+  resolved task address, cycles are detected across namespaces, and route
+  selection errors identify the task and branch involved.
+
 ## v0.12.0
 
 - **Global task namespaces.** User-wide taskfiles in

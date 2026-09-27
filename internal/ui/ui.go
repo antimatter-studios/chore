@@ -254,6 +254,11 @@ func (u *UI) Dim(format string, a ...any) {
 // (the usage block, a version string).
 func (u *UI) Raw(s string) { fmt.Fprint(u.w, s) }
 
+// Writer is the stream underneath, for output that is neither styled nor
+// chore's own voice — a remote command's stdout, which belongs to whoever ran it
+// and must arrive byte for byte.
+func (u *UI) Writer() io.Writer { return u.w }
+
 // truncate cuts a string to a cell width, leaving room for the ellipsis. Counted
 // in runes over display width so a wide character is never split down the middle.
 func truncate(s string, width int) string {
