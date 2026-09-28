@@ -149,6 +149,9 @@ func (r *Runner) runWith(ctx context.Context, set *Set, t *Task, done, asked map
 			fmt.Fprintf(r.Err, "chore: %s -> %s via route %s. Ctrl-C to stop.\n", addr, t.Forward.Remote, t.Route)
 		})
 	}
+	if t.PTY {
+		return ExecPTY(ctx, client, t.Cmd, r.In, r.Out, r.Err)
+	}
 	return Exec(ctx, client, t.Cmd, r.In, r.Out, r.Err)
 }
 
@@ -430,5 +433,8 @@ func (s *Set) DryRun(w io.Writer, address string) error {
 		}
 	}
 	fmt.Fprintf(w, "cmd:     %s\n", t.Cmd)
+	if t.PTY {
+		fmt.Fprintln(w, "pty:     allocated for interactive input")
+	}
 	return nil
 }

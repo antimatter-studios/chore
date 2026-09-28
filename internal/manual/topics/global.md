@@ -42,6 +42,12 @@ tasks:
     desc: the cluster's API on this machine's 6443
     route: pi
     forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 }
+
+  shell:
+    desc: an interactive login shell on the homelab
+    route: pi
+    pty: true
+    cmd: [bash, -l]
 ```
 
 ## Each hop is resolved FROM THE PREVIOUS HOP
@@ -87,6 +93,9 @@ anything shorter.
   `$SSH_AUTH_SOCK`, so a secret manager keeps working without chore knowing it
   exists. Host keys are checked against `~/.ssh/known_hosts`, the same file
   `ssh` uses and with the same refusal to continue when one has changed.
+- **`pty: true` allocates an interactive terminal** for a remote command. Chore
+  puts a local terminal into raw mode for the session and restores it on exit;
+  terminal resize events are forwarded to the remote PTY.
 ## A route can be a choice
 
 ```yaml
