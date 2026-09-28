@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.0
+
+- **Remote global tasks can request an interactive PTY.** Set `pty: true` on a
+  routed command such as `cmd: [bash, -l]` to get terminal input, job control,
+  terminal resizing, and automatic restoration of the local terminal on exit.
+
 ## v0.13.0
 
 - **Global tasks can make local decisions before taking a route.** A route may

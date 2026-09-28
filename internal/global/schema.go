@@ -69,6 +69,12 @@ import (
 //     desc: the cluster's API on this machine's 6443
 //     route: pi
 //     forward: { remote: 127.0.0.1:6443, local: 127.0.0.1:6443 }
+//
+//   shell:
+//     desc: an interactive login shell on the homelab
+//     route: pi
+//     pty: true
+//     cmd: [bash, -l]
 // ```
 //
 // ## Each hop is resolved FROM THE PREVIOUS HOP
@@ -114,6 +120,9 @@ import (
 //   `$SSH_AUTH_SOCK`, so a secret manager keeps working without chore knowing it
 //   exists. Host keys are checked against `~/.ssh/known_hosts`, the same file
 //   `ssh` uses and with the same refusal to continue when one has changed.
+// - **`pty: true` allocates an interactive terminal** for a remote command. Chore
+//   puts a local terminal into raw mode for the session and restores it on exit;
+//   terminal resize events are forwarded to the remote PTY.
 // ## A route can be a choice
 //
 // ```yaml
@@ -324,6 +333,10 @@ type Task struct {
 	// can be travelled at all: unlocking a vault so the ssh-agent has the key.
 	// That cannot be done at the far end by definition.
 	Cmd Cmd `yaml:"cmd"`
+	// PTY requests a remote pseudo-terminal and passes the local terminal through
+	// in raw mode. Use it for an interactive remote shell; ordinary commands
+	// should leave it false so their stdin and output remain ordinary streams.
+	PTY bool `yaml:"pty"`
 	// Forward is a port to bring back to this machine. It is not a command, which
 	// is why it is a key of its own rather than another spelling of Cmd.
 	Forward *Forward `yaml:"forward"`
@@ -536,6 +549,9 @@ func (t *Task) validate(n *Namespace, name string) error {
 	}
 	if len(t.Cmd.Argv) > 0 && t.Cmd.Line != "" {
 		return fmt.Errorf("%s: task %q gives `cmd:` as both a list and a string", n.Path, name)
+	}
+	if t.PTY && (t.Route == "" || !hasCmd || hasForward) {
+		return fmt.Errorf("%s: task %q sets `pty: true` but needs a routed `cmd:` — a PTY belongs to a remote command", n.Path, name)
 	}
 
 	for _, dep := range t.Deps {

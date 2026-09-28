@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
+	"golang.org/x/term"
 )
 
 // dialTimeout bounds ONE hop. A route of five hops is therefore bounded by five
@@ -301,6 +304,17 @@ func dedupe(in []string) []string {
 // choice is only whether chore does it once, correctly, or whether every task
 // does it by hand. Taking argv in the file is chore doing it.
 func Exec(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
+	return runSSHCommand(ctx, client, command, in, out, errOut, false)
+}
+
+// ExecPTY runs a remote command with an allocated terminal. It is intended for
+// interactive shells: input is passed through in raw mode, terminal dimensions
+// are kept in sync, and the caller's terminal settings are restored on return.
+func ExecPTY(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
+	return runSSHCommand(ctx, client, command, in, out, errOut, true)
+}
+
+func runSSHCommand(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }, pty bool) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("opening a session: %w", err)
@@ -310,6 +324,36 @@ func Exec(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out
 	session.Stdout, session.Stderr = out, errOut
 	if in != nil {
 		session.Stdin = in
+	}
+
+	var restoreTerminal func()
+	if pty {
+		width, height := 80, 24
+		localTTY := in != nil && term.IsTerminal(int(in.Fd()))
+		if localTTY {
+			if w, h, sizeErr := term.GetSize(int(in.Fd())); sizeErr == nil {
+				width, height = w, h
+			}
+		}
+		termType := os.Getenv("TERM")
+		if termType == "" || termType == "dumb" {
+			termType = "xterm-256color"
+		}
+		modes := ssh.TerminalModes{
+			ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400,
+		}
+		if err := session.RequestPty(termType, height, width, modes); err != nil {
+			return fmt.Errorf("requesting remote PTY: %w", err)
+		}
+		if localTTY {
+			state, rawErr := term.MakeRaw(int(in.Fd()))
+			if rawErr != nil {
+				return fmt.Errorf("putting local terminal in raw mode: %w", rawErr)
+			}
+			restoreTerminal = func() { _ = term.Restore(int(in.Fd()), state) }
+			defer restoreTerminal()
+			defer watchTerminalResize(session, in)()
+		}
 	}
 
 	// One string either way, because that is all the protocol carries. An argv is
@@ -334,6 +378,35 @@ func Exec(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out
 		_ = session.Signal(ssh.SIGINT)
 		_ = session.Close()
 		return ctx.Err()
+	}
+}
+
+// watchTerminalResize forwards SIGWINCH to the remote PTY until the session
+// context ends. A local terminal resized while an SSH shell is open should
+// resize the far end too, as OpenSSH does.
+func watchTerminalResize(session *ssh.Session, in *os.File) func() {
+	resized := make(chan os.Signal, 1)
+	signal.Notify(resized, syscall.SIGWINCH)
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			case <-resized:
+				width, height, err := term.GetSize(int(in.Fd()))
+				if err == nil {
+					_ = session.WindowChange(height, width)
+				}
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(resized)
+		close(done)
+		<-stopped
 	}
 }
 
