@@ -3,6 +3,7 @@ package global
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -275,4 +276,96 @@ func asExitError(err error, target **ExitError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+// Without `pty:` a remote command gets ordinary streams and no terminal, which
+// is what keeps its output pipeable and its input a plain byte stream.
+func TestExecAsksForNoTerminal(t *testing.T) {
+	sock, pub := testAgent(t)
+	server := newTestServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+
+	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var out, errOut bytes.Buffer
+	if err := Exec(context.Background(), client, Cmd{Argv: []string{"hostname"}}, nil, &out, &errOut); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got := server.ptyRequests(); len(got) != 0 {
+		t.Errorf("Exec asked for a terminal: %v", got)
+	}
+}
+
+// With `pty: true` the far end is given a terminal before the command starts.
+// With no local terminal to measure it is ssh's default 80x24, and a TERM the
+// far end could do nothing useful with is replaced by one it can.
+func TestExecPTYAsksForATerminal(t *testing.T) {
+	for _, tc := range []struct{ name, term, want string }{
+		{"TERM is passed through", "screen-256color", "screen-256color"},
+		{"no TERM", "", "xterm-256color"},
+		{"a dumb TERM", "dumb", "xterm-256color"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM", tc.term)
+			sock, pub := testAgent(t)
+			server := newTestServer(t, pub)
+			d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+
+			client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			var out, errOut bytes.Buffer
+			if err := ExecPTY(context.Background(), client, Cmd{Argv: []string{"bash", "-l"}}, nil, &out, &errOut); err != nil {
+				t.Fatalf("ExecPTY: %v (stderr %q)", err, errOut.String())
+			}
+			want := ptyReq{Term: tc.want, termSize: termSize{Cols: 80, Rows: 24}}
+			if got := server.ptyRequests(); len(got) != 1 || got[0] != want {
+				t.Errorf("pty requests = %v, want [%v]", got, want)
+			}
+			if got := server.ranCommands(); len(got) != 1 || got[0] != `'bash' '-l'` {
+				t.Errorf("the far end ran %q", got)
+			}
+		})
+	}
+}
+
+// The key in the file is what picks the terminal: a routed task with `pty: true`
+// asks for one and the same task without it does not.
+func TestRunnerAsksForATerminalOnlyWhenTheTaskDoes(t *testing.T) {
+	sock, pub := testAgent(t)
+	server := newTestServer(t, pub)
+	hop := hopTo(t, server)
+	set, err := Load(write(t, map[string]string{"x.yaml": fmt.Sprintf(`
+name: x
+routes:
+  r: [ { host: %s, port: %d, user: %s } ]
+tasks:
+  shell: { route: r, pty: true, cmd: [bash, -l] }
+  plain: { route: r, cmd: [hostname] }
+`, hop.Host, hop.Port, hop.User)}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	r := &Runner{Out: &out, Err: &errOut, Dialer: Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}}
+	if err := r.Run(context.Background(), set, "x:plain"); err != nil {
+		t.Fatalf("Run plain: %v (stderr %q)", err, errOut.String())
+	}
+	if got := server.ptyRequests(); len(got) != 0 {
+		t.Fatalf("a task without `pty:` asked for a terminal: %v", got)
+	}
+	if err := r.Run(context.Background(), set, "x:shell"); err != nil {
+		t.Fatalf("Run shell: %v (stderr %q)", err, errOut.String())
+	}
+	if got := server.ptyRequests(); len(got) != 1 {
+		t.Fatalf("a task with `pty: true` made %d terminal requests, want 1", len(got))
+	}
 }

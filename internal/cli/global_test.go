@@ -88,6 +88,26 @@ func TestGlobalDryRunPrintsAForward(t *testing.T) {
 	checkContains(t, got, "stdout", got.stdout, "127.0.0.1:6443 on this machine", "at the far end")
 }
 
+// A PTY changes how the remote command's input and output behave, so --dry says
+// when one will be allocated — and says nothing for a task that has none.
+func TestGlobalDryRunSaysWhenATerminalIsAllocated(t *testing.T) {
+	installGlobal(t, map[string]string{"x.yaml": `
+name: x
+routes:
+  pi: [ { host: pi.example, user: chris } ]
+tasks:
+  shell: { route: pi, pty: true, cmd: [bash, -l] }
+  pods: { route: pi, cmd: [kubectl, get, pods] }
+`})
+	got := runMain(t, t.TempDir(), "--dry", "global:x:shell")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "'bash' '-l'", "pty:     allocated for interactive input")
+
+	got = runMain(t, t.TempDir(), "--dry", "global:x:pods")
+	checkCode(t, got, 0)
+	checkNotContains(t, got, "stdout", got.stdout, "pty:")
+}
+
 // A namespace or task that is not there says so, and says what IS there —
 // because the answer is almost always a typo.
 func TestGlobalNamesWhatIsInstalled(t *testing.T) {
