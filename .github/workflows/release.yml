@@ -1,11 +1,11 @@
 name: Release
 
 # Tag-driven: pushing v1.2.3 cross-builds every platform, publishes a release with
-# checksums, and then proves the build was reproducible.
+# checksums and a provenance attestation, and then proves the build was reproducible.
 #
 # The build itself lives in .goreleaser.yml — targets, flags, ldflags and artifact
 # names are all there, including WHY each flag exists. This file only drives it and
-# adds the two things goreleaser does not do (see the last two steps).
+# adds the things goreleaser does not do (see the steps after it).
 #
 # workflow_dispatch has no version input: the version comes from the tag goreleaser
 # sees, so a hand-typed one could not be honoured. To re-run a release, dispatch this
@@ -18,6 +18,10 @@ on:
 
 permissions:
   contents: write
+  # For the provenance attestation: id-token signs it with this workflow's OIDC
+  # identity, attestations stores it against the repository. See "Attest".
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -72,6 +76,18 @@ jobs:
             echo "the built binary does not report ${VER}" >&2
             exit 1
           }
+
+      # The tap's verify-release.sh refuses an archive without this: a provenance
+      # attestation, signed as THIS workflow, for the exact bytes users download.
+      # A checksum only says the file has not changed since someone uploaded it;
+      # the attestation says who built it, from which commit, and it is checked
+      # with `gh attestation verify --signer-workflow <repo>/.github/workflows/release.yml`.
+      #
+      # Here, before the reproduce step, because that step wipes dist/.
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
 
       - name: Publish binary checksums
         env:
@@ -163,5 +179,6 @@ jobs:
       # To publish this release to brew: run "Sync formulae from releases" in
       # antimatter-studios/homebrew-tap. IT DOES NOT OPEN A PULL REQUEST — it
       # pushes a `sync/formulae-<run-id>` branch and says so itself: "Open the
-      # PR yourself; this workflow will not." Open it, verify the formula's
-      # sha256s against this release's checksums.txt, and merge that.
+      # PR yourself; this workflow will not." Open it, run the tap's
+      # `.github/scripts/verify-release.sh chore <version>` on that branch (it
+      # checks the sha256s AND the attestation above), and merge that.
