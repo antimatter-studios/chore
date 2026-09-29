@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.1
+
+- **Release archives carry a build-provenance attestation.** Each tarball is
+  attested by the release workflow, so a download can be checked with
+  `gh attestation verify <file> --repo antimatter-studios/chore`. The Homebrew
+  tap requires this before it publishes a release. No change to chore itself.
+
 ## v0.14.0
 
 - **Remote global tasks can request an interactive PTY.** Set `pty: true` on a
