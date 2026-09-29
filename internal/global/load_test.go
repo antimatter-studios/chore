@@ -211,9 +211,6 @@ tasks:
 	}
 }
 
-// The two forms of cmd: are not shorthands for each other. The list is quoted by
-// chore so an argument survives whole; the string is passed through so it can
-// pipe — which the list form cannot express at all.
 // `pty:` is off unless a task asks for it, so an ordinary remote command keeps
 // ordinary streams.
 func TestPTYIsOptIn(t *testing.T) {
@@ -237,6 +234,9 @@ tasks:
 	}
 }
 
+// The two forms of cmd: are not shorthands for each other. The list is quoted by
+// chore so an argument survives whole; the string is passed through so it can
+// pipe — which the list form cannot express at all.
 func TestCmdTakesEitherForm(t *testing.T) {
 	set, err := Load(write(t, map[string]string{"x.yaml": `
 name: x

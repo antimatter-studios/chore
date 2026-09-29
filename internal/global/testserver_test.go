@@ -172,7 +172,7 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 		s.commands = append(s.commands, payload.Command)
 		s.mu.Unlock()
 
-		if strings.Contains(payload.Command, "hold") {
+		if payload.Command == "'hold'" {
 			holding = true
 			select {
 			case s.held <- struct{}{}:
