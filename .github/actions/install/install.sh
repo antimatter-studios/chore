@@ -65,18 +65,24 @@ tmp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 work="$(mktemp -d "${tmp_root%/}/install-chore.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-# A 404 is a version that was never released, or a platform it does not ship.
-# `curl -f` makes that a non-zero exit instead of a 9-byte "Not Found" body that
-# tar then reports as a corrupt archive — an error that names the wrong cause.
-curl -fsSL --retry 3 --retry-delay 2 -o "$work/$tarball" "$base/$tarball" || {
-  echo "::error::cannot download $tarball from $base — is v${version} released," \
-    "and does it publish ${os}-${arch}?" >&2
-  exit 1
+# fetch URL FILE: download, and on failure say which failure it was. Only a 404
+# means the version or platform does not exist; a 5xx is GitHub having a bad
+# minute, and blaming the version for it sends the reader to the wrong place.
+# `curl -f` makes an HTTP error a non-zero exit instead of a 9-byte "Not Found"
+# body that tar then reports as a corrupt archive. --retry covers 408/429/5xx
+# and, without --retry-delay, backs off 1s, 2s, 4s ... (~1 min over 6 tries).
+fetch() {
+  local code
+  code="$(curl -fsSL --retry 6 -o "$2" -w '%{http_code}' "$1")" && return 0
+  case "$code" in
+    404) echo "::error::$1 is 404 — is v${version} released, and does it publish ${os}-${arch}?" >&2 ;;
+    000) echo "::error::cannot reach $1 (network error, no HTTP response)" >&2 ;;
+    *) echo "::error::$1 returned HTTP $code after retries — GitHub failing, not a missing release; re-run the job" >&2 ;;
+  esac
+  return 1
 }
-curl -fsSL --retry 3 --retry-delay 2 -o "$work/checksums.txt" "$base/checksums.txt" || {
-  echo "::error::cannot download checksums.txt from $base" >&2
-  exit 1
-}
+fetch "$base/$tarball" "$work/$tarball" || exit 1
+fetch "$base/checksums.txt" "$work/checksums.txt" || exit 1
 
 # Verified rather than trusted: the tarball comes over the network into a job
 # that is about to run it. Matched on the whole filename field, not a grep
