@@ -46,6 +46,41 @@ jobs:
           tar xzf "$asset" actionlint
           ./actionlint .github/workflows/*.yml
 
+      # Branch protection names ONE check, `ci-ok`, and this is what keeps that
+      # honest: ci-ok has to need every job in this file, and .github-guard has
+      # to require ci-ok and nothing else. Beside actionlint because it is the
+      # same kind of check — this file linted against what it claims to gate.
+      # The script is the siblings' copy; see its header and .github-guard.
+      - name: The one required check stands for every job
+        if: matrix.os == 'ubuntu-latest'
+        run: scripts/ci-gate.sh
+
+      # The half no file can hold: the protection main actually has. It WARNS
+      # rather than fails, deliberately. A setting is not in the diff, so a pull
+      # request that went red here would be blamed for something it cannot fix —
+      # and the safe order of a change (the job lands, then protection moves to
+      # it) always has a window where the two disagree. The warning is what
+      # says the second half has not happened yet. Classic protection only:
+      # a ruleset's required checks are not in this response.
+      - name: Live protection matches .github-guard
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          want=$(git config -f .github-guard --get-all checks.required | LC_ALL=C sort | paste -sd, -)
+          if ! have=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${DEFAULT_BRANCH}" \
+              --jq '.protection.required_status_checks.contexts // [] | sort | join(",")'); then
+            echo "::warning::could not read protection on ${DEFAULT_BRANCH}; not compared"
+            exit 0
+          fi
+          if [ "$want" != "$have" ]; then
+            echo "::warning::${DEFAULT_BRANCH} requires [${have}] but .github-guard says [${want}] — apply .github-guard to branch protection"
+          else
+            echo "protection on ${DEFAULT_BRANCH} requires [${have}], as .github-guard says"
+          fi
+
       - name: Formatting
         run: |
           set -euo pipefail
@@ -61,6 +96,8 @@ jobs:
 
       # scripts/ manipulates PATH in the developer's own shell, where a mistake
       # is annoying to diagnose and easy to ship — nothing else exercises them.
+      # ci-gate.sh is here too: a program rather than a sourced file, but a
+      # guard is the last place a shell bug should go unlinted.
       # ubuntu only: shellcheck is preinstalled there, not on the macOS runners.
       - name: ShellCheck scripts
         if: matrix.os == 'ubuntu-latest'
@@ -103,3 +140,38 @@ jobs:
         env:
           CHORE_BIN: /tmp/chore
         run: go test ./examples -count=1
+
+  ci-ok:
+    name: ci-ok
+    # THE ONE REQUIRED CHECK (#54). Branch protection used to name the two
+    # matrix legs by hand, `test (ubuntu-latest)` and `test (macos-latest)` —
+    # exactly the names that move when a leg is added or the job is renamed.
+    # Requiring this instead means the jobs behind it can change without
+    # leaving a required check that never reports, which GitHub reads as
+    # permanently pending, with enforce_admins on and nothing to point at.
+    #
+    # `if: always()` because without it a cancelled or skipped job leaves this
+    # skipped too, and a skipped required check never reports. It judges every
+    # result instead: anything but `success` fails, since a job that was skipped
+    # or cancelled is not a job that passed. `needs.test.result` is the whole
+    # matrix's, so one red leg is enough.
+    #
+    # It runs no work of its own, deliberately: it is a claim about the other
+    # jobs, so it must not be able to pass anything off as theirs. A job added
+    # to this file goes in `needs:` below, or scripts/ci-gate.sh fails.
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran and succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad (failed, cancelled or skipped)"
+            exit 1
+          fi
+          echo "all required jobs succeeded"
