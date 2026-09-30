@@ -540,8 +540,8 @@ func TestIsVarName(t *testing.T) {
 		"a$b":        false,
 	}
 	for in, want := range cases {
-		if got := isVarName(in); got != want {
-			t.Errorf("isVarName(%q) = %v, want %v", in, got, want)
+		if got := chorefile.IsName(in); got != want {
+			t.Errorf("IsName(%q) = %v, want %v", in, got, want)
 		}
 	}
 }
@@ -1097,6 +1097,9 @@ tasks:
 			// reading only the task's own vars called config required.
 			checkContains(t, got, "stdout", got.stdout, "bool")
 			checkContains(t, got, "stdout", got.stdout, "optional")
+			// A flag is never required: its absence is its value.
+			checkContains(t, got, "stdout", got.stdout, "bool, optional")
+			checkNotContains(t, got, "stdout", got.stdout, "bool, required")
 		})
 	}
 

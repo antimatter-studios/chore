@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- **A global task is an ordinary task (#68).** Files in `global.d` used to be
+  read by a separate schema, loader and runner, and that copy dropped every word
+  after the task name: `chore global:agents:limit --json` exited 0 and ignored
+  the flag. They now load and run exactly like a project's `chores.yml`, so
+  `args:`, `vars:`, `cmds:`, hooks, `--help`, `--dry`, `--list` and `--` all
+  work, and an undeclared word is an error. A task's `cmd:` in a project file
+  also works now, as a one-step `cmds:`. A step may also be an argv list, which
+  chore quotes: `- [kubectl, get, pods, -A]`.
+- **Routes work in every task.** `routes:`, `route:`, `forward:`, `pty:`,
+  `with_route:` and `exports:` are fields of every task in every file, so a
+  project's `chores.yml` can run steps over ssh. Every global file is loaded on
+  every run, so any file can name a global task or route as `global:<file>:<name>`,
+  for example `deps: [global:ssh:unlock]` or `route: global:homelab:pi`.
+- **The namespace is the filename.** `global.d/ssh.yaml` is `global:ssh:`. `name:`
+  is no longer needed; a file that still sets it loads as long as it matches.
+- **Behaviour that changed for global files**, now that they follow the project
+  rules:
+  - `deps:` run concurrently, and a dependency runs once per run only with
+    `run: once`. Give an unlock step `run: once`.
+  - A routed step gets your stdin only with `interactive:` or `pty:`.
+  - A global task runs in the directory you ran chore from.
+  - A `$VAR` in an argv word is expanded when the task runs, from its variables
+    and the environment. An unset variable is still an error. Before, it was
+    expanded when the file loaded.
+- **`--help` no longer calls a bool flag required.** A flag is never required;
+  its absence is its value.
+- **A dependency cycle is refused at load**, in every file. Before, a project's
+  cycle kept spawning tasks until something gave out.
+
 ## v0.14.3
 
 - **An install action for GitHub Actions.** `uses:

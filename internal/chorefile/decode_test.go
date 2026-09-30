@@ -272,9 +272,31 @@ func TestDecodeCmd(t *testing.T) {
 			wantErr: []string{"unknown field", `"slient"`},
 		},
 		{
-			name:    "sequence is not a command",
-			item:    "[echo, hi]",
-			wantErr: []string{"a command must be a string or a mapping"},
+			// A list is an argv, which chore quotes: the one form in which a word
+			// containing a space or a quote cannot be split by the shell.
+			name: "sequence is an argv",
+			item: "[echo, 'a b', \"it's\"]",
+			want: Cmd{Argv: []string{"echo", "a b", "it's"}},
+		},
+		{
+			name: "argv inside a mapping",
+			item: "{cmd: [kubectl, get, pods], ignore_error: true}",
+			want: Cmd{Argv: []string{"kubectl", "get", "pods"}, IgnoreError: true},
+		},
+		{
+			name:    "empty argv",
+			item:    "[]",
+			wantErr: []string{"needs at least the program"},
+		},
+		{
+			name:    "nested list in an argv",
+			item:    "[echo, [a, b]]",
+			wantErr: []string{"every word of an argv is a plain value"},
+		},
+		{
+			name:    "a mapping is not a cmd",
+			item:    "{cmd: {sh: date}}",
+			wantErr: []string{"`cmd` is a shell line or an argv list"},
 		},
 	}
 

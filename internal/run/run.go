@@ -26,6 +26,7 @@ import (
 
 	"github.com/antimatter-studios/chore/internal/chorefile"
 	"github.com/antimatter-studios/chore/internal/fingerprint"
+	"github.com/antimatter-studios/chore/internal/global"
 	"github.com/antimatter-studios/chore/internal/shell"
 	"github.com/antimatter-studios/chore/internal/tmpl"
 )
@@ -92,6 +93,18 @@ type Runner struct {
 	// that share a config does not print the same line 20 times.
 	warnMu sync.Mutex
 	warned map[string]bool
+
+	// Dialer travels a task's `route:`. The zero value uses $SSH_AUTH_SOCK and
+	// ~/.ssh/known_hosts; a test points it at its own agent and server.
+	Dialer global.Dialer
+
+	// preds holds each route predicate's answer for this run. See ask.
+	predMu sync.Mutex
+	preds  map[string]*predicate
+
+	// exported is what `exports:` tasks have set so far. See applyExports.
+	exportMu sync.Mutex
+	exported map[string]string
 }
 
 // New returns a Runner writing to out and errOut.
@@ -417,7 +430,7 @@ func (r *Runner) taskHook(ctx context.Context, t *chorefile.Task, scope *tmpl.Sc
 		sh.Interactive, sh.In = false, nil
 	}
 	for i, c := range cmds {
-		if err := r.command(ctx, t, s, sh, c); err != nil {
+		if err := r.command(ctx, t, s, sh, nil, c); err != nil {
 			if c.IgnoreError {
 				fmt.Fprintf(r.Err, "task: %s: %s step %d failed, ignored: %v\n", t.Name, hook, i+1, err)
 				continue
@@ -480,6 +493,51 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		own.disarm()
 		return own.explain(err)
 	}
+	// The shell was built before the deps ran, and one of them may have been an
+	// `exports:` task — the unlock whose SSH_AUTH_SOCK this task exists to use.
+	sh.Env = append(sh.Env, r.exportedEnv()...)
+
+	// Where the body runs. A `route:` puts every step at the far end of one
+	// connection; `forward:` makes the body a tunnel; `with_route:` hands a
+	// route's details to steps that stay here. --dry prints the route and resolves
+	// nothing, since resolving can mean running a predicate.
+	var rem *remote
+	switch {
+	case r.DryRun && (t.Route != "" || t.WithRoute != ""):
+		r.dryRoute(t, scope)
+		if t.Forward != nil {
+			own.disarm()
+			return nil
+		}
+	case t.Forward != nil:
+		err := r.forward(ctx, t, scope)
+		own.disarm()
+		return own.explain(err)
+	case t.Route != "":
+		var err error
+		if rem, err = r.connect(ctx, t, scope); err != nil {
+			own.disarm()
+			return own.explain(err)
+		}
+		defer rem.client.Close()
+	case t.WithRoute != "":
+		resolved, err := r.resolveRoute(ctx, t.File, t.WithRoute, scope)
+		if err != nil {
+			own.disarm()
+			return own.explain(fmt.Errorf("%s: %w", t.Name, err))
+		}
+		if resolved.Why != "" && r.Verbose {
+			fmt.Fprintf(r.Err, "chore: route %s -> %s [%s]\n", t.WithRoute, resolved.Name, resolved.Why)
+		}
+		sh.Env = append(slices.Clone(sh.Env), resolved.Env()...)
+	}
+	// With `exports:` the stdout is the point, so it is captured rather than
+	// shown. stderr still streams: that is where such tools put the messages a
+	// person is meant to read.
+	var captured strings.Builder
+	if t.Exports && !r.DryRun {
+		sh.Out = &captured
+	}
 
 	// Deferred steps run when the task finishes, in reverse order, whether or not
 	// it succeeded — which is the only reason a task can promise to tear down
@@ -492,7 +550,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 			deferred = append(deferred, c)
 			continue
 		}
-		if err := r.command(ctx, t, scope, sh, c); err != nil {
+		if err := r.command(ctx, t, scope, sh, rem, c); err != nil {
 			if c.IgnoreError || t.IgnoreError {
 				fmt.Fprintf(r.Err, "task: %s: cmd %d failed, ignored: %v\n", t.Name, i+1, err)
 				continue
@@ -522,7 +580,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	for i := len(deferred) - 1; i >= 0; i-- {
 		// A deferred step runs even after a failure, and its own failure must not
 		// hide why the task failed in the first place.
-		if err := r.command(cleanupCtx, t, scope, sh, deferred[i]); err != nil {
+		if err := r.command(cleanupCtx, t, scope, sh, rem, deferred[i]); err != nil {
 			fmt.Fprintf(r.Err, "task: %s: deferred step failed: %v\n", t.Name, err)
 			if runErr == nil {
 				runErr = err
@@ -536,6 +594,9 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	runErr = own.explain(runErr)
 	if runErr != nil {
 		return runErr
+	}
+	if t.Exports && !r.DryRun {
+		r.applyExports(captured.String())
 	}
 
 	if len(t.Sources) > 0 || len(t.Generates) > 0 {
@@ -634,7 +695,7 @@ func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope)
 			if err != nil {
 				return fmt.Errorf("%s: dep name: %w", t.Name, err)
 			}
-			name = reference(t, name)
+			name = chorefile.Reference(t.File, name)
 			vars, err := scope.Resolve(gctx, d.Vars, r.shell(gctx, r.Project.RootDir, scope))
 			if err != nil {
 				return fmt.Errorf("%s: dep %s vars: %w", t.Name, name, err)
@@ -645,14 +706,15 @@ func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope)
 	return g.Wait()
 }
 
-// command runs one step: either a call to another task or a shell script.
-func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, sh shell.Shell, c chorefile.Cmd) error {
+// command runs one step: a call to another task, or a script — here, or at the
+// far end of rem when the task has a `route:`.
+func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, sh shell.Shell, rem *remote, c chorefile.Cmd) error {
 	if c.Task != "" {
 		name, err := scope.Render(c.Task)
 		if err != nil {
 			return fmt.Errorf("%s: cmd task name: %w", t.Name, err)
 		}
-		name = reference(t, name)
+		name = chorefile.Reference(t.File, name)
 		vars, err := scope.Resolve(ctx, c.Vars, sh)
 		if err != nil {
 			return fmt.Errorf("%s: cmd task %s vars: %w", t.Name, name, err)
@@ -660,9 +722,15 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		return r.Run(ctx, name, nil, vars)
 	}
 
-	script, err := scope.Render(c.Cmd)
+	var script string
+	var err error
+	if len(c.Argv) > 0 {
+		script, err = renderArgv(t, scope, c.Argv)
+	} else if script, err = scope.Render(c.Cmd); err != nil {
+		err = fmt.Errorf("%s: rendering cmd: %w", t.Name, err)
+	}
 	if err != nil {
-		return fmt.Errorf("%s: rendering cmd: %w", t.Name, err)
+		return err
 	}
 	if strings.TrimSpace(script) == "" {
 		return nil
@@ -688,7 +756,12 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	if echoed {
 		fmt.Fprintf(r.Out, "%s\n", script)
 	}
-	if err := sh.Run(ctx, script); err != nil {
+	if rem != nil {
+		err = rem.run(ctx, script, sh.Out, sh.Err)
+	} else {
+		err = sh.Run(ctx, script)
+	}
+	if err != nil {
 		// Name the step that failed, since it was not printed on the way in. This
 		// is the one thing echoing everything bought, and the only part worth
 		// keeping: a five-step task otherwise reports a status and leaves the
@@ -698,7 +771,7 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		// step is allowed to fail, and the caller already reports that in one
 		// line. Printing the script there would put the noise back for the steps
 		// least likely to deserve it.
-		if !echoed && !c.Silent && !c.IgnoreError && !t.IgnoreError {
+		if !echoed && !c.Silent && !c.IgnoreError && !t.IgnoreError && !answering(ctx) {
 			fmt.Fprintf(r.Err, "chore: %s: failing step:\n%s\n", t.Name, indentScript(script))
 		}
 		return fmt.Errorf("%s: %w", t.Name, err)
@@ -822,7 +895,7 @@ func indentScript(script string) string {
 // evaluation point of the kind that made Task's dotenv see stale values.
 func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, callVars map[string]string) (*tmpl.Scope, error) {
 	base := tmpl.New(os.Environ())
-	base.Set("ROOT_DIR", r.Project.RootDir)
+	base.Set("ROOT_DIR", r.rootDir(t))
 	base.Set("TASK", t.Name)
 	base.Set("CLI_ARGS", r.CLIArgs)
 	base.Set("CHORE_EXE", r.ChoreExe)
@@ -971,7 +1044,7 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// other — `sh:` belongs to the VALUE, not to the key it sits under, so it works
 	// here for the same reason it works in `vars:`, through the same resolver.
 	fileEnv := map[string]string{}
-	for _, f := range envFiles(r.Project, t) {
+	for _, f := range envFiles(r.rootOf(t), t) {
 		resolved, err := base.Push(dotenvVars).Push(fileEnv).Push(paramDefaults).
 			Push(r.CLIVars).Push(callVars).Push(argVars).Resolve(ctx, f.Env, sh)
 		if err != nil {
@@ -1393,10 +1466,16 @@ func (r *Runner) dotenv(ctx context.Context, t *chorefile.Task, base *tmpl.Scope
 	// resolved per level of the chain, not merely per task. Until then the root's
 	// applies throughout, and a task that must not require it says so with
 	// `dotenv: []` — which is what a hand-off to a peer project does.
-	if root := r.Project.Root; root != nil {
+	//
+	// "The root" is the root of the task's OWN tree. For a project's tasks that is
+	// the project's chores.yml; for a file in global.d it is that file, so a
+	// global task a project depends on does not start requiring the project's
+	// config.env.
+	root := r.rootOf(t)
+	if root != nil {
 		sources = append(sources, dotenvSource{dir: root.Dir, entries: root.Dotenv, vars: root.Vars})
 	}
-	if t.File != nil && (r.Project.Root == nil || t.File.Path != r.Project.Root.Path) {
+	if t.File != nil && (root == nil || t.File.Path != root.Path) {
 		sources = append(sources, dotenvSource{dir: t.File.Dir, entries: t.File.Dotenv, vars: t.File.Vars})
 	}
 	return r.loadDotenv(ctx, sources, base, callVars, argVars, sh)
@@ -1496,6 +1575,13 @@ func (r *Runner) taskDir(t *chorefile.Task, scope *tmpl.Scope) (string, error) {
 	// An include that declares `dir:` is the exception, and the one case where
 	// moving is intended. The loader records that in WorkDir, and only then.
 	dir := r.Project.RootDir
+	// A global task runs where chore was started: it belongs to the machine, and
+	// `chore global:tools:fmt` formats what you are standing in, not global.d.
+	if t.File != nil && t.File.Global {
+		if wd, err := os.Getwd(); err == nil {
+			dir = wd
+		}
+	}
 	if t.File != nil && t.File.WorkDir != "" {
 		dir = t.File.WorkDir
 	}
@@ -1542,10 +1628,13 @@ func (r *Runner) shell(ctx context.Context, dir string, scope *tmpl.Scope) shell
 		env = append(env, "CHORE_HELD="+groups)
 	}
 	for k, v := range scope.All() {
-		if isEnvName(k) {
+		if chorefile.IsName(k) {
 			env = append(env, k+"="+v)
 		}
 	}
+	// Last, so what an `exports:` task set outranks the value this task's scope
+	// captured before that task ran.
+	env = append(env, r.exportedEnv()...)
 	sh := shell.Shell{Dir: dir, Env: env, Out: r.Out, Err: r.Err}
 	// A task under a `timeout:` — its own, or an ancestor's, since a hang is
 	// usually in a dep rather than in the coordinator — has every script it
@@ -1671,47 +1760,6 @@ func (r *Runner) suggest(name string) string {
 	return " (did you mean: " + strings.Join(near, ", ") + "?)"
 }
 
-func isEnvName(k string) bool {
-	if k == "" {
-		return false
-	}
-	for i, c := range k {
-		switch {
-		case c >= 'A' && c <= 'Z', c == '_':
-		case c >= 'a' && c <= 'z':
-		case c >= '0' && c <= '9' && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// reference resolves a task name written INSIDE a taskfile — a `- task:` step or a
-// `deps:` entry — to the name the project knows it by.
-//
-// A reference is relative to the file it is written in: `- task: deps` inside
-// tasks/webmail.yml means webmail's own `deps`, never a root task that happens to
-// share the name. Resolving these globally is why `chore instance:up` stopped with
-// `no task "deps"` while go-task ran it.
-//
-// The prefix is applied even when the reference already contains a colon, which is
-// what makes tasks/monitoring.yml work: it holds a task literally named
-// "prometheus:up", and `- task: prometheus:up` written beside it means that one —
-// monitoring:prometheus:up.
-//
-// A leading colon escapes to the root namespace, as in `- task: :build`. This is
-// go-task's behaviour in each case, verified against it rather than assumed.
-func reference(caller *chorefile.Task, name string) string {
-	if strings.HasPrefix(name, ":") {
-		return strings.TrimPrefix(name, ":")
-	}
-	if caller.File == nil || caller.File.Namespace == "" {
-		return name
-	}
-	return caller.File.Namespace + ":" + name
-}
-
 // fileChain returns f and its ancestors, ROOT FIRST, so a walk resolves each
 // include's mapping in the scope of the file that wrote it.
 func fileChain(f *chorefile.File) []*chorefile.File {
@@ -1735,18 +1783,38 @@ func mergeStrings(a, b map[string]string) map[string]string {
 }
 
 // envFiles lists the files whose `env:` applies to a task, lowest priority first:
-// the root file, then the task's own file when that is a different one. Deliberately
-// NOT the whole include chain — a task's file and the root are the two scopes a
-// reader can see from where the task is written.
-func envFiles(p *chorefile.Project, t *chorefile.Task) []*chorefile.File {
+// the root of the task's tree, then the task's own file when that is a different
+// one. Deliberately NOT the whole include chain — a task's file and its root are
+// the two scopes a reader can see from where the task is written.
+func envFiles(root *chorefile.File, t *chorefile.Task) []*chorefile.File {
 	var files []*chorefile.File
-	if p != nil && p.Root != nil && len(p.Root.Env) > 0 {
-		files = append(files, p.Root)
+	if root != nil && len(root.Env) > 0 {
+		files = append(files, root)
 	}
-	if t.File != nil && t.File != p.Root && len(t.File.Env) > 0 {
+	if t.File != nil && t.File != root && len(t.File.Env) > 0 {
 		files = append(files, t.File)
 	}
 	return files
+}
+
+// rootOf is the root of the tree a task was loaded from: the project's
+// chores.yml, or the global.d file it came from. A task with no file — a
+// lifecycle hook's — belongs to the project.
+func (r *Runner) rootOf(t *chorefile.Task) *chorefile.File {
+	if t.File != nil {
+		return chorefile.RootOf(t.File)
+	}
+	return r.Project.Root
+}
+
+// rootDir is {{.ROOT_DIR}} for a task: its own tree's root directory.
+func (r *Runner) rootDir(t *chorefile.Task) string {
+	if t.File != nil && t.File.Global {
+		if root := chorefile.RootOf(t.File); root.Path != "" {
+			return filepath.Dir(root.Path)
+		}
+	}
+	return r.Project.RootDir
 }
 
 // ExitCode reports the process exit code an error should produce.

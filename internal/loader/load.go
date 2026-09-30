@@ -83,20 +83,26 @@ var Filenames = []string{"chores.yml", "chores.yaml", "Taskfile.yml", "Taskfile.
 // Load reads the Taskfile at path — a file, or a directory holding
 // Taskfile.yml — and every file it includes, and returns the flattened project.
 func Load(path string) (*chorefile.Project, error) {
-	return loadPath(path, false)
+	return loadPath(path, "")
 }
 
-// LoadGlobal reads a machine-wide taskfile. Its root `name:` is the namespace
-// name; included files keep ordinary taskfile semantics.
-func LoadGlobal(path string) (string, *chorefile.Project, error) {
-	project, err := loadPath(path, true)
-	if err != nil {
-		return "", nil, err
+// LoadGlobal reads one file from global.d as the namespace ns: an ordinary
+// taskfile, loaded the ordinary way, whose tasks are addressed as
+// `global:<ns>:<task>`. The prefix is the ONLY difference. There is no second
+// schema and no second loader, which is what #68 was about.
+//
+// The namespace is the filename, so the file needs no `name:`. One written when
+// it was required still loads, as long as it agrees with the filename: a
+// namespace spelled two ways is one of them wrong.
+func LoadGlobal(path, ns string) (*chorefile.Project, error) {
+	if ns == "" || strings.ContainsAny(ns, ": \t") {
+		return nil, fmt.Errorf("%s: %q cannot be a namespace — the filename is the word after `global:`,"+
+			" so it may not contain a colon or a space", path, ns)
 	}
-	return project.Root.Name, project, nil
+	return loadPath(path, ns)
 }
 
-func loadPath(path string, global bool) (*chorefile.Project, error) {
+func loadPath(path, globalNS string) (*chorefile.Project, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("taskfile %s: %w", path, err)
@@ -106,46 +112,54 @@ func loadPath(path string, global bool) (*chorefile.Project, error) {
 		return nil, fmt.Errorf("taskfile %s: %w", abs, err)
 	}
 
-	entries, err := load(request{path: rootPath})
+	global := globalNS != ""
+	prefix := ""
+	if global {
+		prefix = chorefile.GlobalPrefix + globalNS
+	}
+	entries, err := load(request{path: rootPath, prefix: prefix})
 	if err != nil {
 		return nil, err
 	}
-	if !global {
-		for _, e := range entries {
-			if len(e.file.Routes) > 0 {
-				return nil, fmt.Errorf("%s: `routes:` is only valid in a machine-wide taskfile under global.d", e.file.Path)
-			}
-			for name, task := range e.file.Tasks {
-				if task != nil && (task.Route != "" || len(task.Exec) > 0 || task.Forward != nil) {
-					return nil, fmt.Errorf("%s: task %q uses SSH fields that are only valid in a machine-wide taskfile under global.d", e.file.Path, name)
-				}
-			}
+	root := entries[0].file
+	if !global && root.Name != "" {
+		return nil, fmt.Errorf("%s: `name:` is only meaningful in a file under global.d, where it must match the filename", root.Path)
+	}
+	if global && root.Name != "" && root.Name != globalNS {
+		return nil, fmt.Errorf("%s: `name: %s` disagrees with the filename — the namespace is the filename,"+
+			" so this file is `global:%s:`; drop `name:`, or rename the file", root.Path, root.Name, globalNS)
+	}
+	for _, e := range entries[1:] {
+		if e.file.Name != "" {
+			return nil, fmt.Errorf("%s: `name:` is only meaningful in a file under global.d, where it must match the filename", e.file.Path)
 		}
+	}
+	for _, e := range entries {
+		e.file.Global = global
 	}
 	tasks, err := register(entries, global)
 	if err != nil {
 		return nil, err
 	}
-
-	root := entries[0].file
-	if !global && root.Name != "" {
-		return nil, fmt.Errorf("%s: `name:` is only valid in a machine-wide taskfile under global.d", root.Path)
+	files := make(map[string]*chorefile.File, len(entries))
+	for _, e := range entries {
+		files[e.prefix] = e.file
 	}
-	if global {
-		for _, e := range entries[1:] {
-			if e.file.Name != "" {
-				return nil, fmt.Errorf("%s: included taskfiles cannot declare `name:`; the global namespace belongs to %s", e.file.Path, root.Path)
-			}
-		}
-	}
-	return &chorefile.Project{
+	p := &chorefile.Project{
 		Root:  root,
 		Tasks: tasks,
 		// RootDir is the directory physically holding the root file, even if the
 		// root file were reached through a symlinked path: it is {{.ROOT_DIR}}
 		// and the default working directory for every task.
 		RootDir: filepath.Dir(root.Path),
-	}, nil
+		Files:   files,
+	}
+	// Only what this tree can see. A reference into global.d is checked when the
+	// global files are attached — see Check.
+	if err := Check(p, false); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // entry is one loaded file plus the namespace its tasks live under ("" for the
@@ -292,6 +306,12 @@ func register(entries []entry, globalTaskfile bool) (map[string]*chorefile.Task,
 			// under that name could never be reached. Refused where it is written
 			// rather than left to be a task that exists and cannot be run, which is
 			// the silent failure this loader exists to remove.
+			// In a global file the same word would be unreachable for the opposite
+			// reason: `global:ssh:global:x` is an address with two readings.
+			if globalTaskfile && strings.HasPrefix(name, chorefile.GlobalPrefix) {
+				return nil, fmt.Errorf("%s: task %q is named with the `global:` prefix, which is how an address is written —"+
+					" it could never be reached, and it would make `deps: [%s]` ambiguous", e.file.Path, name, name)
+			}
 			if !globalTaskfile && (key == "global" || strings.HasPrefix(key, "global:")) {
 				return nil, fmt.Errorf("%s defines %q, but `global:` is reserved for machine-wide tasks"+
 					" (`chore help global`) and the command line answers it before any taskfile is read,"+

@@ -1,61 +1,28 @@
 package global
 
 import (
-	"context"
 	"fmt"
 	"net"
+	"os/user"
+	"strconv"
 	"strings"
+
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
+
+// DefaultPort is what a hop with no `port:` dials, as ssh does.
+const DefaultPort = 22
 
 // Resolved is a route after any choices in it have been made: the hops to
 // travel, and how that was decided.
 //
 // Why is carried alongside rather than discarded, because a predicate that
 // quietly always takes the same branch looks exactly like one that works —
-// until the day it matters. `--dry` prints it, so the choice can be seen without
-// running the task.
+// until the day it matters. `--verbose` prints it.
 type Resolved struct {
 	Name string
-	Hops []Hop
+	Hops []chorefile.Hop
 	Why  string
-}
-
-// Predicate answers whether a named task succeeded.
-//
-// Passed in rather than called from here, because running a task is the
-// Runner's job and resolving a route must be possible without one: `--dry`
-// resolves nothing and never calls this at all.
-type Predicate func(ctx context.Context, task string) bool
-
-// Resolve walks a route name to actual hops, asking a predicate on the way.
-//
-// The predicate is a TASK on THIS machine, and its exit status is the whole
-// answer: 0 takes `then:`, anything else takes `else:`. Not stdout, and not a
-// parsed value — a command already ends in an exit status, so anything else
-// would be a second convention to remember.
-func (n *Namespace) Resolve(ctx context.Context, name string, ask Predicate) (Resolved, error) {
-	var trail []string
-	seen := map[string]bool{}
-	for {
-		route, ok := n.Routes[name]
-		if !ok {
-			return Resolved{}, fmt.Errorf("no route %q in %s", name, n.Path)
-		}
-		if !route.Conditional() {
-			return Resolved{Name: name, Hops: route.Hops, Why: strings.Join(trail, " ")}, nil
-		}
-		if seen[name] {
-			return Resolved{}, fmt.Errorf("route %q leads back to itself", name)
-		}
-		seen[name] = true
-
-		taken, branch := route.Else, "else"
-		if ask(ctx, route.If) {
-			taken, branch = route.Then, "then"
-		}
-		trail = append(trail, fmt.Sprintf("%s: %s -> %s", name, branch, taken))
-		name = taken
-	}
 }
 
 // Target is the hop a route ends at — what a caller outside chore would connect
@@ -64,9 +31,9 @@ func (n *Namespace) Resolve(ctx context.Context, name string, ask Predicate) (Re
 // Split this way because that is the split every consumer needs: ssh's own
 // ProxyJump, Pulumi's connection spec, and a person reading the file all treat
 // the destination and the way there as two different things.
-func (r Resolved) Target() (Hop, bool) {
+func (r Resolved) Target() (chorefile.Hop, bool) {
 	if len(r.Hops) == 0 {
-		return Hop{}, false
+		return chorefile.Hop{}, false
 	}
 	return r.Hops[len(r.Hops)-1], true
 }
@@ -79,7 +46,7 @@ func (r Resolved) Jump() string {
 	}
 	var parts []string
 	for _, h := range r.Hops[:len(r.Hops)-1] {
-		parts = append(parts, fmt.Sprintf("%s@%s", h.User, net.JoinHostPort(h.Host, itoa(h.Port))))
+		parts = append(parts, fmt.Sprintf("%s@%s", h.User, net.JoinHostPort(h.Host, strconv.Itoa(h.Port))))
 	}
 	return strings.Join(parts, ",")
 }
@@ -99,10 +66,38 @@ func (r Resolved) Env() []string {
 	return []string{
 		"CHORE_ROUTE=" + r.Name,
 		"CHORE_ROUTE_HOST=" + target.Host,
-		"CHORE_ROUTE_PORT=" + itoa(target.Port),
+		"CHORE_ROUTE_PORT=" + strconv.Itoa(target.Port),
 		"CHORE_ROUTE_USER=" + target.User,
 		"CHORE_ROUTE_JUMP=" + r.Jump(),
 	}
 }
 
-func itoa(n int) string { return fmt.Sprintf("%d", n) }
+// PrepareHops expands `$VAR` in each hop's host and user and fills in what ssh
+// would: port 22, and this user's name. Done before a hop is dialled or printed,
+// so an error and a dry run name the address a connection will actually use
+// rather than the blanks the file left.
+func PrepareHops(route string, hops []chorefile.Hop, lookup Lookup) ([]chorefile.Hop, error) {
+	me := ""
+	if u, err := user.Current(); err == nil {
+		me = u.Username
+	}
+	out := make([]chorefile.Hop, len(hops))
+	for i, h := range hops {
+		where := fmt.Sprintf("route %s, hop %d", route, i+1)
+		var err error
+		if h.Host, err = Expand(where, h.Host, lookup); err != nil {
+			return nil, err
+		}
+		if h.User, err = Expand(where, h.User, lookup); err != nil {
+			return nil, err
+		}
+		if h.Port == 0 {
+			h.Port = DefaultPort
+		}
+		if h.User == "" {
+			h.User = me
+		}
+		out[i] = h
+	}
+	return out, nil
+}

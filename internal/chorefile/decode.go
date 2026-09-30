@@ -79,6 +79,17 @@ func Decode(data []byte) (*File, error) {
 			f.Tasks[name] = &Task{}
 			continue
 		}
+		// `cmd:` is one step, spelled the way go-task spells it. Folded in here so
+		// that everything after the decoder sees one list of steps and never has
+		// to ask which key a task used.
+		if t.Single != nil {
+			if len(t.Cmds) > 0 {
+				return nil, fmt.Errorf("taskfile: task %q sets both `cmd:` and `cmds:` — `cmd:` is one step,"+
+					" `cmds:` is a list of them; keep one", name)
+			}
+			t.Cmds = Cmds{*t.Single}
+			t.Single = nil
+		}
 		for _, h := range []struct {
 			name string
 			cmds Cmds
@@ -112,7 +123,7 @@ func Decode(data []byte) (*File, error) {
 		}
 		shorts := map[string]string{}
 		for i, arg := range t.Args {
-			if !validParamName(arg.Name) {
+			if !IsName(arg.Name) {
 				return nil, fmt.Errorf("taskfile: task %q: args entry %d is %s, which cannot be used as a variable —"+
 					" a parameter name must start with a letter or underscore and contain only letters, digits and underscores",
 					name, i+1, describeParam(arg.Name))
@@ -146,16 +157,23 @@ func Decode(data []byte) (*File, error) {
 			shorts[arg.Short] = arg.Name
 		}
 	}
+	if err := validateRoutes(&f); err != nil {
+		return nil, err
+	}
 	return &f, nil
 }
 
-// validParamName reports whether a declared parameter can actually be referenced
-// as {{.Name}}. A name that cannot be is always a mistake, and one particular
+// IsName reports whether s can be a variable: a template's {{.Name}} and a
+// shell's $Name alike. The one definition, used for declared parameters, for
+// the names chore exports to a script, and for `NAME=value` on a command line.
+//
+// A declared parameter that fails it can never be referenced as {{.Name}},
+// which is always a mistake — and one particular
 // mistake is easy to make: `- !config` is YAML TAG syntax, and yaml.v3 decodes it
 // to the empty string rather than failing, so the parameter silently becomes
 // unnameable. Rejecting it here is the difference between a clear error and a
 // task that mysteriously receives nothing.
-func validParamName(s string) bool {
+func IsName(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -255,12 +273,34 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 		}
 		c.Cmd = s
 		return nil
+	case yaml.SequenceNode:
+		// An argv: `- [kubectl, get, pods, -A]`. chore quotes it, so no word can
+		// be split or reinterpreted by the shell that runs it.
+		if err := checkNoNullElements(n, "an argv"); err != nil {
+			return err
+		}
+		if len(n.Content) == 0 {
+			return fmt.Errorf("line %d: an argv step needs at least the program to run", n.Line)
+		}
+		for _, el := range n.Content {
+			if el.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: every word of an argv is a plain value", el.Line)
+			}
+			w, err := scalarString(el)
+			if err != nil {
+				return err
+			}
+			c.Argv = append(c.Argv, w)
+		}
+		return nil
 	case yaml.MappingNode:
 		if err := knownFields(n, "a command", "cmd", "task", "vars", "silent", "ignore_error", "defer"); err != nil {
 			return err
 		}
 		type raw struct {
-			Cmd         string         `yaml:"cmd"`
+			// A node, so `cmd:` inside a mapping takes the same two forms as a bare
+			// step: a shell line or an argv.
+			Cmd         yaml.Node      `yaml:"cmd"`
 			Task        string         `yaml:"task"`
 			Vars        map[string]Var `yaml:"vars"`
 			Silent      bool           `yaml:"silent"`
@@ -273,25 +313,35 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 		if err := n.Decode(&r); err != nil {
 			return fmt.Errorf("line %d: %w", n.Line, err)
 		}
+		var body Cmd
+		if r.Cmd.Kind != 0 {
+			if r.Cmd.Kind == yaml.MappingNode {
+				return fmt.Errorf("line %d: `cmd` is a shell line or an argv list", r.Cmd.Line)
+			}
+			if err := body.UnmarshalYAML(&r.Cmd); err != nil {
+				return err
+			}
+		}
+		hasCmd := body.Cmd != "" || len(body.Argv) > 0
 		if r.Defer != nil {
-			if r.Cmd != "" || r.Task != "" {
+			if hasCmd || r.Task != "" {
 				return fmt.Errorf("line %d: `defer` is a command of its own; do not combine it with `cmd` or `task`", n.Line)
 			}
 			*c = *r.Defer
 			c.Defer = true
 			return nil
 		}
-		if r.Cmd != "" && r.Task != "" {
+		if hasCmd && r.Task != "" {
 			return fmt.Errorf("line %d: a command sets either `cmd` or `task`, not both", n.Line)
 		}
-		if r.Cmd == "" && r.Task == "" {
+		if !hasCmd && r.Task == "" {
 			return fmt.Errorf("line %d: a command needs `cmd`, `task` or `defer`", n.Line)
 		}
-		c.Cmd, c.Task, c.Vars = r.Cmd, r.Task, r.Vars
+		c.Cmd, c.Argv, c.Task, c.Vars = body.Cmd, body.Argv, r.Task, r.Vars
 		c.Silent, c.IgnoreError = r.Silent, r.IgnoreError
 		return nil
 	default:
-		return fmt.Errorf("line %d: a command must be a string or a mapping", n.Line)
+		return fmt.Errorf("line %d: a command must be a string, an argv list, or a mapping", n.Line)
 	}
 }
 

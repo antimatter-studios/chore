@@ -23,12 +23,18 @@ type Project struct {
 	// RootDir is the directory of the root Taskfile — the value of {{.ROOT_DIR}},
 	// and the working directory a task runs in unless it sets `dir:`.
 	RootDir string
+	// Files is every loaded file by the namespace its tasks live under: "" for
+	// the root, "postgres" for an include, "global:ssh" for global.d/ssh.yaml.
+	// It is how a route named in one file is found in another.
+	Files map[string]*File
 }
 
 // File is one Taskfile on disk.
 type File struct {
-	// Name identifies a machine-wide task namespace. The ordinary taskfile loader
-	// rejects it; loader.LoadGlobal consumes it for files in global.d.
+	// Name is accepted only in a file under global.d, and only when it matches
+	// the filename: the namespace IS the filename, so `global:ssh:unlock` is the
+	// task `unlock` in global.d/ssh.yaml. Kept so files written when `name:` was
+	// required still load. A project file refuses it.
 	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
 	// ChoreMinVersion is the oldest chore that may run this file. Optional: with
@@ -56,7 +62,8 @@ type File struct {
 	Env       map[string]Var      `yaml:"env"`
 	Tasks     map[string]*Task    `yaml:"tasks"`
 	Lifecycle *Lifecycle          `yaml:"lifecycle"`
-	Routes    map[string]Route    `yaml:"routes"`
+	// Routes are the ssh paths this file's tasks can travel. See routes.go.
+	Routes map[string]Route `yaml:"routes"`
 
 	// Set by the loader, not the YAML.
 	Path string `yaml:"-"` // absolute path to this file
@@ -86,6 +93,10 @@ type File struct {
 	// nothing but what was mapped to it, yields "" — which is how a reference mail
 	// server came up as "mailref-mail1-postgres @" with no address at all.
 	IncludeVars map[string]Var `yaml:"-"`
+	// Global marks a file loaded from global.d, or included by one. Such a task
+	// runs in the directory chore was started in — it belongs to the machine, not
+	// to wherever its file happens to live.
+	Global bool `yaml:"-"`
 	// Inherit is the include's `inherit:`. False by default: an included file sees
 	// the outside world and what was MAPPED to it, and nothing else. Set true and
 	// the including file's variables come with it, as a layer BELOW the file's own —
@@ -286,23 +297,6 @@ type Include struct {
 	Vars     map[string]Var `yaml:"vars"`
 }
 
-// Route is a sequence of SSH hops. These fields are only valid in a global
-// taskfile; the loader rejects them in ordinary project taskfiles.
-type Route []Hop
-
-// Hop is one SSH host in a route.
-type Hop struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
-	User string `yaml:"user"`
-}
-
-// Forward describes a local TCP listener carried to the far end of an SSH route.
-type Forward struct {
-	Remote string `yaml:"remote"`
-	Local  string `yaml:"local"`
-}
-
 // Var is a variable value: either a literal or a shell command to capture.
 //
 // YAML accepts both forms:
@@ -405,11 +399,27 @@ type Task struct {
 	Deps Deps `yaml:"deps"`
 	Cmds Cmds `yaml:"cmds"`
 
-	// Route, Exec and Forward are the optional SSH execution form for a global
-	// task. A task uses either ordinary cmds or one SSH operation.
-	Route   string   `yaml:"route"`
-	Exec    []string `yaml:"exec"`
+	// Single is the task-level `cmd:`, a one-step spelling of `cmds:` that go-task
+	// also accepts. Decode folds it into Cmds and clears it, so nothing after the
+	// decoder ever reads it: one task has one list of steps.
+	Single *Cmd `yaml:"cmd"`
+
+	// Route, PTY, Forward, WithRoute and Exports are the ssh fields. Any task in
+	// any file may use them — see routes.go and `chore help routes`.
+	//
+	// Route runs the task's steps at the far end of a route instead of here.
+	Route string `yaml:"route"`
+	// PTY allocates a remote terminal for a routed task, for an interactive
+	// shell. Ordinary commands leave it off so their streams stay streams.
+	PTY bool `yaml:"pty"`
+	// Forward makes the task's body a tunnel rather than steps.
 	Forward *Forward `yaml:"forward"`
+	// WithRoute resolves a route and hands its details to the task's LOCAL steps
+	// as CHORE_ROUTE_* environment, for a tool that does its own ssh.
+	WithRoute string `yaml:"with_route"`
+	// Exports absorbs `KEY=value` lines from the task's stdout into the
+	// environment of everything that runs after it in this chore process.
+	Exports bool `yaml:"exports"`
 
 	// The per-task half of the lifecycle. Same four names the file-level block
 	// uses, minus the `_all` that marks a hook as per-invocation, and they fire
@@ -546,9 +556,13 @@ type Dep struct {
 	Silent bool           `yaml:"silent"`
 }
 
-// Cmd is one step of a task: either a shell command or a call to another task.
+// Cmd is one step of a task: a shell command, an argv, or a call to another task.
 type Cmd struct {
-	Cmd         string         `yaml:"cmd"`
+	Cmd string `yaml:"cmd"`
+	// Argv is the list form, `- [kubectl, get, pods, -A]`: each word is rendered
+	// as a template, then quoted by chore, so an argument containing a space or a
+	// quote arrives whole. Cmd and Argv are never both set.
+	Argv        []string       `yaml:"-"`
 	Task        string         `yaml:"task"`
 	Vars        map[string]Var `yaml:"vars"`
 	Silent      bool           `yaml:"silent"`

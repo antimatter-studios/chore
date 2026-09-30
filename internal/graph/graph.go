@@ -3,15 +3,12 @@
 //
 // It exists because the question kept being answered separately, and not always
 // well. Variables had a detector fused into their resolver, reporting a cycle
-// only once a pass made no progress. Routes had a walk of their own. Global
-// `deps:` had nothing beyond a direct self-reference, so an indirect cycle
-// terminated by accident on a memo, having run a task twice.
-//
-// One caller is still missing: a PROJECT taskfile's `deps:`, in internal/run,
-// which has no check and does not terminate — it runs dependencies
-// concurrently, so a two-task cycle spawns until something stops it. Wiring it
-// up needs a decision this package cannot make for it: a project dep name is a
-// template, rendered at run time, so the edges are not all known at load.
+// only once a pass made no progress. Routes had a walk of their own, and a
+// project's `deps:` had none at all, so a two-task cycle spawned concurrently
+// until something gave out. internal/loader now walks every task's `deps:`,
+// routes and route predicates as one graph. A dependency name written as a
+// template is rendered at run time, so that one edge cannot be known at load and
+// is left out.
 //
 // Nodes are opaque strings. A caller with more than one kind of node prefixes
 // them, so a route and a task of the same name stay distinct, and gives each a

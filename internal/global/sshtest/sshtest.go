@@ -1,4 +1,7 @@
-package global
+// Package sshtest is a real ssh server, a real ssh-agent, and real host keys,
+// for tests anywhere in chore that need a route to travel: the transport's own,
+// the runner's, and the command line's.
+package sshtest
 
 import (
 	"crypto/ed25519"
@@ -7,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +18,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
 // A real ssh server, a real ssh-agent, and real host keys.
@@ -25,18 +31,23 @@ import (
 // nothing about. Two of these servers chained together is the shape of the
 // user's own route.
 
-// testServer is an ssh server that can run "commands" and open direct-tcpip
+// Server is an ssh server that can run "commands" and open direct-tcpip
 // channels, which is all a route needs of an intermediate hop.
-type testServer struct {
-	t        *testing.T
+type Server struct {
+	t        testing.TB
 	Addr     string
 	HostKey  ssh.PublicKey
 	listener net.Listener
 
 	mu       sync.Mutex
 	commands []string   // every command string the server was asked to exec
-	ptys     []ptyReq   // every terminal a session asked for
-	resizes  []termSize // every window-change a session sent
+	ptys     []PTYReq   // every terminal a session asked for
+	resizes  []TermSize // every window-change a session sent
+
+	// Shell runs every command with `sh -c` on this machine and returns its real
+	// output and status, instead of echoing the command string back. For a test
+	// about what a routed step DOES rather than what crossed the wire.
+	Shell bool
 
 	// held is signalled when a "hold" command starts. The session then stays
 	// open until the client resizes its terminal, so a test can look at the
@@ -44,17 +55,17 @@ type testServer struct {
 	held chan struct{}
 }
 
-// termSize is a terminal's size in characters, as the SSH protocol carries it.
-type termSize struct{ Cols, Rows uint32 }
+// TermSize is a terminal's size in characters, as the SSH protocol carries it.
+type TermSize struct{ Cols, Rows uint32 }
 
-// ptyReq is what a "pty-req" asked for: a terminal type and its size.
-type ptyReq struct {
+// PTYReq is what a "pty-req" asked for: a terminal type and its size.
+type PTYReq struct {
 	Term string
-	termSize
+	TermSize
 }
 
-// newTestServer starts one on a loopback port, accepting the given public key.
-func newTestServer(t *testing.T, authorized ssh.PublicKey) *testServer {
+// NewServer starts one on a loopback port, accepting the given public key.
+func NewServer(t testing.TB, authorized ssh.PublicKey) *Server {
 	t.Helper()
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -80,7 +91,7 @@ func newTestServer(t *testing.T, authorized ssh.PublicKey) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &testServer{t: t, Addr: ln.Addr().String(), HostKey: signer.PublicKey(), listener: ln, held: make(chan struct{}, 1)}
+	s := &Server{t: t, Addr: ln.Addr().String(), HostKey: signer.PublicKey(), listener: ln, held: make(chan struct{}, 1)}
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
@@ -95,7 +106,7 @@ func newTestServer(t *testing.T, authorized ssh.PublicKey) *testServer {
 	return s
 }
 
-func (s *testServer) serve(nConn net.Conn, cfg *ssh.ServerConfig) {
+func (s *Server) serve(nConn net.Conn, cfg *ssh.ServerConfig) {
 	conn, chans, reqs, err := ssh.NewServerConn(nConn, cfg)
 	if err != nil {
 		return
@@ -118,7 +129,7 @@ func (s *testServer) serve(nConn net.Conn, cfg *ssh.ServerConfig) {
 	}
 }
 
-func (s *testServer) session(newChan ssh.NewChannel) {
+func (s *Server) session(newChan ssh.NewChannel) {
 	ch, reqs, err := newChan.Accept()
 	if err != nil {
 		return
@@ -139,7 +150,7 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 				continue
 			}
 			s.mu.Lock()
-			s.ptys = append(s.ptys, ptyReq{Term: p.Term, termSize: termSize{Cols: p.Cols, Rows: p.Rows}})
+			s.ptys = append(s.ptys, PTYReq{Term: p.Term, TermSize: TermSize{Cols: p.Cols, Rows: p.Rows}})
 			s.mu.Unlock()
 			_ = req.Reply(true, nil)
 			continue
@@ -149,7 +160,7 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 				continue
 			}
 			s.mu.Lock()
-			s.resizes = append(s.resizes, termSize{Cols: w.Cols, Rows: w.Rows})
+			s.resizes = append(s.resizes, TermSize{Cols: w.Cols, Rows: w.Rows})
 			s.mu.Unlock()
 			if holding {
 				fmt.Fprintf(ch, "resized to %dx%d\n", w.Cols, w.Rows)
@@ -181,6 +192,11 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 			continue
 		}
 
+		if s.Shell {
+			s.runShell(ch, payload.Command)
+			return
+		}
+
 		// Not a shell: enough of one to prove the command arrived intact. The
 		// command is echoed back so a test can assert on the exact string that
 		// crossed the wire, which is where quoting either survives or does not.
@@ -192,13 +208,12 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 		default:
 			fmt.Fprintln(ch, payload.Command)
 		}
-		_ = ssh.Marshal(struct{ Status uint32 }{uint32(status)})
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(status)}))
 		return
 	}
 }
 
-func (s *testServer) directTCPIP(newChan ssh.NewChannel) {
+func (s *Server) directTCPIP(newChan ssh.NewChannel) {
 	var payload struct {
 		Host       string
 		Port       uint32
@@ -225,33 +240,50 @@ func (s *testServer) directTCPIP(newChan ssh.NewChannel) {
 	go func() { _, _ = io.Copy(remote, ch); _ = remote.Close() }()
 }
 
-// ranCommands returns every command string this server was asked to exec.
-func (s *testServer) ranCommands() []string {
+// runShell runs a command for real, the way an sshd hands it to a login shell.
+func (s *Server) runShell(ch ssh.Channel, command string) {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdout, cmd.Stderr = ch, ch.Stderr()
+	status := 0
+	if err := cmd.Run(); err != nil {
+		status = 255
+		if exit, ok := err.(*exec.ExitError); ok {
+			status = exit.ExitCode()
+		}
+	}
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(status)}))
+}
+
+// Held is signalled when a "hold" command starts.
+func (s *Server) Held() <-chan struct{} { return s.held }
+
+// Commands returns every command string this server was asked to exec.
+func (s *Server) Commands() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.commands...)
 }
 
-// ptyRequests returns every terminal a session on this server asked for.
-func (s *testServer) ptyRequests() []ptyReq {
+// PTYRequests returns every terminal a session on this server asked for.
+func (s *Server) PTYRequests() []PTYReq {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]ptyReq(nil), s.ptys...)
+	return append([]PTYReq(nil), s.ptys...)
 }
 
-// windowChanges returns every terminal resize a session on this server was sent.
-func (s *testServer) windowChanges() []termSize {
+// WindowChanges returns every terminal resize a session on this server was sent.
+func (s *Server) WindowChanges() []TermSize {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]termSize(nil), s.resizes...)
+	return append([]TermSize(nil), s.resizes...)
 }
 
-// testAgent runs an in-process ssh-agent on a unix socket, holding one key.
+// Agent runs an in-process ssh-agent on a unix socket, holding one key.
 //
 // Real, rather than an ssh.AuthMethod handed straight to the dialler, because
 // "chore never handles a key itself, it asks your agent" is a promise about the
 // code path — and a test that skipped the socket would not be testing it.
-func testAgent(t *testing.T) (sock string, pub ssh.PublicKey) {
+func Agent(t testing.TB) (sock string, pub ssh.PublicKey) {
 	t.Helper()
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -294,9 +326,9 @@ func testAgent(t *testing.T) (sock string, pub ssh.PublicKey) {
 	return sock, signer.PublicKey()
 }
 
-// knownHostsFor writes a known_hosts naming each server by its address, the way
+// KnownHosts writes a known_hosts naming each server by its address, the way
 // ssh would have written it after a first connection.
-func knownHostsFor(t *testing.T, servers ...*testServer) string {
+func KnownHosts(t testing.TB, servers ...*Server) string {
 	t.Helper()
 	var b strings.Builder
 	for _, s := range servers {
@@ -315,8 +347,8 @@ func knownHostsFor(t *testing.T, servers ...*testServer) string {
 	return path
 }
 
-// hopTo is a route hop addressing a test server.
-func hopTo(t *testing.T, s *testServer) Hop {
+// Hop is a route hop addressing a test server.
+func Hop(t testing.TB, s *Server) chorefile.Hop {
 	t.Helper()
 	host, port, err := net.SplitHostPort(s.Addr)
 	if err != nil {
@@ -326,5 +358,5 @@ func hopTo(t *testing.T, s *testServer) Hop {
 	if _, err := fmt.Sscanf(port, "%d", &p); err != nil {
 		t.Fatal(err)
 	}
-	return Hop{Host: host, Port: p, User: "tester"}
+	return chorefile.Hop{Host: host, Port: p, User: "tester"}
 }

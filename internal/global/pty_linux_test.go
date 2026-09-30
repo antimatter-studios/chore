@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/global/sshtest"
 )
 
 // The local half of `pty: true`, against a real terminal rather than a pipe:
@@ -27,10 +30,10 @@ func TestExecPTYDrivesALocalTerminal(t *testing.T) {
 	setSize(t, tty, 50, 150)
 	before := termios(t, tty)
 
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,18 +43,18 @@ func TestExecPTYDrivesALocalTerminal(t *testing.T) {
 	defer cancel()
 	var out, errOut bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- ExecPTY(ctx, client, Cmd{Argv: []string{"hold"}}, tty, &out, &errOut) }()
+	go func() { done <- ExecPTY(ctx, client, QuoteArgv([]string{"hold"}), tty, &out, &errOut) }()
 
 	select {
-	case <-server.held:
+	case <-server.Held():
 	case err := <-done:
 		t.Fatalf("ExecPTY returned before the command started: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the remote command never started")
 	}
 
-	want := ptyReq{Term: "screen", termSize: termSize{Cols: 150, Rows: 50}}
-	if got := server.ptyRequests(); len(got) != 1 || got[0] != want {
+	want := sshtest.PTYReq{Term: "screen", TermSize: sshtest.TermSize{Cols: 150, Rows: 50}}
+	if got := server.PTYRequests(); len(got) != 1 || got[0] != want {
 		t.Errorf("pty requests = %v, want [%v]", got, want)
 	}
 	if during := termios(t, tty); during.Lflag&(unix.ECHO|unix.ICANON) != 0 {
@@ -74,7 +77,7 @@ func TestExecPTYDrivesALocalTerminal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the resize never reached the far end")
 	}
-	if got, want := server.windowChanges(), (termSize{Cols: 120, Rows: 40}); len(got) != 1 || got[0] != want {
+	if got, want := server.WindowChanges(), (sshtest.TermSize{Cols: 120, Rows: 40}); len(got) != 1 || got[0] != want {
 		t.Errorf("window changes = %v, want [%v]", got, want)
 	}
 	if !strings.Contains(out.String(), "resized to 120x40") {
