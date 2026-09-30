@@ -29,6 +29,33 @@ chore config:check CONFIG=mail4.test # or a variable, bound before dotenv resolv
 
 Binary: `chore`. macOS and Linux.
 
+### In GitHub Actions
+
+Use the install action rather than spelling the release asset name yourself:
+
+```yaml
+- uses: antimatter-studios/chore/.github/actions/install@v0.14.2
+  with:
+    version: "0.14.2"
+```
+
+It downloads `chore-{version}-{os}-{arch}.tar.gz` for the runner, verifies it
+against the release's `checksums.txt`, installs it to `$HOME/.local/bin` (the
+`destination` input) and adds that to `PATH`. The outputs are `version`, as the
+installed binary reports it, and `path`. A version that was never released fails
+with a message saying so, rather than a 404 that `tar` reports as a corrupt
+archive.
+
+**Pin the `@ref`** to a tag or a commit sha. `@main` means the installer can
+change under your workflow with no diff for you to review, the same problem as
+not pinning the version. The ref pins the installer and `version` pins chore.
+They are separate, and the `version` default is the newest release when the
+action was last changed, not the one matching the ref, so pass it explicitly.
+
+Windows has no release build, so the action fails there instead of doing nothing.
+Guard it with a step-level `if: runner.os != 'Windows'`. A job-level `if:` would
+stop the whole job from gating.
+
 ### Running a local build
 
 To try a change without installing it, source the dev script. It builds

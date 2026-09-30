@@ -109,6 +109,9 @@ jobs:
           # They must also PARSE under bash even though the zsh branch never runs
           # there — a sourced file is parsed whole before any of it executes.
           for f in scripts/*; do bash -n "$f"; done
+          # The install action's script is executed, not sourced, and is bash
+          # only, so it takes its dialect from its shebang.
+          shellcheck -S warning .github/actions/install/install.sh
           echo "scripts ok"
 
       # The manual is extracted from `chore:manual` comment blocks. Regenerating
@@ -141,6 +144,64 @@ jobs:
           CHORE_BIN: /tmp/chore
         run: go test ./examples -count=1
 
+  # The install action is what other repositories run to get chore, so it is
+  # tested the way they use it: against a PUBLISHED release, on both platforms a
+  # release ships. It downloads its default version, so a default naming a
+  # release that does not exist, or a change to the asset name in
+  # .goreleaser.yml that the action did not follow, fails here and not in a
+  # consumer's CI.
+  install-action:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: install
+        uses: ./.github/actions/install
+
+      # `chore` resolved through PATH, not the output path: that it is found at
+      # all is the check that the destination reached GITHUB_PATH.
+      - name: Installed chore is on PATH and reports the output version
+        env:
+          WANT_VERSION: ${{ steps.install.outputs.version }}
+          WANT_PATH: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+          got="$(chore --version | head -n 1)"
+          echo "chore --version: $got; output version: $WANT_VERSION"
+          if [ -z "$WANT_VERSION" ] || [ "$got" != "$WANT_VERSION" ]; then
+            echo "chore --version reports '$got', the action's output says '$WANT_VERSION'" >&2
+            exit 1
+          fi
+          [ "$(command -v chore)" = "$WANT_PATH" ] || {
+            echo "chore resolves to $(command -v chore), the action's output says $WANT_PATH" >&2
+            exit 1
+          }
+
+      # The failure path is half the reason the action exists: an unreleased
+      # version must fail the step, not leave a job that looks installed.
+      - id: missing
+        name: An unreleased version fails
+        uses: ./.github/actions/install
+        continue-on-error: true
+        with:
+          version: "0.0.0"
+          destination: ${{ runner.temp }}/should-not-exist
+
+      - name: Check the unreleased version failed
+        env:
+          OUTCOME: ${{ steps.missing.outcome }}
+        run: |
+          set -euo pipefail
+          [ "$OUTCOME" = failure ] || {
+            echo "installing chore 0.0.0 did not fail (outcome: $OUTCOME)" >&2
+            exit 1
+          }
+          echo "an unreleased version fails, as it should"
+
   ci-ok:
     name: ci-ok
     # THE ONE REQUIRED CHECK (#54). Branch protection used to name the two
@@ -160,7 +221,7 @@ jobs:
     # jobs, so it must not be able to pass anything off as theirs. A job added
     # to this file goes in `needs:` below, or scripts/ci-gate.sh fails.
     if: always()
-    needs: [test]
+    needs: [test, install-action]
     runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
