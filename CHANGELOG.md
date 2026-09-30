@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.15.0
 
 - **A global task is an ordinary task (#68).** Files in `global.d` used to be
   read by a separate schema, loader and runner, and that copy dropped every word

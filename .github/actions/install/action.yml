@@ -12,9 +12,9 @@ description: >-
 # .goreleaser.yml that produces it. First written as rust-fs-core's
 # install-chore action (rust-fs-core#157) and moved here.
 #
-#   - uses: antimatter-studios/chore/.github/actions/install@v0.14.3
+#   - uses: antimatter-studios/chore/.github/actions/install@v0.15.0
 #     with:
-#       version: "0.14.3"
+#       version: "0.15.0"
 #
 # PIN THE `@ref`, to a tag or a commit sha. `@main` is the installer changing
 # under a repository with no diff to review, the same problem as an unpinned
@@ -30,7 +30,7 @@ description: >-
 inputs:
   version:
     # A literal default, NOT one derived from the ref this action was pinned at,
-    # though `@v0.14.2` installing 0.14.2 by itself would be convenient:
+    # though `@v0.15.0` installing 0.15.0 by itself would be convenient:
     #  - A sha pin, the recommended form, carries no version to derive, and
     #    `uses: ./` carries no ref at all. A derived default would need this
     #    fallback anyway, so the action would behave differently depending on
@@ -43,11 +43,11 @@ inputs:
     # file was last changed. Pass `version` explicitly. The ref pins the
     # installer, `version` pins chore, and they move independently.
     description: >-
-      The chore release to install, e.g. "0.14.2" (a leading `v` is accepted).
+      The chore release to install, e.g. "0.14.3" (a leading `v` is accepted).
       Pass it explicitly. The default is the newest release when this action was
       last updated, not the release matching the ref you pinned.
     required: false
-    default: "0.14.2"
+    default: "0.14.3"
   destination:
     description: Directory to install into. Added to PATH for later steps.
     required: false
