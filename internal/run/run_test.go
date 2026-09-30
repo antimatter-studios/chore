@@ -1641,6 +1641,131 @@ func TestTemplatedGeneratesGoUpToDate(t *testing.T) {
 	}
 }
 
+// Two invocations of one task that differ only in their arguments are two
+// pieces of work. Keying the fingerprint on the task name alone reported the
+// second up to date off the first's run: exit 0, and nothing built (#32). The
+// sources are deliberately NOT templated, so this is independent of the
+// save-side rendering above.
+func TestArgsKeepSeparateFingerprints(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"staticlib": {
+			Args:    chorefile.Args{{Name: "arch"}},
+			Sources: []string{"src/*.c"},
+			Cmds:    cmds(`mkdir -p build/{{.ARCH}} && echo "lib for {{.ARCH}}" > build/{{.ARCH}}/lib.a`, "echo {{.ARCH}} >> log.txt"),
+		},
+	})
+	f.write("src/a.c", "int a;")
+
+	f.mustRun("staticlib", []string{"arm64"}, nil)
+	f.mustRun("staticlib", []string{"x86_64"}, nil)
+
+	if got := f.read("build/x86_64/lib.a"); !strings.Contains(got, "lib for x86_64") {
+		t.Fatalf("staticlib x86_64 was skipped off arm64's fingerprint; build/x86_64/lib.a = %q", got)
+	}
+
+	// Each invocation is up to date against its OWN record, not merely never.
+	f.mustRun("staticlib", []string{"arm64"}, nil)
+	f.mustRun("staticlib", []string{"x86_64"}, nil)
+	if got := f.read("log.txt"); got != "arm64\nx86_64\n" {
+		t.Errorf("runs = %q, want each arch built exactly once", got)
+	}
+
+	// A changed source invalidates both.
+	f.write("src/a.c", "int b;")
+	f.mustRun("staticlib", []string{"arm64"}, nil)
+	f.mustRun("staticlib", []string{"x86_64"}, nil)
+	if got := f.read("log.txt"); got != "arm64\nx86_64\narm64\nx86_64\n" {
+		t.Errorf("runs = %q, want both arches rebuilt after a source change", got)
+	}
+}
+
+// The narrower case #32 also named: when the PATTERNS are templated on the arg,
+// one shared record made two invocations thrash — each overwrote the other's
+// hash, so alternating between them rebuilt every time and neither ever went up
+// to date.
+func TestArgsTemplatedSourcesStopThrashing(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"gen": {
+			Args:    chorefile.Args{{Name: "name"}},
+			Sources: []string{"src/{{.NAME}}.txt"},
+			Cmds:    cmds("echo {{.NAME}} >> log.txt"),
+		},
+	})
+	f.write("src/a.txt", "a")
+	f.write("src/b.txt", "b")
+
+	for _, n := range []string{"a", "b", "a", "b"} {
+		f.mustRun("gen", []string{n}, nil)
+	}
+	if got := f.read("log.txt"); got != "a\nb\n" {
+		t.Errorf("runs = %q, want each name built once", got)
+	}
+}
+
+// A parameter left to its default and the same value passed explicitly are one
+// piece of work, whichever spelling the default was written in. And a value
+// passed by name from a `- task:` reference counts the same as a positional one.
+func TestArgsFingerprintFollowsTheValueNotHowItWasGiven(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"build": {
+			Args:    chorefile.Args{{Name: "arch"}},
+			Vars:    vars("ARCH", "arm64"),
+			Sources: []string{"src/*.c"},
+			Cmds:    cmds("echo {{.ARCH}} >> log.txt"),
+		},
+		"via": {Cmds: []chorefile.Cmd{{Task: "build", Vars: vars("arch", "arm64")}}},
+	})
+	f.write("src/a.c", "int a;")
+
+	f.mustRun("build", nil, nil)
+	f.mustRun("build", []string{"arm64"}, nil)
+	f.mustRun("via", nil, nil)
+	if got := f.read("log.txt"); got != "arm64\n" {
+		t.Errorf("runs = %q, want one: the default and the explicit value are the same work", got)
+	}
+}
+
+// A lowercase default under a command-line `ARCH=` leaves the two spellings
+// holding different values for a sub-task: `{{.ARCH}}` renders the command
+// line's, `arch` keeps the default. Keyed on `arch` alone, the x86_64 build was
+// recorded as arm64's, and the arm64 run that followed skipped itself.
+func TestArgsFingerprintFollowsEverySpelling(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"staticlib": {
+			Args:    chorefile.Args{{Name: "arch"}},
+			Vars:    vars("arch", "arm64"),
+			Sources: []string{"src/*.c"},
+			Cmds:    cmds("echo {{.ARCH}} >> log.txt"),
+		},
+		"build": {Cmds: []chorefile.Cmd{{Task: "staticlib"}}},
+	})
+	f.write("src/a.c", "int a;")
+
+	f.r.CLIVars = map[string]string{"ARCH": "x86_64"}
+	f.mustRun("build", nil, nil)
+	f.r.CLIVars = nil
+	f.mustRun("build", nil, nil)
+
+	if got := f.read("log.txt"); got != "x86_64\narm64\n" {
+		t.Errorf("runs = %q, want x86_64 then arm64: arm64 was skipped off x86_64's record", got)
+	}
+}
+
+// A task without `args:` keeps the fingerprint file it always had, so upgrading
+// does not throw away every record and rebuild the world.
+func TestNoArgsFingerprintNameUnchanged(t *testing.T) {
+	f := newFixture(t, nil, map[string]*chorefile.Task{
+		"build": {Sources: []string{"src/*.c"}, Cmds: cmds("echo ran >> log.txt")},
+	})
+	f.write("src/a.c", "int a;")
+	f.mustRun("build", nil, nil)
+
+	// sha256("build")[:4], the digest the name-only key has always produced.
+	if fp := f.fingerprints(); !strings.HasPrefix(fp, "build-44575cf5.json\n") {
+		t.Errorf("fingerprint file moved for a task with no args:\n%s", fp)
+	}
+}
+
 // ---------- call vars and parameter spelling ----------
 
 // A value typed on the command line binds under the declared spelling AND its

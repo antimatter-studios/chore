@@ -36,6 +36,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +99,13 @@ type Renderer interface {
 	Render(text string) (string, error)
 }
 
+// Getter looks a variable up by name. A Renderer that also implements it —
+// *tmpl.Scope does — lets a fingerprint tell two invocations of one task apart
+// by the values of the task's declared `args:`. See recordKey.
+type Getter interface {
+	Get(k string) (string, bool)
+}
+
 // ExitCoder is an error that carries a command's exit status.
 //
 // This is the line between "the check said no" and "the check could not run".
@@ -156,6 +164,10 @@ func (r capturerRunner) Run(ctx context.Context, script string) error {
 // - **`status`** is a list of shell commands. All exiting zero means "already
 //   done, skip". Use it when the evidence is not a file — a container running, a
 //   volume present.
+//
+// A task with `args:` keeps one record per set of argument values, so
+// `chore staticlib arm64` being up to date says nothing about
+// `chore staticlib x86_64`.
 //
 // `--force` runs the task regardless. A task with neither declaration always runs.
 //
@@ -254,7 +266,7 @@ func checksumUpToDate(t *chorefile.Task, r Renderer, dir, cacheDir string) (bool
 		return false, fmt.Errorf("task %q: sources: %w", t.Name, err)
 	}
 
-	prev, ok := load(fingerprintPath(cache, t.Name))
+	prev, ok := load(fingerprintPath(cache, t, r))
 	if !ok {
 		// Missing, unreadable or corrupt: no usable record of a previous run,
 		// so the task must run. Refusing to run because a cache file got
@@ -312,21 +324,27 @@ func SaveWith(t *chorefile.Task, r Renderer, dir, cacheDir string) error {
 	}
 	fp.Version = formatVersion
 	fp.Task = t.Name
+	fp.Args = argValues(t, r)
 	fp.UpdatedAt = time.Now().UTC()
 	for _, g := range gen {
 		fp.Generates = append(fp.Generates, g.rel)
 	}
-	return store(fingerprintPath(cache, t.Name), fp)
+	return store(fingerprintPath(cache, t, r), fp)
 }
 
 // Path is where t's fingerprint is stored, so callers (--force, a cache clean
 // command) can find or remove it without duplicating the naming rules.
+//
+// Path takes no Renderer, so for a task with `args:` it names the record of an
+// invocation with every argument empty. Use PathWith with the invocation's
+// scope to find the record of one particular invocation.
 func Path(t *chorefile.Task, dir, cacheDir string) string {
-	name := ""
-	if t != nil {
-		name = t.Name
-	}
-	return fingerprintPath(resolveCacheDir(dir, cacheDir), name)
+	return PathWith(t, nil, dir, cacheDir)
+}
+
+// PathWith is Path for the invocation whose variables r holds.
+func PathWith(t *chorefile.Task, r Renderer, dir, cacheDir string) string {
+	return fingerprintPath(resolveCacheDir(dir, cacheDir), t, orIdentity(r))
 }
 
 // ---------- fingerprint file ----------
@@ -337,6 +355,7 @@ func Path(t *chorefile.Task, dir, cacheDir string) string {
 type stored struct {
 	Version   int               `json:"version"`
 	Task      string            `json:"task"`
+	Args      map[string]string `json:"args,omitempty"`
 	Hash      string            `json:"hash"`
 	Sources   map[string]string `json:"sources,omitempty"`
 	Generates []string          `json:"generates,omitempty"`
@@ -438,8 +457,74 @@ func resolveCacheDir(dir, cacheDir string) string {
 	return filepath.Clean(cacheDir)
 }
 
-func fingerprintPath(cache, taskName string) string {
-	return filepath.Join(cache, fingerprintsDir, sanitise(taskName)+".json")
+func fingerprintPath(cache string, t *chorefile.Task, r Renderer) string {
+	name := ""
+	if t != nil {
+		name = t.Name
+	}
+	return filepath.Join(cache, fingerprintsDir, sanitiseKey(name, recordKey(t, r))+".json")
+}
+
+// recordKey identifies one piece of work: the task name, plus the value of each
+// declared `args:` parameter in declared order. Keying on the name alone let
+// `chore staticlib arm64` and `chore staticlib x86_64` share one record, so the
+// second was reported up to date off the first's run and built nothing (#32).
+// `run: once` asks the same question and keys on the name plus every rendered
+// variable; this keys on the name plus the declared args, for the reason below.
+//
+// Only declared args count, not every variable in scope: a variable the task
+// never declared — an environment variable that differs between shells — must
+// not throw the record away, and an arg is the task author saying "this
+// changes what I do".
+//
+// A task without `args:` is keyed on its name exactly — the loop adds nothing —
+// so every fingerprint written before args were part of the key is still found.
+func recordKey(t *chorefile.Task, r Renderer) string {
+	if t == nil {
+		return ""
+	}
+	vals := argValues(t, r)
+	var b strings.Builder
+	b.WriteString(t.Name)
+	for _, a := range t.Args {
+		b.WriteString("\x1f")
+		b.WriteString(a.Name)
+		b.WriteString("=")
+		b.WriteString(vals[a.Name])
+	}
+	return b.String()
+}
+
+// argValues is the value of each declared parameter, by declared name.
+//
+// A parameter answers to its declared spelling and its uppercase form, and the
+// commands may read either. The two normally agree, but they need not: a
+// lowercase default under a command-line `ARCH=x86_64` leaves `arch` and `ARCH`
+// holding different values. Keying on one spelling would then record work under
+// a value the commands never used — the #32 wrong-green again — so when the
+// spellings disagree, every distinct value is part of the key.
+//
+// A Renderer that cannot look variables up — Save's identity, or a caller's
+// own — yields every value empty: all invocations then share one record, which
+// is what they did before args were part of the key.
+func argValues(t *chorefile.Task, r Renderer) map[string]string {
+	if t == nil || len(t.Args) == 0 {
+		return nil
+	}
+	g, _ := r.(Getter)
+	out := make(map[string]string, len(t.Args))
+	for _, a := range t.Args {
+		var vals []string
+		if g != nil {
+			for _, spelling := range []string{a.Name, strings.ToUpper(a.Name), strings.ToLower(a.Name)} {
+				if got, ok := g.Get(spelling); ok && got != "" && !slices.Contains(vals, got) {
+					vals = append(vals, got)
+				}
+			}
+		}
+		out[a.Name] = strings.Join(vals, "\x1e")
+	}
+	return out
 }
 
 // sanitise makes a task name safe as a filename while keeping it recognisable.
@@ -447,6 +532,12 @@ func fingerprintPath(cache, taskName string) string {
 // `ns:task`, and mapping ':' to '_' would otherwise let `ns:task` and `ns_task`
 // share one fingerprint.
 func sanitise(name string) string {
+	return sanitiseKey(name, name)
+}
+
+// sanitiseKey is sanitise with the digest taken over key rather than the name,
+// so one task's invocations get distinct files under one readable stem.
+func sanitiseKey(name, key string) string {
 	var b strings.Builder
 	for _, r := range name {
 		switch {
@@ -461,7 +552,7 @@ func sanitise(name string) string {
 	if len(safe) > 100 {
 		safe = safe[:100]
 	}
-	sum := sha256.Sum256([]byte(name))
+	sum := sha256.Sum256([]byte(key))
 	if safe == "" {
 		safe = "task"
 	}
