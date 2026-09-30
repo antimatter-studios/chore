@@ -64,6 +64,13 @@ tasks:
         fi
       - go vet ./...
 
+  ci:gate:
+    desc: Fail unless ci-ok needs every CI job and .github-guard requires ci-ok alone
+    cmds:
+      # The same script, the same verdict as the CI step: a rule only CI
+      # enforces is one the tree drifts away from between pull requests.
+      - scripts/ci-gate.sh
+
   verify-release:
     desc: 'Rebuild a published release and compare hashes: chore verify-release 0.1.0'
     args:

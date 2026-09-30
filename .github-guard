@@ -1,0 +1,63 @@
+# .github-guard — declarations github-guard reads (see the github-guard skill:
+# https://github.com/antimatter-studios/agent-skills/blob/main/.claude/skills/github-guard/README.md).
+# git-config format: check with `git config -f .github-guard --list`, and
+# double-quote any value containing # or ;.
+
+# What must pass before main takes a merge. github-guard reads this from the
+# default branch on the server and applies it to branch protection.
+#
+#   ci-ok   ci.yml: the one always-run gate. It `needs:` every other job in
+#           that workflow and fails when any of them failed, was cancelled or
+#           was SKIPPED -- today that is the `test` matrix on ubuntu and
+#           macOS: gofmt, vet, the race-enabled suite, the build, and the
+#           curated examples run against the built binary on both, plus
+#           actionlint, ShellCheck, the manual-in-sync check and this gate
+#           on the ubuntu leg.
+#
+# WHY ONE NAME AND NOT TWO (#54). This list used to be the two matrix legs,
+# `test (ubuntu-latest)` and `test (macos-latest)`, typed into the settings
+# page and written down nowhere in this repository. Both were correct when
+# they were typed, and that is the problem -- nothing kept them correct. A
+# matrix leg's check name is exactly the name that moves: adding a Linux
+# arm64 leg produces a check that reports on every pull request and gates
+# nothing, and renaming the job, or giving it a `name:`, turns both required
+# names into contexts no job produces.
+#
+# The opposite spelling is worse. A required context that no job produces
+# reads to GitHub as permanently pending, and with enforce_admins on nothing
+# merges and there is no failure to point at. Both directions come from the
+# required list naming individual jobs rather than one gate, and both have
+# happened in this constellation.
+#
+# THIS REPOSITORY SHIPS THE RULE, so it is the last one that can be exempt
+# from it. `chore ci:gate` is how the siblings are told to hold themselves to
+# this, and a tool that does not apply its own rule is the weaker argument
+# for adopting it.
+#
+# THE NAME DOES NOT MOVE WHEN THE JOBS DO, which is what makes this safe to
+# change. github-guard reads this file from the DEFAULT BRANCH, so a pull
+# request that renames a gating job can never also be the one whose
+# protection learns the new name -- it would leave the old name required and
+# never reporting. Requiring the aggregate means the jobs behind it can be
+# renamed, split or replaced wholesale in a single pull request that
+# protection never notices.
+#
+# ONLY ci.yml CAN GATE, WHICH IS WHY ci-ok LIVES THERE AND NEEDS ONLY ITS
+# JOBS. release.yml triggers on a `v*` tag or by hand, after the merge it
+# would be gating has already happened, so it never reports on a pull request.
+# Requiring anything from it would require a check GitHub reads as pending
+# forever -- a permanent block on every merge. It stays absent.
+#
+# scripts/ci-gate.sh HOLDS BOTH HALVES TO THIS -- every job in ci.yml has to
+# be in `ci-ok`'s `needs`, and this file has to require `ci-ok` and nothing
+# else. Without that the aggregate drifts exactly as the named list did: a
+# job added to ci.yml and not to `needs` is invisible again. It runs on the
+# ubuntu leg of `test`, and locally as `chore ci:gate`. The step after it
+# compares this file with the live protection on main and WARNS rather than
+# fails: a pull request cannot change a setting, so it must not be the thing
+# that goes red when the two disagree.
+#
+# The name must match the check-run name GitHub reports, which is the job's
+# `name:` rather than its key -- `ci-ok` for both.
+[checks]
+	required = ci-ok
