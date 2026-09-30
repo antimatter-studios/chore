@@ -1,0 +1,76 @@
+name: Install chore
+description: >-
+  Install a released chore binary, checksum-verified against the release's
+  checksums.txt, and put it on PATH.
+
+# WHY THIS EXISTS (#52). The releases publish `chore-{version}-{os}-{arch}.tar.gz`,
+# and every consumer used to re-implement that name, plus the `uname` -> arch
+# mapping, for itself. One hand-written copy asked for `chore-linux-amd64.tar.gz`
+# (no version, and `amd64` where the releases say `x86_64`) and 404'd on every
+# scheduled run until someone noticed. The name belongs to the repository that
+# publishes it, so this action is where it is spelled, next to the
+# .goreleaser.yml that produces it. First written as rust-fs-core's
+# install-chore action (rust-fs-core#157) and moved here.
+#
+#   - uses: antimatter-studios/chore/.github/actions/install@v0.14.2
+#     with:
+#       version: "0.14.2"
+#
+# PIN THE `@ref`, to a tag or a commit sha. `@main` is the installer changing
+# under a repository with no diff to review, the same problem as an unpinned
+# version.
+#
+# WINDOWS is not published, so the action FAILS there rather than doing
+# nothing. Guard it with a STEP-level `if: runner.os != 'Windows'`: a job-level
+# `if:` would make the whole job non-gating, which is a different decision.
+#
+# The work is in install.sh, beside this file, so shellcheck reads it and it can
+# be run by hand.
+
+inputs:
+  version:
+    # A literal default, NOT one derived from the ref this action was pinned at,
+    # though `@v0.14.2` installing 0.14.2 by itself would be convenient:
+    #  - A sha pin, the recommended form, carries no version to derive, and
+    #    `uses: ./` carries no ref at all. A derived default would need this
+    #    fallback anyway, so the action would behave differently depending on
+    #    how it was pinned.
+    #  - A literal can be read. What the action installs is on the page, at the
+    #    ref you pinned, with no expression to evaluate in your head.
+    #  - The tagged commit cannot name its own release: the release does not exist
+    #    until after the tag, so CI on that commit could not install it.
+    # So the default trails: it names the newest release that existed when this
+    # file was last changed. Pass `version` explicitly. The ref pins the
+    # installer, `version` pins chore, and they move independently.
+    description: >-
+      The chore release to install, e.g. "0.14.2" (a leading `v` is accepted).
+      Pass it explicitly. The default is the newest release when this action was
+      last updated, not the release matching the ref you pinned.
+    required: false
+    default: "0.14.2"
+  destination:
+    description: Directory to install into. Added to PATH for later steps.
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: The installed version, as the installed `chore --version` reports it.
+    value: ${{ steps.install.outputs.version }}
+  path:
+    description: Absolute path of the installed binary.
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        CHORE_VERSION: ${{ inputs.version }}
+        # Empty means $HOME/.local/bin, expanded by the script: an input default
+        # is literal text, so `$HOME` there would arrive as those five characters.
+        CHORE_DESTINATION: ${{ inputs.destination }}
+      # Through `bash`, not the file's mode bit, so a checkout that lost the
+      # executable bit still works.
+      run: bash "$GITHUB_ACTION_PATH/install.sh"

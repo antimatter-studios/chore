@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **An install action for GitHub Actions.** `uses:
+  antimatter-studios/chore/.github/actions/install@<ref>` downloads a release for
+  the runner's platform, verifies it against `checksums.txt`, and puts `chore` on
+  `PATH`. Consumers no longer write the release asset name by hand (#52). A
+  hand-written copy that got it wrong 404'd on every run. The action was first
+  written in rust-fs-core and now lives here, next to the release config that
+  sets the name. No change to chore itself.
+
 ## v0.14.2
 
 - **A task's arguments are part of its fingerprint.** Two invocations of a task
