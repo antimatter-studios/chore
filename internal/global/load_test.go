@@ -149,6 +149,19 @@ func TestLoadRefusesWhatCannotWork(t *testing.T) {
 			want: "which is not host:port",
 		},
 		{
+			// A PTY is a terminal at the far end of a route. A task that runs here
+			// already has this machine's terminal, and a tunnel has no command to
+			// give one to.
+			name: "a pty with no route",
+			body: "name: x\ntasks:\n  t: { pty: true, cmd: [bash, -l] }\n",
+			want: "sets `pty: true` but needs a routed `cmd:`",
+		},
+		{
+			name: "a pty on a forward",
+			body: "name: x\nroutes:\n  r: [ { host: h } ]\ntasks:\n  t: { route: r, pty: true, forward: { remote: a:1, local: b:2 } }\n",
+			want: "sets `pty: true` but needs a routed `cmd:`",
+		},
+		{
 			// The same rule a taskfile follows: a typo in a key is likelier than a
 			// deliberate extension, and ignoring it turns the typo into silence.
 			name: "an unknown field",
@@ -195,6 +208,29 @@ tasks:
 	}
 	if got := n.Tasks["check"].Deps; len(got) != 1 || got[0] != "unlock" {
 		t.Errorf("deps = %v", got)
+	}
+}
+
+// `pty:` is off unless a task asks for it, so an ordinary remote command keeps
+// ordinary streams.
+func TestPTYIsOptIn(t *testing.T) {
+	set, err := Load(write(t, map[string]string{"x.yaml": `
+name: x
+routes:
+  r: [ { host: h } ]
+tasks:
+  shell: { route: r, pty: true, cmd: [bash, -l] }
+  pods: { route: r, cmd: [kubectl, get, pods] }
+`}))
+	if err != nil {
+		t.Fatalf("a routed cmd with pty: true is legal: %v", err)
+	}
+	n := set.Namespaces["x"]
+	if !n.Tasks["shell"].PTY {
+		t.Error("shell should have PTY set")
+	}
+	if n.Tasks["pods"].PTY {
+		t.Error("a task that does not mention pty: should not get one")
 	}
 }
 

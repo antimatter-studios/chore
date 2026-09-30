@@ -34,7 +34,23 @@ type testServer struct {
 	listener net.Listener
 
 	mu       sync.Mutex
-	commands []string // every command string the server was asked to exec
+	commands []string   // every command string the server was asked to exec
+	ptys     []ptyReq   // every terminal a session asked for
+	resizes  []termSize // every window-change a session sent
+
+	// held is signalled when a "hold" command starts. The session then stays
+	// open until the client resizes its terminal, so a test can look at the
+	// local side while a remote command is running.
+	held chan struct{}
+}
+
+// termSize is a terminal's size in characters, as the SSH protocol carries it.
+type termSize struct{ Cols, Rows uint32 }
+
+// ptyReq is what a "pty-req" asked for: a terminal type and its size.
+type ptyReq struct {
+	Term string
+	termSize
 }
 
 // newTestServer starts one on a loopback port, accepting the given public key.
@@ -64,7 +80,7 @@ func newTestServer(t *testing.T, authorized ssh.PublicKey) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &testServer{t: t, Addr: ln.Addr().String(), HostKey: signer.PublicKey(), listener: ln}
+	s := &testServer{t: t, Addr: ln.Addr().String(), HostKey: signer.PublicKey(), listener: ln, held: make(chan struct{}, 1)}
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
@@ -108,8 +124,40 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 		return
 	}
 	defer ch.Close()
+	holding := false
 	for req := range reqs {
-		if req.Type != "exec" {
+		switch req.Type {
+		case "exec":
+		case "pty-req":
+			var p struct {
+				Term                      string
+				Cols, Rows, Width, Height uint32
+				Modes                     string
+			}
+			if err := ssh.Unmarshal(req.Payload, &p); err != nil {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			s.mu.Lock()
+			s.ptys = append(s.ptys, ptyReq{Term: p.Term, termSize: termSize{Cols: p.Cols, Rows: p.Rows}})
+			s.mu.Unlock()
+			_ = req.Reply(true, nil)
+			continue
+		case "window-change":
+			var w struct{ Cols, Rows, Width, Height uint32 }
+			if err := ssh.Unmarshal(req.Payload, &w); err != nil {
+				continue
+			}
+			s.mu.Lock()
+			s.resizes = append(s.resizes, termSize{Cols: w.Cols, Rows: w.Rows})
+			s.mu.Unlock()
+			if holding {
+				fmt.Fprintf(ch, "resized to %dx%d\n", w.Cols, w.Rows)
+				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				return
+			}
+			continue
+		default:
 			_ = req.Reply(false, nil)
 			continue
 		}
@@ -123,6 +171,15 @@ func (s *testServer) session(newChan ssh.NewChannel) {
 		s.mu.Lock()
 		s.commands = append(s.commands, payload.Command)
 		s.mu.Unlock()
+
+		if payload.Command == "'hold'" {
+			holding = true
+			select {
+			case s.held <- struct{}{}:
+			default:
+			}
+			continue
+		}
 
 		// Not a shell: enough of one to prove the command arrived intact. The
 		// command is echoed back so a test can assert on the exact string that
@@ -173,6 +230,20 @@ func (s *testServer) ranCommands() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.commands...)
+}
+
+// ptyRequests returns every terminal a session on this server asked for.
+func (s *testServer) ptyRequests() []ptyReq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ptyReq(nil), s.ptys...)
+}
+
+// windowChanges returns every terminal resize a session on this server was sent.
+func (s *testServer) windowChanges() []termSize {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]termSize(nil), s.resizes...)
 }
 
 // testAgent runs an in-process ssh-agent on a unix socket, holding one key.
