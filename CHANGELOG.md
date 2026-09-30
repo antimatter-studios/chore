@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.2
 
 - **A task's arguments are part of its fingerprint.** Two invocations of a task
   with `args:` and `sources:`/`generates:` that differ only in their arguments,
