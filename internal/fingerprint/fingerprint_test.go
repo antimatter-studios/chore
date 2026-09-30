@@ -1116,3 +1116,168 @@ func sha256hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// ---------- args ----------
+
+// getterRenderer is a fakeRenderer that can also look variables up, as
+// *tmpl.Scope can. Only a Renderer that is also a Getter lets the fingerprint
+// see argument values.
+type getterRenderer struct{ fakeRenderer }
+
+func (g getterRenderer) Get(k string) (string, bool) {
+	v, ok := g.vars[k]
+	return v, ok
+}
+
+func withVars(kv ...string) getterRenderer {
+	m := map[string]string{}
+	for i := 0; i < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return getterRenderer{fakeRenderer{vars: m}}
+}
+
+func argTask() *chorefile.Task {
+	task := newTask("staticlib")
+	task.Args = chorefile.Args{{Name: "arch"}, {Name: "mode"}}
+	task.Sources = []string{"src/*.c"}
+	return task
+}
+
+func mustSaveWith(t *testing.T, task *chorefile.Task, r Renderer, dir string) {
+	t.Helper()
+	if err := SaveWith(task, r, dir, ""); err != nil {
+		t.Fatalf("SaveWith(%s): %v", task.Name, err)
+	}
+}
+
+func TestArgValuesSelectTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "src/a.c", "int a;")
+	task := argTask()
+
+	arm := withVars("arch", "arm64", "ARCH", "arm64", "mode", "release")
+	mustSaveWith(t, task, arm, dir)
+
+	if !check(t, task, arm, nil, dir, "") {
+		t.Error("the invocation that saved is not up to date")
+	}
+	// Any one argument differing is different work — including the second.
+	for _, r := range []getterRenderer{
+		withVars("arch", "x86_64", "mode", "release"),
+		withVars("arch", "arm64", "mode", "debug"),
+		withVars("arch", "arm64"),
+	} {
+		if check(t, task, r, nil, dir, "") {
+			t.Errorf("vars %v reported up to date off arch=arm64 mode=release's record", r.vars)
+		}
+	}
+	// The uppercase spelling alone is the same value: {{.ARCH}} is how most
+	// Taskfiles read it, and a default may have been declared that way.
+	if !check(t, task, withVars("ARCH", "arm64", "MODE", "release"), nil, dir, "") {
+		t.Error("the same values under their uppercase spelling were not up to date")
+	}
+}
+
+// When the spellings disagree the commands may read either, so the record must
+// follow both: keyed on `arch` alone, `ARCH=x86_64` work would be recorded as
+// arm64's and a later arm64 run would skip itself.
+func TestArgSpellingsThatDisagreeAreBothKeyed(t *testing.T) {
+	task := argTask()
+	mixed := recordKey(task, withVars("arch", "arm64", "ARCH", "x86_64", "mode", "r"))
+	for _, r := range []getterRenderer{
+		withVars("arch", "arm64", "mode", "r"),
+		withVars("ARCH", "x86_64", "mode", "r"),
+	} {
+		if recordKey(task, r) == mixed {
+			t.Errorf("vars %v share a key with arch=arm64,ARCH=x86_64", r.vars)
+		}
+	}
+	// Agreement is one value, not two, so the common case keys as before.
+	if recordKey(task, withVars("arch", "arm64", "ARCH", "arm64", "mode", "r")) != recordKey(task, withVars("arch", "arm64", "mode", "r")) {
+		t.Error("two spellings holding one value keyed differently from one spelling")
+	}
+}
+
+// Argument values are glued together for the digest; the separator must keep
+// ("a b", "") and ("a", "b c") — and every other split — apart.
+func TestArgValuesDoNotRunTogether(t *testing.T) {
+	task := argTask()
+	a := recordKey(task, withVars("arch", "ab", "mode", "c"))
+	b := recordKey(task, withVars("arch", "a", "mode", "bc"))
+	if a == b {
+		t.Errorf("recordKey collides for arch=ab,mode=c and arch=a,mode=bc: %q", a)
+	}
+}
+
+func TestArgsRecordedInTheFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "src/a.c", "int a;")
+	task := argTask()
+	r := withVars("arch", "arm64", "mode", "release")
+	mustSaveWith(t, task, r, dir)
+
+	b, err := os.ReadFile(PathWith(task, r, dir, ""))
+	if err != nil {
+		t.Fatalf("PathWith does not name the file SaveWith wrote: %v", err)
+	}
+	var fp stored
+	if err := json.Unmarshal(b, &fp); err != nil {
+		t.Fatal(err)
+	}
+	// "Why did this rerun?" is answered from this file, so it has to say which
+	// invocation it is the record of.
+	want := map[string]string{"arch": "arm64", "mode": "release"}
+	if !reflect.DeepEqual(fp.Args, want) {
+		t.Errorf("recorded args = %v, want %v", fp.Args, want)
+	}
+	if PathWith(task, withVars("arch", "x86_64", "mode", "release"), dir, "") == PathWith(task, r, dir, "") {
+		t.Error("two invocations map to one fingerprint path")
+	}
+	// Both paths keep the task's readable stem, so a human can find them.
+	if base := filepath.Base(PathWith(task, r, dir, "")); !strings.HasPrefix(base, "staticlib-") {
+		t.Errorf("path %q lost the task name", base)
+	}
+}
+
+// A task with no args is keyed on its name exactly, as it always was: Path,
+// PathWith with any renderer, and the pre-args naming all agree, so records
+// written by an older chore are still found.
+func TestNoArgsKeepsTheNameOnlyPath(t *testing.T) {
+	dir := t.TempDir()
+	task := newTask("postgres:up")
+	task.Sources = []string{"src/*"}
+	legacy := filepath.Join(dir, DefaultCacheDir, fingerprintsDir, sanitise("postgres:up")+".json")
+	for _, got := range []string{
+		Path(task, dir, ""),
+		PathWith(task, nil, dir, ""),
+		PathWith(task, withVars("ARCH", "arm64"), dir, ""),
+	} {
+		if got != legacy {
+			t.Errorf("path = %s, want the name-only %s", got, legacy)
+		}
+	}
+	if !strings.HasSuffix(legacy, "postgres_up-"+sha256hex("postgres:up")[:8]+".json") {
+		t.Errorf("name-only path %s is not the digest of the name alone", legacy)
+	}
+}
+
+// A Renderer that cannot look variables up — Save's, or a caller's own — sees
+// every argument empty. Save and a matching UpToDate still agree with each
+// other, which is the contract Save always had.
+func TestArgsWithoutAGetterShareOneRecord(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "src/a.c", "int a;")
+	task := argTask()
+
+	mustSave(t, task, dir, "")
+	if !check(t, task, nil, nil, dir, "") {
+		t.Error("Save then UpToDate with no renderer is not up to date")
+	}
+	if !check(t, task, fakeRenderer{}, nil, dir, "") {
+		t.Error("a renderer with no Get is not up to date against Save's record")
+	}
+	if check(t, task, withVars("arch", "arm64"), nil, dir, "") {
+		t.Error("an invocation with a real value was satisfied by the all-empty record")
+	}
+}

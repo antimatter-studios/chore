@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **A task's arguments are part of its fingerprint.** Two invocations of a task
+  with `args:` and `sources:`/`generates:` that differ only in their arguments,
+  such as `chore staticlib arm64` then `chore staticlib x86_64`, now keep
+  separate records. Before, the second reported "up to date" off the first's
+  run and built nothing (#32). Tasks without `args:` keep their existing
+  fingerprints.
+
 ## v0.14.1
 
 - **Release archives carry a build-provenance attestation.** Each tarball is

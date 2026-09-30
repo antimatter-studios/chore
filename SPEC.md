@@ -791,7 +791,10 @@ func UpToDate(ctx context.Context, t *chorefile.Task, r Renderer, sh Runner, dir
 `status:` — every command exits zero → up to date. `sources:`/`generates:` —
 SHA-256 over matched files (globs relative to the task's directory), compared
 with the previous fingerprint stored under `cacheDir` (default `.chore/`). Any
-missing generated file means not up to date.
+missing generated file means not up to date. A fingerprint is keyed on the task
+name plus the value of each declared `args:` parameter, read from the Renderer
+when it also implements `Get(k) (string, bool)` (as `*tmpl.Scope` does); a task
+without `args:` is keyed on its name alone.
 
 ### internal/run
 

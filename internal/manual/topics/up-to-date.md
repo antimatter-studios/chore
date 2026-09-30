@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/fingerprint/fingerprint.go:130 -->
+<!-- sources: internal/fingerprint/fingerprint.go:138 -->
 ---
 title: Skipping work that is done
 summary: sources, generates, status, and --force
@@ -29,6 +29,10 @@ ensure:db:
 - **`status`** is a list of shell commands. All exiting zero means "already
   done, skip". Use it when the evidence is not a file — a container running, a
   volume present.
+
+A task with `args:` keeps one record per set of argument values, so
+`chore staticlib arm64` being up to date says nothing about
+`chore staticlib x86_64`.
 
 `--force` runs the task regardless. A task with neither declaration always runs.
 
