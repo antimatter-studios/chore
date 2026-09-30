@@ -12,9 +12,9 @@ description: >-
 # .goreleaser.yml that produces it. First written as rust-fs-core's
 # install-chore action (rust-fs-core#157) and moved here.
 #
-#   - uses: antimatter-studios/chore/.github/actions/install@v0.14.2
+#   - uses: antimatter-studios/chore/.github/actions/install@v0.14.3
 #     with:
-#       version: "0.14.2"
+#       version: "0.14.3"
 #
 # PIN THE `@ref`, to a tag or a commit sha. `@main` is the installer changing
 # under a repository with no diff to review, the same problem as an unpinned

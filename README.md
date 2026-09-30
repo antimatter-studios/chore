@@ -34,9 +34,9 @@ Binary: `chore`. macOS and Linux.
 Use the install action rather than spelling the release asset name yourself:
 
 ```yaml
-- uses: antimatter-studios/chore/.github/actions/install@v0.14.2
+- uses: antimatter-studios/chore/.github/actions/install@v0.14.3
   with:
-    version: "0.14.2"
+    version: "0.14.3"
 ```
 
 It downloads `chore-{version}-{os}-{arch}.tar.gz` for the runner, verifies it

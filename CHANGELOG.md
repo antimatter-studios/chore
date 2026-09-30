@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.3
 
 - **An install action for GitHub Actions.** `uses:
   antimatter-studios/chore/.github/actions/install@<ref>` downloads a release for
@@ -8,7 +8,8 @@
   `PATH`. Consumers no longer write the release asset name by hand (#52). A
   hand-written copy that got it wrong 404'd on every run. The action was first
   written in rust-fs-core and now lives here, next to the release config that
-  sets the name. No change to chore itself.
+  sets the name. The first tag carrying it is v0.14.3, so
+  pin `@v0.14.3` or later. No change to chore itself.
 
 ## v0.14.2
 
