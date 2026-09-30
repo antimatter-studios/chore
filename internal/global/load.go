@@ -1,27 +1,116 @@
+// Package global is where machine-wide tasks LIVE, and how an ssh route is
+// travelled. It is not a second kind of task.
+//
+// A file in ~/.config/chore/global.d is an ordinary taskfile, loaded by
+// internal/loader and run by internal/run like any other; the only thing that
+// sets it apart is that its tasks are addressed as `global:<file>:<task>`. What
+// is here is the part that genuinely belongs to no project: finding that
+// directory, loading every file in it, attaching them to whatever else is
+// running, and the ssh transport that any task's `route:` uses.
 package global
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
-	"os/user"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/loader"
 )
 
-// DefaultPort is what a hop with no `port:` dials, as ssh does.
-const DefaultPort = 22
+// chore:manual global
+// title: Global tasks
+// summary: machine-wide tasks, reachable from any directory as global:<file>:<task>
+// aliases: globals global-d
+// order: 10
+//
+// # Global tasks
+//
+// Tasks that belong to a MACHINE rather than to a project, kept in
+// `~/.config/chore/global.d/*.yaml` and reachable from any directory, with or
+// without a `chores.yml` in sight.
+//
+// ```
+// chore global:                       the files installed here
+// chore global:ssh:                   the tasks in global.d/ssh.yaml
+// chore global:ssh:unlock             run one
+// ```
+//
+// **A global file is an ordinary taskfile.** Same schema, same arguments, same
+// everything: `args:`, `vars:`, `cmds:`, hooks, `--help`, `--dry`, `--` all mean
+// what they mean in a `chores.yml`. The only difference is where it lives, and
+// that its tasks are addressed through the fixed `global:<file>:` prefix — the
+// filename, without `.yaml`, is the namespace:
+//
+// ```yaml
+// # ~/.config/chore/global.d/agents.yaml
+// tasks:
+//   limit:
+//     desc: the rate limit left, as a table or as JSON
+//     args:
+//       - account
+//       - { name: json, type: bool }
+//     vars: { account: all }
+//     cmd: agent-limits {{.ACCOUNT}} {{if .JSON}}--json{{end}}
+// ```
+//
+// ```
+// chore global:agents:limit                 # account=all
+// chore global:agents:limit work --json
+// chore global:agents:limit --help
+// ```
+//
+// `$XDG_CONFIG_HOME` is honoured when set, and `~/.config` is the fallback —
+// which matters because the variable is unset on macOS by default, and these
+// files are meant to arrive on both by the same dotfiles repository.
+//
+// ## Loaded on every run
+//
+// Every file in global.d is loaded every time chore runs, so anything in one —
+// a task, a route, a predicate — can be named from anywhere as
+// `global:<file>:<name>`: from another global file, or from a project.
+//
+// ```yaml
+// # a project's chores.yml
+// tasks:
+//   deploy:
+//     deps: [global:ssh:unlock]
+//     route: global:homelab:pi
+//     cmd: ./deploy.sh
+// ```
+//
+// A bare name is always in the file it is written in. A global file is loaded
+// with the same strictness as any other, so one that is present and wrong is an
+// error naming it rather than a namespace that silently stopped existing.
+//
+// ## What differs, and why
+//
+// - **`global:` is mandatory.** `chore ssh:unlock` is a task in the current
+//   project; `chore global:ssh:unlock` is the machine's. The prefix makes the
+//   call site readable without knowing what is installed, and a project cannot
+//   shadow a machine's task — a project task may not be named `global:…`.
+// - **A global task runs in the directory you ran chore from**, not beside its
+//   file: it belongs to the machine, and `chore global:tools:fmt` should format
+//   what you are standing in. `{{.TASKFILE_DIR}}` is still its own directory.
+// - **Its environment is its own.** A global file is the root of its own tree:
+//   its `dotenv:`, `env:` and `vars:` apply to its tasks, and a project's do not
+//   leak into it when a project task depends on one.
+// - **`chore --list` does not include them.** They are listed by `chore global:`.
+// - **`name:` is not needed.** A file written when it was still accepted loads as
+//   long as it matches the filename.
 
-// Dir returns the directory global namespaces are read from.
+// Dir returns the directory global files are read from.
 //
 // $XDG_CONFIG_HOME when set, ~/.config otherwise. The fallback is not
 // decoration: the variable is unset on macOS by default, and these files are
 // meant to arrive on macOS and Linux from one dotfiles repository, at one path,
-// with no per-machine setup — which is the whole reason the feature exists.
+// with no per-machine setup.
 func Dir() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
 		return filepath.Join(xdg, "chore", "global.d"), nil
@@ -33,18 +122,21 @@ func Dir() (string, error) {
 	return filepath.Join(home, ".config", "chore", "global.d"), nil
 }
 
-// Set is every namespace installed on this machine.
+// Set is every global file installed on this machine, each loaded as the
+// ordinary taskfile it is.
 type Set struct {
-	Dir        string
-	Namespaces map[string]*Namespace
+	Dir string
+	// Namespaces are keyed by filename without its extension: the word between
+	// `global:` and the task.
+	Namespaces map[string]*chorefile.Project
 }
 
-// Load reads every namespace in dir. A missing directory is not an error —
-// having no global tasks is the ordinary state of a machine — but a file that is
+// Load reads every file in dir. A missing directory is not an error — having
+// no global tasks is the ordinary state of a machine — but a file that is
 // present and wrong IS one, because a namespace that silently failed to load is
 // a command that has stopped existing without saying so.
 func Load(dir string) (*Set, error) {
-	set := &Set{Dir: dir, Namespaces: map[string]*Namespace{}}
+	set := &Set{Dir: dir, Namespaces: map[string]*chorefile.Project{}}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -57,20 +149,21 @@ func Load(dir string) (*Set, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		n, err := loadFile(path)
+		ns := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		if other, dup := set.Namespaces[ns]; dup {
+			// ssh.yaml and ssh.yml would both be `global:ssh:`, and which one won
+			// would depend on directory order. Name both.
+			return nil, fmt.Errorf("two files are both `global:%s:`: %s and %s", ns, other.Root.Path, path)
+		}
+		p, err := loader.LoadGlobal(path, ns)
 		if err != nil {
 			return nil, err
 		}
-		if other, dup := set.Namespaces[n.Name]; dup {
-			// Two files claiming one name means one of them is unreachable, and
-			// which one would depend on directory order. Name both.
-			return nil, fmt.Errorf("two namespaces are called %q: %s and %s", n.Name, other.Path, n.Path)
-		}
-		set.Namespaces[n.Name] = n
+		set.Namespaces[ns] = p
 	}
-	// Second pass: references that name another namespace, which no single file
-	// could see while it was being read.
-	if err := set.crossCheck(); err != nil {
+	// Check the set on its own, so a reference from one global file to another
+	// that does not exist is reported whatever is being run.
+	if _, err := set.combined(nil); err != nil {
 		return nil, err
 	}
 	return set, nil
@@ -86,117 +179,87 @@ func isNamespaceFile(name string) bool {
 	return ext == ".yaml" || ext == ".yml"
 }
 
-func loadFile(path string) (*Namespace, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
-	// Unknown fields are an error here for the same reason they are in a
-	// taskfile: a typo in a key is far likelier than a deliberate extension, and
-	// ignoring it turns the typo into silence.
-	dec.KnownFields(true)
-
-	var n Namespace
-	if err := dec.Decode(&n); err != nil {
-		return nil, fmt.Errorf("%s: %s", path, readable(err))
-	}
-	n.Path = path
-	// Before validation, so a route or an address is checked in the form it will
-	// actually be used in rather than the form it was written in.
-	if err := expandNamespace(&n); err != nil {
-		return nil, err
-	}
-	if err := n.Validate(); err != nil {
-		return nil, err
-	}
-	defaults(&n)
-	for name, t := range n.Tasks {
-		t.Name, t.Namespace = name, n.Name
-	}
-	return &n, nil
+// Attach adds every global task, route and predicate to a project, so its own
+// tasks can name them as `global:<ns>:<name>`, and checks the references that
+// cross between the two now that both are in.
+func (s *Set) Attach(p *chorefile.Project) error {
+	_, err := s.combined(p)
+	return err
 }
 
-// defaults fills in what ssh would fill in, at load rather than at dial, so a
-// listing and an error message name the port and user a connection will actually
-// use rather than the blanks the file left.
-func defaults(n *Namespace) {
-	me := ""
-	if u, err := user.Current(); err == nil {
-		me = u.Username
+// Project returns a project rooted at one global file, with every other global
+// file attached: what `chore global:<ns>:<task>` runs. The file is the root in
+// every sense a project's chores.yml is — its `lifecycle:`, its `dotenv:`, its
+// `chore_min_version:`.
+func (s *Set) Project(ns string) (*chorefile.Project, error) {
+	root, ok := s.Namespaces[ns]
+	if !ok {
+		return nil, fmt.Errorf("no global:%s: in %s%s", ns, s.Dir, s.suggest())
 	}
-	for name, route := range n.Routes {
-		for i := range route.Hops {
-			if route.Hops[i].Port == 0 {
-				route.Hops[i].Port = DefaultPort
-			}
-			if route.Hops[i].User == "" {
-				route.Hops[i].User = me
-			}
+	p := &chorefile.Project{Root: root.Root, RootDir: root.RootDir,
+		Tasks: map[string]*chorefile.Task{}, Files: map[string]*chorefile.File{}}
+	return s.combined(p)
+}
+
+// combined merges every namespace into p (a fresh project when p is nil) and
+// checks the result strictly. Keys cannot collide: every global key starts with
+// `global:<ns>:`, and a project is refused a task under that prefix.
+func (s *Set) combined(p *chorefile.Project) (*chorefile.Project, error) {
+	if p == nil {
+		p = &chorefile.Project{Tasks: map[string]*chorefile.Task{}, Files: map[string]*chorefile.File{}}
+	}
+	if p.Files == nil {
+		p.Files = map[string]*chorefile.File{}
+	}
+	for _, ns := range slices.Sorted(maps.Keys(s.Namespaces)) {
+		for k, t := range s.Namespaces[ns].Tasks {
+			p.Tasks[k] = t
 		}
-		n.Routes[name] = route
+		for k, f := range s.Namespaces[ns].Files {
+			p.Files[k] = f
+		}
 	}
+	if err := loader.Check(p, true); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
-// readable turns yaml.v3's type-shaped complaint into one aimed at whoever wrote
-// the file, the same way internal/chorefile does for a taskfile.
-func readable(err error) string {
-	msg := strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n")
-	msg = strings.ReplaceAll(msg, "global.Namespace", "a namespace")
-	msg = strings.ReplaceAll(msg, "global.Task", "a task")
-	msg = strings.ReplaceAll(msg, "global.Hop", "a hop")
-	msg = strings.ReplaceAll(msg, "global.Forward", "a forward")
-	return strings.TrimSpace(msg)
-}
-
-// Lookup resolves an address a person typed. name is everything after `global:`,
-// so `homelab:k3s:pods` — the namespace is the part before the FIRST colon,
-// because a task name may contain colons of its own and a namespace may not.
-func (s *Set) Lookup(name string) (*Task, error) {
-	ns, task, ok := strings.Cut(name, ":")
-	if !ok || task == "" {
-		return nil, fmt.Errorf("global:%s names a namespace, not a task — `chore global:%s:` lists what is in it", name, ns)
-	}
-	n, ok := s.Namespaces[ns]
+// Tasks returns the visible tasks of one namespace, sorted by address.
+func (s *Set) Tasks(ns string) ([]*chorefile.Task, error) {
+	p, ok := s.Namespaces[ns]
 	if !ok {
-		return nil, fmt.Errorf("no global namespace %q in %s%s", ns, s.Dir, s.suggestNamespace(ns))
+		return nil, fmt.Errorf("no global:%s: in %s%s", ns, s.Dir, s.suggest())
 	}
-	t, ok := n.Tasks[task]
-	if !ok {
-		return nil, fmt.Errorf("no task %q in global:%s (%s)%s", task, ns, n.Path, n.suggestTask(task))
+	var out []*chorefile.Task
+	for _, name := range slices.Sorted(maps.Keys(p.Tasks)) {
+		if t := p.Tasks[name]; !t.Internal && t.Name == name {
+			out = append(out, t)
+		}
 	}
-	return t, nil
+	return out, nil
 }
 
-func (s *Set) suggestNamespace(name string) string {
-	names := sortedKeys(s.Namespaces)
+// ListNamespaces answers `chore global:` — what is installed on this machine.
+func (s *Set) ListNamespaces(w io.Writer) {
+	if len(s.Namespaces) == 0 {
+		fmt.Fprintf(w, "no global tasks in %s\n", s.Dir)
+		fmt.Fprintf(w, "\nEach file there is a taskfile, and its name is what follows `global:`.\n")
+		return
+	}
+	fmt.Fprintf(w, "global tasks in %s\n\n", s.Dir)
+	for _, ns := range slices.Sorted(maps.Keys(s.Namespaces)) {
+		p := s.Namespaces[ns]
+		tasks, _ := s.Tasks(ns)
+		fmt.Fprintf(w, "  %-20s %d task(s), %d route(s)\n", chorefile.GlobalPrefix+ns+":", len(tasks), len(p.Root.Routes))
+	}
+	fmt.Fprintf(w, "\nlist one with: chore global:%s:\n", slices.Sorted(maps.Keys(s.Namespaces))[0])
+}
+
+func (s *Set) suggest() string {
+	names := slices.Sorted(maps.Keys(s.Namespaces))
 	if len(names) == 0 {
-		return " — no namespaces are installed there"
+		return " — nothing is installed there"
 	}
 	return " — installed: " + strings.Join(names, ", ")
-}
-
-func (n *Namespace) suggestTask(name string) string {
-	var names []string
-	for k, t := range n.Tasks {
-		if !t.Internal {
-			names = append(names, k)
-		}
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	sort.Strings(names)
-	return " — it has: " + strings.Join(names, ", ")
-}
-
-// sortedKeys gives map keys in a stable order, so a message names things the
-// same way on every run rather than in whatever order the map handed them over.
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

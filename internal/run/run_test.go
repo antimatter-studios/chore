@@ -1220,7 +1220,7 @@ func TestTaskReferenceIsRelativeToItsFile(t *testing.T) {
 		t.Helper()
 		dir := t.TempDir()
 		root := &chorefile.File{Path: filepath.Join(dir, "Taskfile.yml"), Dir: dir}
-		sub := &chorefile.File{Path: filepath.Join(dir, "sub.yml"), Dir: dir, Namespace: "sub"}
+		sub := &chorefile.File{Path: filepath.Join(dir, "sub.yml"), Dir: dir, Namespace: "sub", Parent: root}
 		tasks := map[string]*chorefile.Task{}
 		add := func(f *chorefile.File, name, marker string) {
 			full := name

@@ -535,43 +535,43 @@ watch one fire on purpose — not a reason to drop it.
 ## `global:` — tasks available from any directory
 
 ```
-chore global:                       list installed namespaces
-chore global:homelab:               list the namespace's tasks
-chore global:homelab:status         run an ordinary chore task
+chore global:                       list the files installed
+chore global:homelab:               list the tasks in global.d/homelab.yaml
+chore global:homelab:status         run one, exactly as a project task runs
 ```
 
 Files in `${XDG_CONFIG_HOME:-$HOME/.config}/chore/global.d/*.yaml`, one namespace
-per file, answered **before a taskfile is required** — the same position
-`chore help` occupies, and for the same reason: "check the cluster from whatever
-machine I am sitting at" cannot depend on standing in a particular directory. The
-XDG fallback is load-bearing rather than decorative, because the variable is
-unset on macOS by default and these files arrive on macOS and Linux from one
-dotfiles repository.
+per file, **named by the file**: `global:homelab:status` is the task `status` in
+`homelab.yaml`. They are answered **without a taskfile being required** — the
+same position `chore help` occupies, and for the same reason: "check the cluster
+from whatever machine I am sitting at" cannot depend on standing in a particular
+directory. The XDG fallback is load-bearing rather than decorative, because the
+variable is unset on macOS by default and these files arrive on macOS and Linux
+from one dotfiles repository.
 
-```yaml
-name: homelab
-version: '3'
+A global file **is an ordinary taskfile**: one schema, one loader, one runner.
+Arguments, `--` passthrough, dependencies, includes, hooks, `--help`, `--dry` and
+`--list` mean what they mean in a project. `global:<file>:` is a fixed prefix and
+nothing more. (Up to 0.14.3 global files had a schema, loader and runner of their
+own, and the split dropped every word after the task name — #68.)
 
-tasks:
-  status:
-    desc: show cluster status
-    cmds: [kubectl get nodes]
-```
+Every global file is loaded on **every** run, so a project task can name a
+global task (`deps: [global:ssh:unlock]`) or route (`route: global:homelab:pi`).
+A global task runs in the directory chore was started in, and its file is the
+root of its own tree: a project's `dotenv:` and `env:` do not reach it. `name:`
+is no longer needed; a file that still has it must agree with its filename.
 
-Global taskfiles use the regular taskfile schema. Arguments, dependencies,
-includes, lifecycle hooks, `--dry`, and working-directory rules keep their
-ordinary meanings. The `global:` prefix is reserved so a project task cannot be
-shadowed by the machine-wide command surface.
+### Routes
 
-### Optional SSH execution
-
-Global taskfiles may additionally declare SSH `routes:`. A task can reference a
-route and use either `exec:` for a remote command or `forward:` for a local TCP
-listener carried to the final hop. This is an optional execution form for
-global tasks; ordinary global task declarations have no SSH requirement and
-continue to run through chore's regular task runner. SSH-specific fields are
-rejected in project taskfiles. See `chore help ssh-tasks` for the schema and
-execution limits.
+Any task in any file can run its steps over ssh. `routes:` declares named chains
+of hops — each dialled from the one before it — or an `if:`/`then:`/`else:`
+choice between two routes, where `if:` names a task on this machine. A task's
+`route:` sends its `cmd:`/`cmds:` steps to the far end; `forward:` binds a local
+port to a far-end address instead; `pty: true` allocates a terminal;
+`with_route:` resolves a route and hands it to local steps as `CHORE_ROUTE_*`;
+`exports: true` absorbs `KEY=value` lines from a task's stdout into the rest of
+the run. Keys come only from the ssh-agent, and host keys only from
+`~/.ssh/known_hosts`. See `chore help routes`.
 
 ## Fixed semantics
 

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/shell"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -46,7 +49,7 @@ type Dialer struct {
 // and five are the same loop, and a direct connection is a route of length one.
 //
 // This is also why `127.0.0.1` in hop 2 means hop 1's loopback and not ours.
-func (d Dialer) Dial(ctx context.Context, routeName string, hops []Hop) (*ssh.Client, error) {
+func (d Dialer) Dial(ctx context.Context, routeName string, hops []chorefile.Hop) (*ssh.Client, error) {
 	auth, err := d.agentAuth()
 	if err != nil {
 		return nil, err
@@ -100,7 +103,7 @@ func (d Dialer) Dial(ctx context.Context, routeName string, hops []Hop) (*ssh.Cl
 // meaning different machines — one being some earlier hop's loopback — so "dial
 // 127.0.0.1:2222 failed" leaves the reader unable to tell which machine could
 // not be reached, or from where.
-func hopError(routeName string, i int, hop Hop, err error) error {
+func hopError(routeName string, i int, hop chorefile.Hop, err error) error {
 	var keyErr *knownhosts.KeyError
 	if errors.As(err, &keyErr) {
 		return fmt.Errorf("route %s, hop %d (%s@%s): %s", routeName, i+1, hop.User, hop.Addr(), explainKeyError(hop, keyErr))
@@ -111,7 +114,7 @@ func hopError(routeName string, i int, hop Hop, err error) error {
 // explainKeyError says which of the two very different host-key failures this is,
 // because the answers are opposites: one wants a line added, the other wants
 // somebody to stop and think.
-func explainKeyError(hop Hop, err *knownhosts.KeyError) string {
+func explainKeyError(hop chorefile.Hop, err *knownhosts.KeyError) string {
 	if len(err.Want) > 0 {
 		return fmt.Sprintf("the host key CHANGED — known_hosts has a different key for %s."+
 			" Either the machine was rebuilt, or this is not the machine you think it is."+
@@ -295,26 +298,28 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// Exec runs argv at the far end of a client and streams its output.
+// Exec runs a command at the far end of a client and streams its output.
 //
-// The argv is quoted into one string here, and it is worth being clear about
-// why, because the shape of the field suggests otherwise: the SSH protocol's
-// exec request carries a single COMMAND STRING, which the far end hands to the
-// login shell. There is no argv on the wire and no way to avoid quoting — the
-// choice is only whether chore does it once, correctly, or whether every task
-// does it by hand. Taking argv in the file is chore doing it.
-func Exec(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
+// The command is ONE string because that is all the SSH protocol carries: its
+// exec request hands a command line to the far end's login shell, and there is
+// no argv on the wire. An argv step is quoted into that string by the caller
+// (see QuoteArgv), once and correctly, rather than by every task by hand.
+//
+// in is attached only when the task asked for its terminal — `interactive:` or
+// `pty:` — the same rule a local step follows. Otherwise the remote command reads
+// an empty stdin.
+func Exec(ctx context.Context, client *ssh.Client, command string, in io.Reader, out, errOut io.Writer) error {
 	return runSSHCommand(ctx, client, command, in, out, errOut, false)
 }
 
 // ExecPTY runs a remote command with an allocated terminal. It is intended for
 // interactive shells: input is passed through in raw mode, terminal dimensions
 // are kept in sync, and the caller's terminal settings are restored on return.
-func ExecPTY(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }) error {
+func ExecPTY(ctx context.Context, client *ssh.Client, command string, in io.Reader, out, errOut io.Writer) error {
 	return runSSHCommand(ctx, client, command, in, out, errOut, true)
 }
 
-func runSSHCommand(ctx context.Context, client *ssh.Client, command Cmd, in *os.File, out, errOut interface{ Write([]byte) (int, error) }, pty bool) error {
+func runSSHCommand(ctx context.Context, client *ssh.Client, command string, in io.Reader, out, errOut io.Writer, pty bool) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("opening a session: %w", err)
@@ -329,9 +334,10 @@ func runSSHCommand(ctx context.Context, client *ssh.Client, command Cmd, in *os.
 	var restoreTerminal func()
 	if pty {
 		width, height := 80, 24
-		localTTY := in != nil && term.IsTerminal(int(in.Fd()))
+		tty, _ := in.(*os.File)
+		localTTY := tty != nil && term.IsTerminal(int(tty.Fd()))
 		if localTTY {
-			if w, h, sizeErr := term.GetSize(int(in.Fd())); sizeErr == nil {
+			if w, h, sizeErr := term.GetSize(int(tty.Fd())); sizeErr == nil {
 				width, height = w, h
 			}
 		}
@@ -346,20 +352,17 @@ func runSSHCommand(ctx context.Context, client *ssh.Client, command Cmd, in *os.
 			return fmt.Errorf("requesting remote PTY: %w", err)
 		}
 		if localTTY {
-			state, rawErr := term.MakeRaw(int(in.Fd()))
+			state, rawErr := term.MakeRaw(int(tty.Fd()))
 			if rawErr != nil {
 				return fmt.Errorf("putting local terminal in raw mode: %w", rawErr)
 			}
-			restoreTerminal = func() { _ = term.Restore(int(in.Fd()), state) }
+			restoreTerminal = func() { _ = term.Restore(int(tty.Fd()), state) }
 			defer restoreTerminal()
-			defer watchTerminalResize(session, in)()
+			defer watchTerminalResize(session, tty)()
 		}
 	}
 
-	// One string either way, because that is all the protocol carries. An argv is
-	// quoted so the far end's shell reconstructs it; a shell line is handed over
-	// as written, which is what makes a pipe possible.
-	if err := session.Start(command.String()); err != nil {
+	if err := session.Start(command); err != nil {
 		return fmt.Errorf("starting %s: %w", command, err)
 	}
 
@@ -410,10 +413,10 @@ func watchTerminalResize(session *ssh.Session, in *os.File) func() {
 	}
 }
 
-// quoteArgv renders an argv as one POSIX shell word list: every argument in
+// QuoteArgv renders an argv as one POSIX shell word list: every argument in
 // single quotes, with an embedded quote written the only way a shell accepts it.
 // A round trip through `sh -c` therefore yields the argv that went in.
-func quoteArgv(argv []string) string {
+func QuoteArgv(argv []string) string {
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
 		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
@@ -421,20 +424,8 @@ func quoteArgv(argv []string) string {
 	return strings.Join(quoted, " ")
 }
 
-// ExitError is a remote command that ran and failed, carrying its status so
-// chore can exit with the same one. The method name is the contract
-// internal/shell's ExitCode reads: an error that knows its own status answers
-// for it.
-type ExitError struct {
-	Code int
-	Err  error
-}
-
-func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
-func (e *ExitError) ExitCode() int { return e.Code }
-func (e *ExitError) Unwrap() error { return e.Err }
-
-// translateExit turns a session's ending into chore's terms: a command that ran
+// translateExit turns a session's ending into chore's terms — the same
+// shell.ExitError a local step fails with, so there is one exit-status rule: a command that ran
 // and failed carries its status, a command killed by a signal reports 128+signal
 // as every shell does, and anything else is an operational failure passed
 // through.
@@ -446,10 +437,10 @@ func translateExit(err error) error {
 	if errors.As(err, &exit) {
 		if sig := exit.Signal(); sig != "" {
 			if n, ok := signalNumbers[ssh.Signal(sig)]; ok {
-				return &ExitError{Code: 128 + n, Err: err}
+				return &shell.ExitError{Code: 128 + n, Err: err}
 			}
 		}
-		return &ExitError{Code: exit.ExitStatus(), Err: err}
+		return &shell.ExitError{Code: exit.ExitStatus(), Err: err}
 	}
 	var missing *ssh.ExitMissingError
 	if errors.As(err, &missing) {

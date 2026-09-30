@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/antimatter-studios/chore/internal/chorefile"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -25,7 +26,7 @@ import (
 // tunnel is goroutines inside chore, so it gets none of that for free — the
 // listener is closed on ctx.Done, which unblocks Accept, and the open
 // connections are closed behind it.
-func RunForward(ctx context.Context, client *ssh.Client, f Forward, announce func(string)) error {
+func RunForward(ctx context.Context, client *ssh.Client, f chorefile.Forward, announce func(string)) error {
 	listener, err := net.Listen("tcp", f.Local)
 	if err != nil {
 		return fmt.Errorf("binding %s on this machine: %w", f.Local, err)

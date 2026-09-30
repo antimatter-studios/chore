@@ -245,25 +245,32 @@ real shell — with real `pipefail` — possible.
     logs. Nothing suppresses it — a safety net is not advice — and it does not
     make an out-of-process backstop redundant, because a timer dies with the
     process that owns it. `chore help timeouts`.
-- **`global:` tasks are available from any directory.** Files in
-  `~/.config/chore/global.d/*.yaml` (or `$XDG_CONFIG_HOME`) declare namespaces of
-  ordinary chore tasks, independent of the project in the current directory:
+- **`global:` tasks are available from any directory.** A file in
+  `~/.config/chore/global.d/` (or `$XDG_CONFIG_HOME`) is an ordinary taskfile,
+  and its tasks are addressed as `global:<file>:<task>`:
 
     ```yaml
-    name: homelab
+    # ~/.config/chore/global.d/homelab.yaml
     tasks:
       status:
         desc: show cluster status
-        cmds: [kubectl get nodes]
+        args: [namespace]
+        vars: { namespace: default }
+        cmd: kubectl get pods -n {{.NAMESPACE}}
     ```
 
-    Run it as `chore global:homelab:status`. The global address says where the
-    task was declared; dependencies, arguments, hooks and commands keep their
-    ordinary chore behavior. `chore help global`.
-- **Global tasks can optionally use SSH.** A global task may declare a route of
-  SSH hops and either a remote `exec:` argv or a local `forward:` listener.
-  Ordinary global tasks do not need SSH and retain the normal chore task
-  schema. `chore help ssh-tasks`.
+    Run it as `chore global:homelab:status kube-system`. Same schema, same
+    arguments, flags, `--help` and `--dry` as a project task — the prefix says
+    where the task lives and nothing else. Every global file is loaded on every
+    run, so a project task can depend on `global:ssh:unlock` too. `chore help global`.
+- **Any task can run over SSH.** A file declares `routes:` (chains of ssh hops,
+  or an `if:`/`then:`/`else:` choice between them) and a task names one with
+  `route:`; its steps then run at the far end, with arguments rendered here.
+  `forward:` holds a tunnel open instead, `pty: true` gives an interactive
+  shell, and `with_route:` hands the route to a local tool as `CHORE_ROUTE_*`.
+  Keys come from your ssh-agent, host keys from `~/.ssh/known_hosts`. Routes work
+  in a project's `chores.yml` as well as in global.d, and `route: global:homelab:pi`
+  reaches one declared for the machine. `chore help routes`.
 - **Commands are not printed unless you ask.** `--verbose` prints each one before
   it runs; nothing does otherwise, because a task's script is written for the
   shell rather than for a reader — a `case` dispatcher on screen before the test

@@ -3,28 +3,31 @@ package global
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/global/sshtest"
+	"github.com/antimatter-studios/chore/internal/shell"
 )
 
 // One hop is a route of length one, which is the claim the fold rests on: there
 // is no separate "direct connection" path to get wrong.
 func TestDialOneHopRunsACommand(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	if err := Exec(context.Background(), client, Cmd{Argv: []string{"echo", "hello"}}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, QuoteArgv([]string{"echo", "hello"}), nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v (stderr %q)", err, errOut.String())
 	}
 	if got := strings.TrimSpace(out.String()); got != `'echo' 'hello'` {
@@ -36,28 +39,28 @@ func TestDialOneHopRunsACommand(t *testing.T) {
 // that the second server is reachable only through the first — it is asked to
 // open the TCP connection, and the second SSH handshake runs over that channel.
 func TestDialFoldsThroughEveryHop(t *testing.T) {
-	sock, pub := testAgent(t)
-	first := newTestServer(t, pub)
-	second := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, first, second)}
+	sock, pub := sshtest.Agent(t)
+	first := sshtest.NewServer(t, pub)
+	second := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, first, second)}
 
-	client, err := d.Dial(context.Background(), "pi", []Hop{hopTo(t, first), hopTo(t, second)})
+	client, err := d.Dial(context.Background(), "pi", []chorefile.Hop{sshtest.Hop(t, first), sshtest.Hop(t, second)})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	if err := Exec(context.Background(), client, Cmd{Argv: []string{"kubectl", "get", "pods", "-A"}}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, QuoteArgv([]string{"kubectl", "get", "pods", "-A"}), nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	// The command ran at the END of the route and nowhere else. A fold that
 	// stopped early, or one that dialled hop 2 from here, would put it on the
 	// wrong server — and both are silent failures without this assertion.
-	if len(second.ranCommands()) != 1 {
-		t.Errorf("the last hop ran %d commands, want 1", len(second.ranCommands()))
+	if len(second.Commands()) != 1 {
+		t.Errorf("the last hop ran %d commands, want 1", len(second.Commands()))
 	}
-	if n := len(first.ranCommands()); n != 0 {
+	if n := len(first.Commands()); n != 0 {
 		t.Errorf("an intermediate hop ran %d commands, want 0 — it is a way through, not a destination", n)
 	}
 }
@@ -65,14 +68,14 @@ func TestDialFoldsThroughEveryHop(t *testing.T) {
 // A route commonly has more than one loopback in it meaning different machines,
 // so an error that names only the address is not enough to act on.
 func TestAFailedHopNamesItsNumber(t *testing.T) {
-	sock, pub := testAgent(t)
-	first := newTestServer(t, pub)
+	sock, pub := sshtest.Agent(t)
+	first := sshtest.NewServer(t, pub)
 
 	// A port nothing is listening on, reached FROM the first hop.
-	dead := Hop{Host: "127.0.0.1", Port: closedPort(t), User: "tester"}
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, first)}
+	dead := chorefile.Hop{Host: "127.0.0.1", Port: closedPort(t), User: "tester"}
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, first)}
 
-	_, err := d.Dial(context.Background(), "pi", []Hop{hopTo(t, first), dead})
+	_, err := d.Dial(context.Background(), "pi", []chorefile.Hop{sshtest.Hop(t, first), dead})
 	if err == nil {
 		t.Fatal("dialling a closed port must fail")
 	}
@@ -87,12 +90,12 @@ func TestAFailedHopNamesItsNumber(t *testing.T) {
 // the connection. The temptation to skip this while debugging a three-hop chain
 // is exactly why it is pinned by a test.
 func TestAnUnknownHostKeyIsRefused(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	other := newTestServer(t, pub) // in known_hosts; the one we dial is not
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	other := sshtest.NewServer(t, pub) // in known_hosts; the one we dial is not
 
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, other)}
-	_, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, other)}
+	_, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err == nil {
 		t.Fatal("an unverified host key must refuse the connection")
 	}
@@ -105,8 +108,8 @@ func TestAnUnknownHostKeyIsRefused(t *testing.T) {
 // says so rather than failing somewhere deeper with a confusing message.
 func TestNoAgentIsAClearFailure(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
-	d := Dialer{KnownHosts: knownHostsFor(t)}
-	_, err := d.Dial(context.Background(), "direct", []Hop{{Host: "127.0.0.1", Port: 22, User: "x"}})
+	d := Dialer{KnownHosts: sshtest.KnownHosts(t)}
+	_, err := d.Dial(context.Background(), "direct", []chorefile.Hop{{Host: "127.0.0.1", Port: 22, User: "x"}})
 	if err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 		t.Fatalf("err = %v, want it to name SSH_AUTH_SOCK", err)
 	}
@@ -114,19 +117,19 @@ func TestNoAgentIsAClearFailure(t *testing.T) {
 
 // The far end's status is chore's status, so a caller can act on it.
 func TestARemoteFailureCarriesItsExitStatus(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	err = Exec(context.Background(), client, Cmd{Argv: []string{"please", "fail"}}, nil, &out, &errOut)
-	var exit *ExitError
+	err = Exec(context.Background(), client, QuoteArgv([]string{"please", "fail"}), nil, &out, &errOut)
+	var exit *shell.ExitError
 	if err == nil {
 		t.Fatal("a failing remote command must be an error")
 	}
@@ -150,8 +153,8 @@ func TestArgvSurvivesQuoting(t *testing.T) {
 		{"a semicolon", []string{"echo", "a; rm -rf /"}, `'echo' 'a; rm -rf /'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := quoteArgv(tc.argv); got != tc.want {
-				t.Errorf("quoteArgv = %s, want %s", got, tc.want)
+			if got := QuoteArgv(tc.argv); got != tc.want {
+				t.Errorf("QuoteArgv = %s, want %s", got, tc.want)
 			}
 		})
 	}
@@ -160,11 +163,11 @@ func TestArgvSurvivesQuoting(t *testing.T) {
 // The string form is passed through as written, so a pipe reaches the far end's
 // shell intact — which the list form cannot express at all.
 func TestAShellLineIsPassedThroughWhole(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +175,7 @@ func TestAShellLineIsPassedThroughWhole(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	line := "kubectl get pods -A | wc -l"
-	if err := Exec(context.Background(), client, Cmd{Line: line}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, line, nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != line {
@@ -185,11 +188,11 @@ func TestAShellLineIsPassedThroughWhole(t *testing.T) {
 // tunnel is goroutines inside chore rather than a child in its own process
 // group.
 func TestForwardCarriesBytesAndStopsOnCancel(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +219,7 @@ func TestForwardCarriesBytesAndStopsOnCancel(t *testing.T) {
 	bound := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- RunForward(ctx, client, Forward{Local: "127.0.0.1:0", Remote: echo.Addr().String()},
+		done <- RunForward(ctx, client, chorefile.Forward{Local: "127.0.0.1:0", Remote: echo.Addr().String()},
 			func(addr string) { bound <- addr })
 	}()
 
@@ -263,9 +266,9 @@ func closedPort(t *testing.T) int {
 	return port
 }
 
-func asExitError(err error, target **ExitError) bool {
+func asExitError(err error, target **shell.ExitError) bool {
 	for err != nil {
-		if e, ok := err.(*ExitError); ok {
+		if e, ok := err.(*shell.ExitError); ok {
 			*target = e
 			return true
 		}
@@ -281,21 +284,21 @@ func asExitError(err error, target **ExitError) bool {
 // Without `pty:` a remote command gets ordinary streams and no terminal, which
 // is what keeps its output pipeable and its input a plain byte stream.
 func TestExecAsksForNoTerminal(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-	client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+	client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	var out, errOut bytes.Buffer
-	if err := Exec(context.Background(), client, Cmd{Argv: []string{"hostname"}}, nil, &out, &errOut); err != nil {
+	if err := Exec(context.Background(), client, QuoteArgv([]string{"hostname"}), nil, &out, &errOut); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	if got := server.ptyRequests(); len(got) != 0 {
+	if got := server.PTYRequests(); len(got) != 0 {
 		t.Errorf("Exec asked for a terminal: %v", got)
 	}
 }
@@ -311,61 +314,27 @@ func TestExecPTYAsksForATerminal(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TERM", tc.term)
-			sock, pub := testAgent(t)
-			server := newTestServer(t, pub)
-			d := Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}
+			sock, pub := sshtest.Agent(t)
+			server := sshtest.NewServer(t, pub)
+			d := Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
 
-			client, err := d.Dial(context.Background(), "direct", []Hop{hopTo(t, server)})
+			client, err := d.Dial(context.Background(), "direct", []chorefile.Hop{sshtest.Hop(t, server)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer client.Close()
 
 			var out, errOut bytes.Buffer
-			if err := ExecPTY(context.Background(), client, Cmd{Argv: []string{"bash", "-l"}}, nil, &out, &errOut); err != nil {
+			if err := ExecPTY(context.Background(), client, QuoteArgv([]string{"bash", "-l"}), nil, &out, &errOut); err != nil {
 				t.Fatalf("ExecPTY: %v (stderr %q)", err, errOut.String())
 			}
-			want := ptyReq{Term: tc.want, termSize: termSize{Cols: 80, Rows: 24}}
-			if got := server.ptyRequests(); len(got) != 1 || got[0] != want {
+			want := sshtest.PTYReq{Term: tc.want, TermSize: sshtest.TermSize{Cols: 80, Rows: 24}}
+			if got := server.PTYRequests(); len(got) != 1 || got[0] != want {
 				t.Errorf("pty requests = %v, want [%v]", got, want)
 			}
-			if got := server.ranCommands(); len(got) != 1 || got[0] != `'bash' '-l'` {
+			if got := server.Commands(); len(got) != 1 || got[0] != `'bash' '-l'` {
 				t.Errorf("the far end ran %q", got)
 			}
 		})
-	}
-}
-
-// The key in the file is what picks the terminal: a routed task with `pty: true`
-// asks for one and the same task without it does not.
-func TestRunnerAsksForATerminalOnlyWhenTheTaskDoes(t *testing.T) {
-	sock, pub := testAgent(t)
-	server := newTestServer(t, pub)
-	hop := hopTo(t, server)
-	set, err := Load(write(t, map[string]string{"x.yaml": fmt.Sprintf(`
-name: x
-routes:
-  r: [ { host: %s, port: %d, user: %s } ]
-tasks:
-  shell: { route: r, pty: true, cmd: [bash, -l] }
-  plain: { route: r, cmd: [hostname] }
-`, hop.Host, hop.Port, hop.User)}))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	var out, errOut bytes.Buffer
-	r := &Runner{Out: &out, Err: &errOut, Dialer: Dialer{AgentSock: sock, KnownHosts: knownHostsFor(t, server)}}
-	if err := r.Run(context.Background(), set, "x:plain"); err != nil {
-		t.Fatalf("Run plain: %v (stderr %q)", err, errOut.String())
-	}
-	if got := server.ptyRequests(); len(got) != 0 {
-		t.Fatalf("a task without `pty:` asked for a terminal: %v", got)
-	}
-	if err := r.Run(context.Background(), set, "x:shell"); err != nil {
-		t.Fatalf("Run shell: %v (stderr %q)", err, errOut.String())
-	}
-	if got := server.ptyRequests(); len(got) != 1 {
-		t.Fatalf("a task with `pty: true` made %d terminal requests, want 1", len(got))
 	}
 }

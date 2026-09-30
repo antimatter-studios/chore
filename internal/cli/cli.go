@@ -153,9 +153,9 @@ manual:
   chore help <topic>    read one, e.g. chore help hooks
 
 machine-wide:
-  chore global:                  namespaces in ~/.config/chore/global.d
-  chore global:<ns>:             the tasks in one
-  chore global:<ns>:<task>       run one from any directory
+  chore global:                  the files in ~/.config/chore/global.d
+  chore global:<file>:           the tasks in one
+  chore global:<file>:<task>     run one from any directory, like any task
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -231,15 +231,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return manualHelp(out, errUI, rest[1:])
 	}
 
-	// `chore global:…` names a taskfile installed for the user, so it can be
-	// addressed from any working directory and does not depend on a project
-	// taskfile being present.
+	// `chore global:…` names a task in a file under global.d, so it can be run
+	// from any working directory and does not depend on a project taskfile being
+	// present. It is an ordinary task in every other respect.
 	//
 	// The prefix is mandatory rather than a fallback for an unresolved name: it
 	// makes the call site readable without knowing what is installed on the
 	// machine, and it means a project that happens to define a `homelab:`
 	// namespace cannot shadow one silently.
-	if len(rest) > 0 && strings.HasPrefix(rest[0], globalPrefix) {
+	if len(rest) > 0 && strings.HasPrefix(rest[0], chorefile.GlobalPrefix) {
 		return globalMain(stdout, stderr, out, errUI, rest, opts)
 	}
 
@@ -258,13 +258,23 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		errUI.Errorf("%v", err)
 		return 1
 	}
+	// Every global file, on every run: a project task can depend on
+	// `global:ssh:unlock` or travel `route: global:homelab:pi`.
+	globals, err := loadGlobals()
+	if err == nil {
+		err = globals.Attach(project)
+	}
+	if err != nil {
+		errUI.Errorf("%v", err)
+		return 1
+	}
 
 	return runProject(project, rest, opts, stdout, stderr, out, errUI)
 }
 
-// runProject applies the ordinary task invocation path to a loaded project.
-// Global taskfiles use it too, so global addressing does not define a second
-// task execution model.
+// runProject is THE task invocation path: a project's tasks and a global file's
+// both come through here, so there is one way arguments are bound, one --help,
+// one --dry, and one way an interrupt is reported.
 func runProject(project *chorefile.Project, rest []string, opts options, stdout, stderr io.Writer, out, errUI *ui.UI) int {
 	// No task named, or an explicit --list: describe what is available. This is
 	// the same answer, so `chore` on its own is never a mystery.
@@ -281,6 +291,9 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 	}
 
 	r := run.New(project, stdout, stderr)
+	if dialerOverride != nil {
+		r.Dialer = *dialerOverride
+	}
 	r.DryRun, r.Force, r.Verbose = opts.dry, opts.force, opts.verbose
 	r.ChoreExe, r.ChoreVersion = choreExe(), buildinfo.Get(Version, BuildDate).Version
 	r.NoLifecycle = opts.noLifecycle
@@ -787,7 +800,7 @@ func splitArgs(words []string, params map[string]param) ([]string, map[string]st
 			}
 		}
 
-		if name, value, ok := strings.Cut(w, "="); ok && isVarName(name) {
+		if name, value, ok := strings.Cut(w, "="); ok && chorefile.IsName(name) {
 			vars[name] = value
 			// If it names a declared parameter, set the declared spelling too, so
 			// {{.config}} and {{.CONFIG}} cannot disagree inside one task — a
@@ -854,22 +867,6 @@ func valueOr(value string, has bool, fallback string) string {
 	return fallback
 }
 
-func isVarName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, c := range s {
-		switch {
-		case c >= 'A' && c <= 'Z', c == '_':
-		case c >= 'a' && c <= 'z':
-		case c >= '0' && c <= '9' && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 // Filenames are the names looked for, in order.
 //
 // chores.yml rather than Taskfile.yml because the two runners are no longer
@@ -921,9 +918,19 @@ func findTaskfile(explicit string) (string, error) {
 // name containing anything outside ASCII pushed every later description out of
 // column.
 func listing(p *chorefile.Project) []ui.Group {
+	// The root file's own tree, which is what `chore --list` asks about: a
+	// project's tasks, or one global file's. Every global task is attached to
+	// every run, but they are listed by `chore global:`, not here.
+	within := ""
+	if p.Root != nil && p.Root.Namespace != "" {
+		within = p.Root.Namespace + ":"
+	}
 	groups := map[string][]ui.Task{}
 	for name, t := range p.Tasks {
 		if t.Internal || name != t.Name { // skip aliases: list the canonical name once
+			continue
+		}
+		if !strings.HasPrefix(name, within) || within == "" && chorefile.IsGlobalRef(name) {
 			continue
 		}
 		ns := "(root)"
@@ -1071,7 +1078,9 @@ func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
 		// so reading only t.Vars called it required while its description says
 		// otherwise.
 		req := "required"
-		if hasDefault(t, a.Name) {
+		// A flag is never required — its absence IS its value — so saying so
+		// here would describe a check that does not exist.
+		if hasDefault(t, a.Name) || a.IsBool() {
 			req = "optional"
 		}
 		desc := a.Desc

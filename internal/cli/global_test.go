@@ -115,7 +115,7 @@ func TestGlobalNamesWhatIsInstalled(t *testing.T) {
 
 	got := runMain(t, t.TempDir(), "global:hoemlab:k3s:pods")
 	checkCode(t, got, 1)
-	checkContains(t, got, "stderr", got.stderr, "no global namespace", "installed: homelab")
+	checkContains(t, got, "stderr", got.stderr, "no global:hoemlab:", "installed: homelab")
 
 	got = runMain(t, t.TempDir(), "global:homelab:k3s:nodes")
 	checkCode(t, got, 1)
@@ -187,9 +187,9 @@ tasks:
     cmd: 'exit 3'
   show:
     with_route: pick
-    # The shell form on purpose: an argv is expanded HERE, at load, where
-    # CHORE_ROUTE does not exist yet. The string form is handed to a shell
-    # that expands it once the route has been resolved.
+    # The shell form on purpose: CHORE_ROUTE is environment handed to the
+    # step's shell, not one of the task's variables, so an argv word — which
+    # chore expands itself, from those variables — could not see it.
     cmd: 'echo landed on $CHORE_ROUTE'
 `})
 	got := runMain(t, t.TempDir(), "global:x:show")
