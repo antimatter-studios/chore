@@ -159,6 +159,39 @@ The shell forms accept go-task's field syntax. Chore deliberately checks before
 dependencies and never allows `--force` to bypass preconditions. The existing
 up-to-date-before-dependencies order is retained.
 
+## Confirm
+
+`confirm:` asks the person who ran the task, once, immediately before its own
+commands. It is a question, not a check, and the two are deliberately separate:
+a precondition is a fact about the world, so it is cacheable, listed rather than
+executed by `--dry`, and bypassed by nothing, while a confirmation is intent from
+a human. Keeping them apart is what lets `--yes` mean exactly one thing, and what
+lets the question be asked after `before:` and `deps:` — a question asked among
+the preconditions would be asked before the preview, diff or context that informs
+it had been produced.
+
+The value is a question, or `{text, show, default}`. `show:` is a command whose
+output is printed before asking; it runs locally in the task's directory and
+scope, and its failure fails the task, there being nothing left to decide on.
+`default:` is the answer a bare Enter gives and is `no` unless the file says
+otherwise; `yes`/`no` and `true`/`false` are both accepted. `y`, `yes`, `n` and
+`no` are accepted from the keyboard in any case, and anything else is asked
+again. An empty question, an empty `show:`, an unknown field and a `default:`
+that is neither yes nor no are load-time errors.
+
+Order: `preconditions` → `before` → up-to-date → `deps` → **confirm** → `cmds`.
+A task that is up to date never asks. An answer is remembered for the invocation
+by task and rendered question, so a confirm on a shared dependency is asked once,
+and questions are serialised across concurrent dependencies. The question and
+`show:` output go to stderr.
+
+`--yes`, `-y` and `CHORE_YES` answer yes in advance, and `-v` reports which
+questions they answered. They answer questions only and do not bypass a
+precondition. **With no terminal and no `--yes` the task is refused**, never
+assumed approved, and the refusal names the question. `--dry` prints a
+`confirm:` line and asks nothing. Neither `--force` nor `--no-lifecycle`
+answers one. Ctrl-C at a prompt ends the run.
+
 ## Hooks
 
 Nine hooks in three families. **The distinction that decides which one you want

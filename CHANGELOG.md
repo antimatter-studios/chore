@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.17.0
+
+- **Tasks can ask: `confirm:`.** A task declares a question — `confirm: 'Deploy
+  {{.STACK}}?'`, or `{text, show, default}` — and it is put to the person who
+  ran it immediately before the task's own commands, after preconditions,
+  `before:`, the up-to-date check and `deps:`. `show:` runs a command and prints
+  its output first, for the question you can only answer after looking at a diff
+  or a cluster context; `default:` is what a bare Enter means, and is `no` unless
+  the file says otherwise. An answer is remembered for the invocation by task
+  and rendered question, and questions are asked one at a time.
+- **`--yes` / `-y`, and `CHORE_YES`.** Answers every `confirm:` in advance;
+  `-v` reports which. It answers questions and nothing else — it does not bypass
+  a `preconditions:` check, which is not a question.
+- **With no terminal and no `--yes`, a task that asks is REFUSED**, never
+  assumed to have been approved, and the refusal names the question. `--dry`
+  prints a `confirm:` line and asks nothing. Neither `--force` nor
+  `--no-lifecycle` answers one. See `chore help confirm`.
+
 ## v0.16.0
 
 - **Tasks can declare `preconditions:`.** Shell checks (plain strings or
