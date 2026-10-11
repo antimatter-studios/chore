@@ -425,6 +425,11 @@ type Task struct {
 	// They remain active under --force and when lifecycle hooks are suppressed.
 	Preconditions Preconditions `yaml:"preconditions"`
 
+	// Confirm asks a person before the task's own commands — the last thing
+	// before the work, where preconditions are the first. nil is the common
+	// case: no question. See confirm.go for why it is not a precondition.
+	Confirm *Confirm `yaml:"confirm"`
+
 	// The per-task half of the lifecycle. Same four names the file-level block
 	// uses, minus the `_all` that marks a hook as per-invocation, and they fire
 	// every time the task runs — including when another task calls it. A hook

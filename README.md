@@ -185,6 +185,12 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
+- **`confirm:` asks a person before the work starts.** The question goes last —
+  after preconditions, `before:`, the up-to-date check and `deps:` — so a
+  `show:` command can put the diff or the target cluster on the screen first,
+  and a task that was up to date never asks. `--yes`/`CHORE_YES` answers in
+  advance; with no terminal and no `--yes` the task is refused rather than
+  assumed approved. `chore help confirm`.
 - **`preconditions:` decides whether a task may run.** Shell strings, `{sh, msg}`
   checks and `{task, vars, msg}` checks run before preparation hooks, dependencies
   and up-to-date checks. A refusal reports its message and preserves the check's
@@ -439,7 +445,7 @@ task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 up-to-date checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
 
-chore-only, on top of that: `args:`, `chore_min_version:`, the nine hooks,
+chore-only, on top of that: `args:`, `confirm:`, `chore_min_version:`, the nine hooks,
 `child_hooks:`, `timeout:`/`on_timeout:`, and `verbose:`.
 
 Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,

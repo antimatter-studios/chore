@@ -48,7 +48,11 @@ type Runner struct {
 	Verbose bool
 	// NoLifecycle turns off the file's `lifecycle:` hooks for this run (--no-lifecycle).
 	NoLifecycle bool
-	CLIArgs     string // everything after `--`
+	// Yes answers every `confirm:` in advance (--yes, or CHORE_YES). It is the
+	// ONLY thing that does: with no terminal and no Yes, a task that asks is
+	// refused rather than assumed to be approved. See confirm.go.
+	Yes     bool
+	CLIArgs string // everything after `--`
 
 	// Stdin is what an `interactive: true` task reads from. Defaulted to
 	// os.Stdin by New; a test supplies its own.
@@ -104,6 +108,13 @@ type Runner struct {
 
 	checkMu sync.Mutex
 	checks  map[string]*checkEntry
+
+	// answers holds each `confirm:` answer for this run, by task and rendered
+	// question, so a confirm on a shared dependency is asked once. The mutex is
+	// held for the whole exchange, not just the map: there is one keyboard, and
+	// two concurrent deps must not ask at the same time.
+	askMu   sync.Mutex
+	answers map[string]bool
 
 	// exported is what `exports:` tasks have set so far. See applyExports.
 	exportMu sync.Mutex
@@ -323,7 +334,7 @@ func childHooksSuppressed(ctx context.Context) bool {
 
 // runTask checks eligibility, then runs one task with its own lifecycle hooks:
 //
-//	preconditions → before → up-to-date → deps → cmds → deferred steps → on_success|on_failure → after
+//	preconditions → before → up-to-date → deps → confirm → cmds → deferred steps → on_success|on_failure → after
 //
 // deps and the deferred steps are inside execute; what this adds is the four
 // hooks. `before` gates, exactly as before_all does at the run level. The other
@@ -510,6 +521,14 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	// The shell was built before the deps ran, and one of them may have been an
 	// `exports:` task — the unlock whose SSH_AUTH_SOCK this task exists to use.
 	sh.Env = append(sh.Env, r.exportedEnv()...)
+
+	// The last thing before the work, where preconditions were the first: every
+	// check has passed, every dependency is built, and a task that was up to date
+	// returned above without asking. See confirm.go.
+	if err := r.confirm(ctx, t, scope, dir); err != nil {
+		own.disarm()
+		return own.explain(err)
+	}
 
 	// Where the body runs. A `route:` puts every step at the far end of one
 	// connection; `forward:` makes the body a tunnel; `with_route:` hands a

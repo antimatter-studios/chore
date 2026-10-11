@@ -81,10 +81,14 @@ var BuildDate = ""
 //     -v, --verbose      print each command before it runs
 //         --no-color     plain output (also: NO_COLOR, or a non-terminal)
 //         --no-lifecycle turn off hooks for this run — see `chore help hooks`
+//     -y, --yes          answer every `confirm:` with yes, in advance
 //     -h, --help         usage, or a task's own help when a task is named
 //         --version      print the version
 //
 // `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
+// `--yes` is also read from `CHORE_YES`, for a caller whose command line you do
+// not control. It answers questions and nothing else: it does not bypass a
+// `preconditions:` check, which is not a question — see `chore help confirm`.
 //
 // A mistyped long flag is REFUSED rather than bound to something else. That
 // matters more than it sounds: before 0.3.0 an unknown `--flag` was taken as a
@@ -145,6 +149,7 @@ flags:
       --force       run even if up-to-date checks say the work is done
   -v, --verbose     print each command before it runs
       --no-color    plain output, no colour (also: NO_COLOR, or a non-terminal)
+  -y, --yes         answer every confirm: with yes (also: CHORE_YES=1)
   -h, --help        this text
       --version     print the version
 
@@ -297,6 +302,7 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 	r.DryRun, r.Force, r.Verbose = opts.dry, opts.force, opts.verbose
 	r.ChoreExe, r.ChoreVersion = choreExe(), buildinfo.Get(Version, BuildDate).Version
 	r.NoLifecycle = opts.noLifecycle
+	r.Yes = opts.yes || choreYes()
 	r.CLIArgs = strings.Join(opts.cliArgs, " ")
 
 	// Words after the task name are its positional arguments, except NAME=value
@@ -355,7 +361,8 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 		// what is left to report, and that is the return below.
 		var timedOut *run.TimeoutError
 		var refused *run.RefusalError
-		if errors.As(err, &refused) {
+		var declined *run.DeclineError
+		if errors.As(err, &refused) || errors.As(err, &declined) {
 			errUI.Raw(fmt.Sprintf("task: %v\n", err))
 		} else if !errors.As(err, &timedOut) {
 			errUI.Errorf("%v", err)
@@ -456,6 +463,7 @@ func signalContext() (context.Context, func(), func() syscall.Signal) {
 type options struct {
 	dir, file                                                      string
 	list, dry, force, verbose, help, version, noColor, noLifecycle bool
+	yes                                                            bool
 	cliArgs                                                        []string
 }
 
@@ -512,6 +520,8 @@ func parseFlags(args []string) (options, []string, error) {
 			o.verbose = true
 		case "no-lifecycle":
 			o.noLifecycle = true
+		case "y", "yes":
+			o.yes = true
 		case "h", "help":
 			o.help = true
 		case "version", "V":
@@ -529,6 +539,22 @@ func parseFlags(args []string) (options, []string, error) {
 		rest = append(rest, args[i])
 	}
 	return o, rest, nil
+}
+
+// choreYes reads CHORE_YES, the environment spelling of --yes.
+//
+// It exists for the caller whose command line you do not control — a scheduler,
+// a wrapper, a CI step invoking someone else's script. Any value but the empty
+// string and the usual noes counts, because an environment variable set at all
+// is a deliberate act, and a run that stopped on a question because the value
+// was `1` rather than `true` would be a worse surprise than the strictness is
+// worth.
+func choreYes() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CHORE_YES"))) {
+	case "", "0", "no", "false":
+		return false
+	}
+	return true
 }
 
 // choreExe is the path of the running binary, for {{.CHORE_EXE}}. It falls back to

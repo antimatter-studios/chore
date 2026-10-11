@@ -15,10 +15,14 @@ summary: every flag chore itself takes
     -v, --verbose      print each command before it runs
         --no-color     plain output (also: NO_COLOR, or a non-terminal)
         --no-lifecycle turn off hooks for this run — see `chore help hooks`
+    -y, --yes          answer every `confirm:` with yes, in advance
     -h, --help         usage, or a task's own help when a task is named
         --version      print the version
 
 `--file` also accepts `--taskfile`, and `--no-color` accepts `--no-colour`.
+`--yes` is also read from `CHORE_YES`, for a caller whose command line you do
+not control. It answers questions and nothing else: it does not bypass a
+`preconditions:` check, which is not a question — see `chore help confirm`.
 
 A mistyped long flag is REFUSED rather than bound to something else. That
 matters more than it sounds: before 0.3.0 an unknown `--flag` was taken as a
