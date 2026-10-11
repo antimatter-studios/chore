@@ -354,7 +354,10 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 		// Saying it again here is one identical line under another; the status is
 		// what is left to report, and that is the return below.
 		var timedOut *run.TimeoutError
-		if !errors.As(err, &timedOut) {
+		var refused *run.RefusalError
+		if errors.As(err, &refused) {
+			errUI.Raw(fmt.Sprintf("task: %v\n", err))
+		} else if !errors.As(err, &timedOut) {
 			errUI.Errorf("%v", err)
 		}
 		return run.ExitCode(err)

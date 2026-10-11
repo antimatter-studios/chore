@@ -195,7 +195,7 @@ func (r *Runner) waitFor(ctx context.Context, fd int, path, group, name string) 
 		// frees immediately is not announced to a task that never really waited.
 		if !said && time.Since(began) >= saidWaiting {
 			said = true
-			fmt.Fprintf(r.Out, "  %s: waiting for %q%s\n", name, group, heldBy(path))
+			fmt.Fprintf(r.output(ctx), "  %s: waiting for %q%s\n", name, group, heldBy(path))
 		}
 		select {
 		case <-ctx.Done():

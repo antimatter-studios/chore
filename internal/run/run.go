@@ -102,6 +102,9 @@ type Runner struct {
 	predMu sync.Mutex
 	preds  map[string]*predicate
 
+	checkMu sync.Mutex
+	checks  map[string]*checkEntry
+
 	// exported is what `exports:` tasks have set so far. See applyExports.
 	exportMu sync.Mutex
 	exported map[string]string
@@ -247,7 +250,7 @@ func (r *Runner) runHookBestEffort(ctx context.Context, hook string, cmds choref
 	ctx, done := cleanupContext(ctx)
 	defer done()
 	if err := r.runHook(ctx, hook, cmds, trigger, extra); err != nil {
-		fmt.Fprintf(r.Err, "chore: %v\n", err)
+		fmt.Fprintf(r.errorOutput(ctx), "chore: %v\n", err)
 	}
 }
 
@@ -257,6 +260,10 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 	t, ok := r.Project.Tasks[name]
 	if !ok {
 		return fmt.Errorf("no task %q%s", name, r.suggest(name))
+	}
+
+	if checkStack(ctx)[t.Name] {
+		return fmt.Errorf("precondition cycle through task %q", name)
 	}
 
 	// Before anything reads them: a value handed over by a caller must answer to
@@ -273,7 +280,7 @@ func (r *Runner) Run(ctx context.Context, name string, args []string, callVars m
 
 	if skip, why := skipPlatform(t); skip {
 		if r.Verbose {
-			fmt.Fprintf(r.Out, "  skipping %s (%s)\n", name, why)
+			fmt.Fprintf(r.output(ctx), "  skipping %s (%s)\n", name, why)
 		}
 		return nil
 	}
@@ -314,9 +321,9 @@ func childHooksSuppressed(ctx context.Context) bool {
 	return on
 }
 
-// runTask runs one task with its own lifecycle hooks around it:
+// runTask checks eligibility, then runs one task with its own lifecycle hooks:
 //
-//	before → deps → cmds → deferred steps → on_success|on_failure → after
+//	preconditions → before → up-to-date → deps → cmds → deferred steps → on_success|on_failure → after
 //
 // deps and the deferred steps are inside execute; what this adds is the four
 // hooks. `before` gates, exactly as before_all does at the run level. The other
@@ -349,7 +356,7 @@ func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	if t.SuppressesChildHooks() {
 		inner = suppressChildHooks(ctx)
 	}
-	if !run && t.Timeout <= 0 {
+	if !run && t.Timeout <= 0 && len(t.Preconditions) == 0 {
 		return r.execute(inner, t, scope)
 	}
 
@@ -365,6 +372,13 @@ func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		deadline.disarm()
 		deadline.release()
 	}()
+
+	if err := r.preconditions(inner, t, scope, dir); err != nil {
+		err = deadline.explain(err)
+		deadline.disarm()
+		deadline.settle()
+		return err
+	}
 
 	var runErr error
 	if run {
@@ -432,7 +446,7 @@ func (r *Runner) taskHook(ctx context.Context, t *chorefile.Task, scope *tmpl.Sc
 	for i, c := range cmds {
 		if err := r.command(ctx, t, s, sh, nil, c); err != nil {
 			if c.IgnoreError {
-				fmt.Fprintf(r.Err, "task: %s: %s step %d failed, ignored: %v\n", t.Name, hook, i+1, err)
+				fmt.Fprintf(r.errorOutput(ctx), "task: %s: %s step %d failed, ignored: %v\n", t.Name, hook, i+1, err)
 				continue
 			}
 			return fmt.Errorf("%s: %s failed: %w", t.Name, hook, err)
@@ -452,7 +466,7 @@ func (r *Runner) taskHookBestEffort(ctx context.Context, t *chorefile.Task, scop
 	ctx, done := cleanupContext(ctx)
 	defer done()
 	if err := r.taskHook(ctx, t, scope, dir, hook, cmds, extra); err != nil {
-		fmt.Fprintf(r.Err, "task: %v\n", err)
+		fmt.Fprintf(r.errorOutput(ctx), "task: %v\n", err)
 	}
 }
 
@@ -481,7 +495,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 		if up {
 			if !r.silent(t) {
-				fmt.Fprintf(r.Out, "task: %s is up to date\n", t.Name)
+				fmt.Fprintf(r.output(ctx), "task: %s is up to date\n", t.Name)
 			}
 			// Nothing ran, so there is nothing left to time out.
 			own.disarm()
@@ -527,7 +541,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 			return own.explain(fmt.Errorf("%s: %w", t.Name, err))
 		}
 		if resolved.Why != "" && r.Verbose {
-			fmt.Fprintf(r.Err, "chore: route %s -> %s [%s]\n", t.WithRoute, resolved.Name, resolved.Why)
+			fmt.Fprintf(r.errorOutput(ctx), "chore: route %s -> %s [%s]\n", t.WithRoute, resolved.Name, resolved.Why)
 		}
 		sh.Env = append(slices.Clone(sh.Env), resolved.Env()...)
 	}
@@ -552,7 +566,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		}
 		if err := r.command(ctx, t, scope, sh, rem, c); err != nil {
 			if c.IgnoreError || t.IgnoreError {
-				fmt.Fprintf(r.Err, "task: %s: cmd %d failed, ignored: %v\n", t.Name, i+1, err)
+				fmt.Fprintf(r.errorOutput(ctx), "task: %s: cmd %d failed, ignored: %v\n", t.Name, i+1, err)
 				continue
 			}
 			runErr = err
@@ -581,7 +595,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		// A deferred step runs even after a failure, and its own failure must not
 		// hide why the task failed in the first place.
 		if err := r.command(cleanupCtx, t, scope, sh, rem, deferred[i]); err != nil {
-			fmt.Fprintf(r.Err, "task: %s: deferred step failed: %v\n", t.Name, err)
+			fmt.Fprintf(r.errorOutput(ctx), "task: %s: deferred step failed: %v\n", t.Name, err)
 			if runErr == nil {
 				runErr = err
 			}
@@ -739,7 +753,7 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	// --dry prints the command INSTEAD of running it, which is the whole point of
 	// the flag and is unaffected by everything below.
 	if r.DryRun {
-		fmt.Fprintf(r.Out, "%s\n", script)
+		fmt.Fprintf(r.output(ctx), "%s\n", script)
 		return nil
 	}
 	// Nothing is echoed unless somebody asked. A task's script is written for the
@@ -754,7 +768,7 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	// see echoes for the order those settle in.
 	echoed := r.echoes(t, c)
 	if echoed {
-		fmt.Fprintf(r.Out, "%s\n", script)
+		fmt.Fprintf(r.output(ctx), "%s\n", script)
 	}
 	if rem != nil {
 		err = rem.run(ctx, script, sh.Out, sh.Err)
@@ -772,7 +786,7 @@ func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		// line. Printing the script there would put the noise back for the steps
 		// least likely to deserve it.
 		if !echoed && !c.Silent && !c.IgnoreError && !t.IgnoreError && !answering(ctx) {
-			fmt.Fprintf(r.Err, "chore: %s: failing step:\n%s\n", t.Name, indentScript(script))
+			fmt.Fprintf(r.errorOutput(ctx), "chore: %s: failing step:\n%s\n", t.Name, indentScript(script))
 		}
 		return fmt.Errorf("%s: %w", t.Name, err)
 	}
@@ -1543,7 +1557,7 @@ func (r *Runner) loadDotenv(ctx context.Context, sources []dotenvSource, base *t
 	}
 	for _, m := range missing {
 		if r.warnOnce(m) {
-			fmt.Fprintf(r.Err, "chore: %s does not exist, continuing without it (prefix the path with ? to silence this)\n", m)
+			fmt.Fprintf(r.errorOutput(ctx), "chore: %s does not exist, continuing without it (prefix the path with ? to silence this)\n", m)
 		}
 	}
 	return out, nil
@@ -1635,7 +1649,7 @@ func (r *Runner) shell(ctx context.Context, dir string, scope *tmpl.Scope) shell
 	// Last, so what an `exports:` task set outranks the value this task's scope
 	// captured before that task ran.
 	env = append(env, r.exportedEnv()...)
-	sh := shell.Shell{Dir: dir, Env: env, Out: r.Out, Err: r.Err}
+	sh := shell.Shell{Dir: dir, Env: env, Out: r.output(ctx), Err: r.errorOutput(ctx)}
 	// A task under a `timeout:` — its own, or an ancestor's, since a hang is
 	// usually in a dep rather than in the coordinator — has every script it
 	// starts report what to signal if the budget runs out.

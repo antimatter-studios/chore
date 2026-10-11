@@ -421,6 +421,10 @@ type Task struct {
 	// environment of everything that runs after it in this chore process.
 	Exports bool `yaml:"exports"`
 
+	// Preconditions refuse the task before hooks, dependencies and its body.
+	// They remain active under --force and when lifecycle hooks are suppressed.
+	Preconditions Preconditions `yaml:"preconditions"`
+
 	// The per-task half of the lifecycle. Same four names the file-level block
 	// uses, minus the `_all` that marks a hook as per-invocation, and they fire
 	// every time the task runs — including when another task calls it. A hook
