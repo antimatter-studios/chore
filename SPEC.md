@@ -134,6 +134,31 @@ not one of.
 expansion, `prompt`, `interactive`, output styles (group/prefixed),
 `set`/`shopt`, v2 schema, shell completions, Windows.
 
+## Preconditions
+
+`preconditions:` refuses a task that cannot sensibly run. Each entry is a shell
+string, `{sh: command, msg: explanation}` or `{task: name, vars: {...}, msg: explanation}`.
+The platform restriction and `requires:` run first, then the checks in order,
+before preparation hooks, up-to-date checks, dependencies and commands.
+
+The first failure preserves the check's exit status and reports only its rendered
+message, defaulting to `precondition failed: <command>` or
+`precondition failed: task <name>`. Check output is quiet unless `-v` is requested.
+The refused task's hooks and deferred steps never run; run-level failure and
+finish hooks still do. A task may declare both preconditions and `before:`.
+
+Shell checks run locally in the task's scope and directory. Task checks resolve
+names like task steps, accept passed `vars:`, cannot declare `route:`, and cache
+their result by task and passed variables for the invocation. Checks on a
+`run: once` task are inside its once. Neither `--force` nor lifecycle suppression
+bypasses them, and the task's timeout is armed before they run. `--dry` prints
+`check:` lines without executing checks or resolving their dynamic call variables.
+Invalid entries, including `cmds:` and `defer:`, are errors at load time.
+
+The shell forms accept go-task's field syntax. Chore deliberately checks before
+dependencies and never allows `--force` to bypass preconditions. The existing
+up-to-date-before-dependencies order is retained.
+
 ## Hooks
 
 Nine hooks in three families. **The distinction that decides which one you want

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.16.0
+
+- **Tasks can declare `preconditions:`.** Shell checks (plain strings or
+  `{sh, msg}`) and named task checks (`{task, vars, msg}`) refuse a task before
+  its preparation hooks, dependencies or commands run. Checks preserve their
+  exit status and report a custom message, with output quiet unless `-v` asks
+  for it. They still run for up-to-date tasks and under `--force` or suppressed
+  lifecycle hooks, and are covered by the task's timeout. Shared task checks
+  run once per invocation for each set of passed variables. `--dry` lists checks
+  without executing them. See `chore help preconditions`.
+
 ## v0.15.0
 
 - **A global task is an ordinary task (#68).** Files in `global.d` used to be

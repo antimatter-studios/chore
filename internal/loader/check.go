@@ -8,9 +8,8 @@ import (
 	"github.com/antimatter-studios/chore/internal/graph"
 )
 
-// Check validates what no single file can: a route or predicate named in one
-// file and declared in another, and cycles through `deps:`, routes and
-// predicates, which can run through several files at once.
+// Check validates references between files, including routes, predicates and
+// precondition tasks, and cycles through dependencies, routes and checks.
 //
 // strict is false while a tree is loaded on its own, when a `global:` name has
 // nowhere to resolve yet, and true once global.d is attached — from then on a
@@ -50,6 +49,19 @@ func Check(p *chorefile.Project, strict bool) error {
 		t := p.Tasks[name]
 		if t.Name != name {
 			continue // an alias; the task is checked under its own name
+		}
+		for _, c := range t.Preconditions {
+			if c.Task == "" || isTemplated(c.Task) {
+				continue
+			}
+			ref := chorefile.Reference(t.File, c.Task)
+			check := p.Tasks[ref]
+			if check == nil && missing(c.Task) {
+				return fmt.Errorf("%s: task %q names precondition task %q, which is not a task%s", t.File.Path, name, c.Task, suggestFrom(p, ref))
+			}
+			if check != nil && check.Route != "" {
+				return fmt.Errorf("%s: task %q names precondition task %q with `route: %s` — a precondition must run on this machine", t.File.Path, name, c.Task, check.Route)
+			}
 		}
 		for _, ref := range []struct{ key, value string }{{"route", t.Route}, {"with_route", t.WithRoute}} {
 			if ref.value == "" {
@@ -133,6 +145,14 @@ func checkCycles(p *chorefile.Project) error {
 		}
 		id := taskNode(name)
 		g.Describe(id, "task "+name)
+		for _, c := range t.Preconditions {
+			if c.Task == "" || isTemplated(c.Task) {
+				continue
+			}
+			if check := p.Tasks[chorefile.Reference(t.File, c.Task)]; check != nil {
+				g.Edge(id, taskNode(check.Name))
+			}
+		}
 		for _, d := range t.Deps {
 			if isTemplated(d.Task) {
 				continue

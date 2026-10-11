@@ -139,7 +139,8 @@ import (
 //   `child_hooks: false` silence advice; a safety net is not advice, and neither
 //   is the teardown it triggers. This is the same rule that keeps `defer:` running
 //   inside a suppressed subtree.
-// - **The budget covers the task's forward progress** — its `before`, its `deps:`
+// - **The budget covers the task's forward progress** — its `preconditions:`,
+//   its `before`, its `deps:`
 //   (a hang is usually in a dep, and its scripts are tracked too) and its `cmds:`.
 //   It is switched off before the deferred steps unwind: a deadline that killed
 //   the teardown it just triggered would be worse than no deadline.
@@ -504,7 +505,7 @@ func (r *Runner) fire(ctx context.Context, d *deadline, scope *tmpl.Scope, dir s
 
 	t := d.task
 	pids, pgids := d.inFlight()
-	fmt.Fprintf(r.Err, "chore: %s: timed out after %s%s\n", t.Name, d.after, describeInFlight(pgids))
+	fmt.Fprintf(r.errorOutput(ctx), "chore: %s: timed out after %s%s\n", t.Name, d.after, describeInFlight(pgids))
 
 	if len(t.OnTimeout) > 0 {
 		// WithoutCancel, so the handler survives a Ctrl-C arriving at the same
@@ -517,7 +518,7 @@ func (r *Runner) fire(ctx context.Context, d *deadline, scope *tmpl.Scope, dir s
 		if err := r.taskHook(hctx, t, scope, dir, hookOnTimeout, t.OnTimeout, timeoutVars(d.after, pids, pgids)); err != nil {
 			// Best effort, like every other outcome hook: the task's status is the
 			// timeout whether the handler worked or not.
-			fmt.Fprintf(r.Err, "task: %v\n", err)
+			fmt.Fprintf(r.errorOutput(ctx), "task: %v\n", err)
 		}
 	}
 
@@ -543,7 +544,7 @@ func (r *Runner) fire(ctx context.Context, d *deadline, scope *tmpl.Scope, dir s
 		if waited >= timeoutKillGrace {
 			for _, pgid := range remaining {
 				if err := syscall.Kill(-pgid, syscall.SIGKILL); err == nil {
-					fmt.Fprintf(r.Err, "chore: %s: killed process group %d\n", t.Name, pgid)
+					fmt.Fprintf(r.errorOutput(ctx), "chore: %s: killed process group %d\n", t.Name, pgid)
 				}
 			}
 			return

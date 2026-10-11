@@ -125,7 +125,8 @@ nothing to trade off when deciding whether to keep the outer nets.
   `child_hooks: false` silence advice; a safety net is not advice, and neither
   is the teardown it triggers. This is the same rule that keeps `defer:` running
   inside a suppressed subtree.
-- **The budget covers the task's forward progress** — its `before`, its `deps:`
+- **The budget covers the task's forward progress** — its `preconditions:`,
+  its `before`, its `deps:`
   (a hang is usually in a dep, and its scripts are tracked too) and its `cmds:`.
   It is switched off before the deferred steps unwind: a deadline that killed
   the teardown it just triggered would be worse than no deadline.

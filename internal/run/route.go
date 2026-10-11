@@ -52,7 +52,7 @@ func (r *Runner) connect(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		return nil, fmt.Errorf("%s: %w", t.Name, err)
 	}
 	if resolved.Why != "" && r.Verbose {
-		fmt.Fprintf(r.Err, "chore: route %s -> %s [%s]\n", t.Route, resolved.Name, resolved.Why)
+		fmt.Fprintf(r.errorOutput(ctx), "chore: route %s -> %s [%s]\n", t.Route, resolved.Name, resolved.Why)
 	}
 	client, err := r.Dialer.Dial(ctx, resolved.Name, resolved.Hops)
 	if err != nil {
@@ -105,7 +105,7 @@ func (r *Runner) forward(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	return global.RunForward(ctx, rem.client, fwd, func(addr string) {
 		// The far end named as well as the near one, because the two are
 		// commonly both loopback and mean different machines.
-		fmt.Fprintf(r.Err, "chore: %s -> %s via route %s. Ctrl-C to stop.\n", addr, fwd.Remote, rem.route)
+		fmt.Fprintf(r.errorOutput(ctx), "chore: %s -> %s via route %s. Ctrl-C to stop.\n", addr, fwd.Remote, rem.route)
 	})
 }
 

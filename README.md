@@ -185,6 +185,12 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
+- **`preconditions:` decides whether a task may run.** Shell strings, `{sh, msg}`
+  checks and `{task, vars, msg}` checks run before preparation hooks, dependencies
+  and up-to-date checks. A refusal reports its message and preserves the check's
+  exit status; the task's hooks and body are never entered. Checks stay active
+  under `--force` and suppressed lifecycle hooks. `timeout:` covers them, and
+  `--dry` only lists them. `chore help preconditions`.
 - **Nine hooks, in three families** — and the last is easy to miss because it is
   not written as a setting. [SPEC.md's Hooks section](SPEC.md#hooks) has them
   together.
@@ -429,8 +435,8 @@ guessed: `desc`, `cmds` (strings, `- task:` references, multi-line blocks),
 `vars` (including `sh:`), `deps` (concurrent), `env`, `dotenv` (per file OR per
 task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 `silent`, `internal`, `interactive`, `dir`,
-`run: once`, `defer`, `status`, `sources`/`generates` (content-hash up-to-date
-checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
+`run: once`, `defer`, `preconditions`, `status`, `sources`/`generates` (content-hash
+up-to-date checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
 
 chore-only, on top of that: `args:`, `chore_min_version:`, the nine hooks,
