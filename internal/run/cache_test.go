@@ -299,3 +299,53 @@ func TestCacheDryRunKeepsNothing(t *testing.T) {
 		t.Errorf("--dry left %d cache entries", n)
 	}
 }
+
+// What follows `--` is part of the question. `chore queue -- --tsv` asked for
+// TSV; replaying the answer to plain `chore queue` gives the wrong one (#80).
+func TestCacheKeysOnWhatFollowsTheDoubleDash(t *testing.T) {
+	f, _ := cacheFixture(t, map[string]*chorefile.Task{
+		"queue": {Cache: 5 * minute, Cmds: steps("echo '[{{.CLI_ARGS}}]' >> runs", "echo 'answer to [{{.CLI_ARGS}}]'")},
+	})
+
+	f.mustRun("queue", nil, nil)
+	f.r.CLIArgs = "--tsv"
+	mark := len(f.out.String())
+	f.mustRun("queue", nil, nil)
+	got := f.since(mark)
+	f.r.CLIArgs = ""
+	f.mustRun("queue", nil, nil)
+
+	if got != "answer to [--tsv]\n" {
+		t.Errorf("chore queue -- --tsv printed %q; want its own answer", got)
+	}
+	if runs := f.read("runs"); runs != "[]\n[--tsv]\n" {
+		t.Errorf("runs = %q; want each set of -- arguments to run once", runs)
+	}
+}
+
+// The directory chore was run from is part of the question too: a task that
+// reads where it was asked from answers differently elsewhere (#80).
+func TestCacheKeysOnTheWorkingDirectory(t *testing.T) {
+	f, _ := cacheFixture(t, map[string]*chorefile.Task{
+		"here": {Cache: 5 * minute, Cmds: steps("echo ran >> runs", "basename '{{.USER_WORKING_DIR}}'")},
+	})
+	one, two := filepath.Join(t.TempDir(), "one"), filepath.Join(t.TempDir(), "two")
+	for _, d := range []string{one, two} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Chdir(one)
+	f.mustRun("here", nil, nil)
+	t.Chdir(two)
+	mark := len(f.out.String())
+	f.mustRun("here", nil, nil)
+
+	if got := f.since(mark); got != "two\n" {
+		t.Errorf("run from %s printed %q; want its own answer, %q", two, got, "two\n")
+	}
+	if got := f.lines("runs"); got != 2 {
+		t.Errorf("ran %d times from two directories, want 2", got)
+	}
+}

@@ -15,9 +15,10 @@ package run
 //
 // <chorefile> is a hash of the chorefile's path, so two projects' `queue:list`
 // never meet. <key> is a hash of the task's name, its declared variables and
-// arguments (Scope.Declared — never the process environment, which differs
-// from one shell to the next) and the steps a replay stands in for: its cmds,
-// deps and before. Editing any of those makes the old entries unreachable.
+// arguments and chore's own (CLI_ARGS, USER_WORKING_DIR, ...: Scope.Declared —
+// never the process environment, which differs from one shell to the next) and
+// the steps a replay stands in for: its cmds, deps and before. Editing any of
+// those makes the old entries unreachable.
 //
 // The file is one JSON line — task, created, expires, chore version — and then
 // the recorded bytes. The lifetime is written into the entry when it is made,
@@ -85,9 +86,9 @@ import (
 //   recorded with it and are not run on a replay either. A task running
 //   alongside it is never recorded into its replay.
 // - **Different arguments are different answers.** The replay is kept per
-//   chorefile, task, arguments and declared variables, and per the text of
-//   its `cmds:`, `deps:` and `before:` — editing the task makes the old
-//   replays unreachable.
+//   chorefile, task, arguments — what follows `--` included — the directory
+//   chore was run from, declared variables, and the text of its `cmds:`,
+//   `deps:` and `before:`. Editing the task makes the old replays unreachable.
 // - **The environment is not part of it.** Variables that differ from one
 //   shell to the next must not make every call miss, so the process
 //   environment is left out. A task whose answer depends on an environment

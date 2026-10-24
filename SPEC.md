@@ -207,8 +207,10 @@ wrapping chore's stdout, so a task running concurrently beside it is never
 captured. stderr is not recorded.
 
 The key is a hash of the chorefile's path, the task's name, its declared
-variables (every scope layer above the process environment: arguments, call,
-task, file and dotenv vars) and the JSON of its `cmds`, `deps` and `before`.
+variables (every scope layer above the process environment: chore's built-ins
+such as `CLI_ARGS` and `USER_WORKING_DIR`, which have a layer of their own
+directly above it, then dotenv, file, task and call vars and arguments) and the
+JSON of its `cmds`, `deps` and `before`.
 The process environment is deliberately excluded — it differs from shell to
 shell — so a task whose output depends on an environment variable must declare
 it. Entries live at `$XDG_CACHE_HOME/chore/replay/<chorefile>/<key>.replay`

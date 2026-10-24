@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.18.1
+
+- **`cache:` keys on what follows `--` and on the directory chore was run
+  from.** In v0.18.0 `chore queue -- --tsv` replayed the answer to `chore
+  queue`: chore's built-in variables, `CLI_ARGS` and `USER_WORKING_DIR` among
+  them, were written into the process environment's layer, which the key
+  deliberately leaves out. They now have a layer of their own directly above
+  it, at the same precedence as before (#80).
+
 ## v0.18.0
 
 - **Tasks can replay their answer: `cache:`.** `cache: 5m` on a task records
