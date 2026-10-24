@@ -11,7 +11,7 @@ summary: every flag chore itself takes
     -f, --file FILE    file to read (default: chores.yml, searched upward)
     -l, --list         list tasks with their descriptions
         --dry          print what a task would run, without running it
-        --force        run even if up-to-date checks say the work is done
+        --force        run even if up-to-date checks or a fresh cache: say the work is done
     -v, --verbose      print each command before it runs
         --no-color     plain output (also: NO_COLOR, or a non-terminal)
         --no-lifecycle turn off hooks for this run — see `chore help hooks`

@@ -77,7 +77,7 @@ var BuildDate = ""
 //     -f, --file FILE    file to read (default: chores.yml, searched upward)
 //     -l, --list         list tasks with their descriptions
 //         --dry          print what a task would run, without running it
-//         --force        run even if up-to-date checks say the work is done
+//         --force        run even if up-to-date checks or a fresh cache: say the work is done
 //     -v, --verbose      print each command before it runs
 //         --no-color     plain output (also: NO_COLOR, or a non-terminal)
 //         --no-lifecycle turn off hooks for this run — see `chore help hooks`
@@ -146,7 +146,7 @@ flags:
   -f, --file FILE   file to read (default: chores.yml, searched upward)
   -l, --list        list tasks with their descriptions
       --dry         print the commands a task would run, without running them
-      --force       run even if up-to-date checks say the work is done
+      --force       run even if up-to-date checks or a fresh cache: say the work is done
   -v, --verbose     print each command before it runs
       --no-color    plain output, no colour (also: NO_COLOR, or a non-terminal)
   -y, --yes         answer every confirm: with yes (also: CHORE_YES=1)
@@ -304,6 +304,7 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 	r.NoLifecycle = opts.noLifecycle
 	r.Yes = opts.yes || choreYes()
 	r.CLIArgs = strings.Join(opts.cliArgs, " ")
+	r.CacheDir = cacheDir()
 
 	// Words after the task name are its positional arguments, except NAME=value
 	// and --param value for a parameter the task declares. All three are bound
@@ -1225,4 +1226,19 @@ func projectDefines(name, file string) bool {
 	}
 	_, ok := p.Tasks[name]
 	return ok
+}
+
+// cacheDir is where `cache:` keeps its replays: $XDG_CACHE_HOME when it is an
+// absolute path, as the XDG base directory specification requires, otherwise
+// $HOME/.cache. Not os.UserCacheDir, which answers ~/Library/Caches on macOS:
+// one rule on every platform, so whoever needs to find or clear the cache can.
+// Empty when neither is known, and then no task is replayed.
+func cacheDir() string {
+	if d := os.Getenv("XDG_CACHE_HOME"); filepath.IsAbs(d) {
+		return d
+	}
+	if h := os.Getenv("HOME"); h != "" {
+		return filepath.Join(h, ".cache")
+	}
+	return ""
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.18.0
+
+- **Tasks can replay their answer: `cache:`.** `cache: 5m` on a task records
+  what a successful run wrote to stdout — its deps', hooks' and `- task:`
+  steps' included — and for five minutes prints that instead of running the
+  task. A failure is never kept, so it is never replayed. The replay is keyed
+  on the chorefile, the task, its arguments and declared variables and the
+  text of its steps, never on the process environment. `--force` runs the task
+  and replaces the replay; `--dry` keeps nothing; `cache:` with `interactive:`
+  or `confirm:` is refused at load. Replays live in
+  `$XDG_CACHE_HOME/chore/replay` or `~/.cache/chore/replay`. See
+  `chore help cache`.
+
 ## v0.17.0
 
 - **Tasks can ask: `confirm:`.** A task declares a question — `confirm: 'Deploy

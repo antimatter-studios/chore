@@ -119,6 +119,13 @@ type Runner struct {
 	// exported is what `exports:` tasks have set so far. See applyExports.
 	exportMu sync.Mutex
 	exported map[string]string
+
+	// CacheDir is the user's cache directory, under which `cache:` keeps its
+	// replays (chore/replay/). Empty means there is nowhere to keep one, and a
+	// task that declares a cache simply runs. See cache.go.
+	CacheDir string
+	// Now is the clock `cache:` reads; nil is time.Now. A test moves its own.
+	Now func() time.Time
 }
 
 // New returns a Runner writing to out and errOut.
@@ -350,6 +357,16 @@ func childHooksSuppressed(ctx context.Context) bool {
 // advice, and a safety net is not advice — the same rule that keeps `defer:`
 // running inside a suppressed subtree.
 func (r *Runner) runTask(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
+	// A replay stands in for the whole of the task — its gate, hooks, deps and
+	// commands — so it is decided before any of them. See cache.go.
+	if t.Cache > 0 {
+		return r.cached(ctx, t, scope)
+	}
+	return r.runTaskBody(ctx, t, scope)
+}
+
+// runTaskBody is runTask without the replay: the task actually run.
+func (r *Runner) runTaskBody(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
 	// The gate before anything else, including `before:`. A gate that compiles
 	// something is part of the heavy work the group is protecting, and a task that
 	// took the lock only for its body would run half of itself alongside the very
@@ -500,7 +517,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 	}
 
 	if !r.Force {
-		up, err := fingerprint.UpToDate(ctx, t, scope, sh, dir, r.cacheDir())
+		up, err := fingerprint.UpToDate(ctx, t, scope, sh, dir, r.fingerprintDir())
 		if err != nil {
 			return fmt.Errorf("%s: up-to-date check: %w", t.Name, err)
 		}
@@ -643,7 +660,7 @@ func (r *Runner) execute(ctx context.Context, t *chorefile.Task, scope *tmpl.Sco
 		// worse: the raw pattern matches no file, so the recorded output list is
 		// EMPTY and the "every file the last run produced must still exist" check
 		// passes vacuously.
-		if err := fingerprint.SaveWith(t, scope, dir, r.cacheDir()); err != nil {
+		if err := fingerprint.SaveWith(t, scope, dir, r.fingerprintDir()); err != nil {
 			return fmt.Errorf("%s: recording fingerprint: %w", t.Name, err)
 		}
 	}
@@ -1696,7 +1713,7 @@ func (r *Runner) silent(t *chorefile.Task) bool {
 	return t.File != nil && t.File.Silent
 }
 
-func (r *Runner) cacheDir() string { return filepath.Join(r.Project.RootDir, ".chore") }
+func (r *Runner) fingerprintDir() string { return filepath.Join(r.Project.RootDir, ".chore") }
 
 // onceEntry is one `run: once` task's single execution, shared by every caller
 // that asks for it.

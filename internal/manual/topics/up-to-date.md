@@ -3,7 +3,7 @@
 ---
 title: Skipping work that is done
 summary: sources, generates, status, and --force
-aliases: sources generates status force cache
+aliases: sources generates status force
 ---
 
 # Skipping work that is done

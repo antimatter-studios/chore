@@ -138,7 +138,7 @@ func TestCacheKeysOnArguments(t *testing.T) {
 // --force runs the task and the new answer replaces the kept one.
 func TestCacheForceRunsAndRefreshes(t *testing.T) {
 	f, _ := cacheFixture(t, map[string]*chorefile.Task{
-		"queue": {Cache: 5 * minute, Cmds: steps("echo ran >> runs", "echo run $(wc -l < runs)")},
+		"queue": {Cache: 5 * minute, Cmds: steps("echo ran >> runs", "echo run $(wc -l < runs | tr -d ' ')")},
 	})
 
 	f.mustRun("queue", nil, nil)

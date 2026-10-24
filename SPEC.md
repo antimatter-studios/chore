@@ -192,6 +192,37 @@ assumed approved, and the refusal names the question. `--dry` prints a
 `confirm:` line and asks nothing. Neither `--force` nor `--no-lifecycle`
 answers one. Ctrl-C at a prompt ends the run.
 
+## Cache
+
+`cache:` is how long a task's answer stays true. The first run is an ordinary
+run whose stdout is also recorded; a run that succeeds is kept, and until it
+expires the task is not run — chore prints the recording and exits 0. A failure
+keeps nothing and is never replayed.
+
+The replay stands in for the whole task, so it is decided before the
+concurrency gate, preconditions, hooks, up-to-date check and deps, none of which
+run on a replay. What the task's deps, hooks and `- task:` steps write to stdout
+is recorded with it. Output is recorded through the task's context, not by
+wrapping chore's stdout, so a task running concurrently beside it is never
+captured. stderr is not recorded.
+
+The key is a hash of the chorefile's path, the task's name, its declared
+variables (every scope layer above the process environment: arguments, call,
+task, file and dotenv vars) and the JSON of its `cmds`, `deps` and `before`.
+The process environment is deliberately excluded — it differs from shell to
+shell — so a task whose output depends on an environment variable must declare
+it. Entries live at `$XDG_CACHE_HOME/chore/replay/<chorefile>/<key>.replay`
+(`$HOME/.cache` when `XDG_CACHE_HOME` is unset or relative; never
+`~/Library/Caches`), one file each: a JSON line (`task`, `created`, `expires`,
+`chore`) and then the recorded bytes, written to a temporary file and renamed.
+An entry written in what is now the future is stale. Writing an entry removes
+the chorefile's expired ones. With no cache directory the task runs.
+
+`--force` runs the task and replaces the entry. `--dry` neither replays nor
+records. A task whose stdout is being discarded — a named precondition check —
+is run, not replayed, and records nothing. `cache:` with `interactive:` or
+`confirm:` is a load-time error, as is a lifetime with no unit or of zero.
+
 ## Hooks
 
 Nine hooks in three families. **The distinction that decides which one you want

@@ -527,6 +527,20 @@ type Task struct {
 	Timeout   Duration `yaml:"timeout"`
 	OnTimeout Cmds     `yaml:"on_timeout"`
 
+	// Cache is how long this task's answer stays true:
+	//
+	//	cache: 5m
+	//
+	// A run that succeeds is recorded — everything it wrote to stdout, its deps,
+	// hooks and `- task:` steps included — and for that long the task is not run
+	// again: chore prints the recording and exits 0. A failure is never kept, so
+	// it is never replayed. The key is the chorefile, the task, its arguments,
+	// its declared variables and the text of its commands, never the process
+	// environment, which differs from shell to shell. `--force` runs the task and
+	// refreshes the recording. It is for tasks that read: a task whose point is
+	// a side effect must not declare it. See `chore help cache`.
+	Cache Duration `yaml:"cache"`
+
 	// Up-to-date checks. Status is a list of shell commands: all exiting zero
 	// means "already done, skip". Sources/Generates compare content checksums.
 	Status    []string `yaml:"status"`

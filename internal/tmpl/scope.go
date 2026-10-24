@@ -97,6 +97,18 @@ func (s *Scope) All() map[string]string {
 	return out
 }
 
+// Declared flattens every layer above the process environment: the values the
+// chorefile, its dotenv files and the command line declared, and nothing the
+// shell that started chore happened to carry. A key that has to mean the same
+// thing from one shell to the next — a cache's — is built from this, not All.
+func (s *Scope) Declared() map[string]string {
+	out := map[string]string{}
+	for i := 1; i < len(s.layers); i++ {
+		maps.Copy(out, s.layers[i])
+	}
+	return out
+}
+
 // copyOf returns a non-nil copy, so every layer is writable by Set.
 func copyOf(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))

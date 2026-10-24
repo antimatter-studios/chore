@@ -117,6 +117,17 @@ func Decode(data []byte) (*File, error) {
 			return nil, fmt.Errorf("taskfile: task %q sets both silent and verbose —"+
 				" they are opposite answers about printing its commands; keep the one you mean", name)
 		}
+		// A replay prints what a run printed and runs nothing, so a task whose run
+		// is a conversation with a person cannot have one: there is no terminal
+		// session to play back, and a question replayed is a question not asked.
+		if t.Cache > 0 && t.Interactive {
+			return nil, fmt.Errorf("taskfile: task %q: cache with interactive —"+
+				" a terminal session cannot be replayed; drop one of them", name)
+		}
+		if t.Cache > 0 && t.Confirm != nil {
+			return nil, fmt.Errorf("taskfile: task %q: cache with confirm —"+
+				" a replay would skip the question; drop one of them", name)
+		}
 		if len(t.OnTimeout) > 0 && t.Timeout <= 0 {
 			return nil, fmt.Errorf("taskfile: task %q: on_timeout with no timeout —"+
 				" nothing would ever fire it; give the task a budget, as in `timeout: 20m`", name)
@@ -250,8 +261,8 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 			n.Line, quoteForError(s))
 	}
 	if v <= 0 {
-		return fmt.Errorf("line %d: a timeout of %s would be spent before the task started;"+
-			" remove the key to have no deadline, or give it a real budget", n.Line, quoteForError(s))
+		return fmt.Errorf("line %d: a duration of %s would be spent before the task started;"+
+			" remove the key to go without, or give it a real length of time", n.Line, quoteForError(s))
 	}
 	*d = Duration(v)
 	return nil
