@@ -185,6 +185,12 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
+- **`cache:` replays an answer instead of asking again.** `cache: 5m` on a task
+  that reads something remote records what a successful run printed and, for
+  five minutes, prints that instead of running it — deps and hooks included.
+  A failure is never kept, different arguments are different answers, and
+  `--force` runs it anyway. Replays live in `~/.cache/chore/replay`.
+  `chore help cache`.
 - **`confirm:` asks a person before the work starts.** The question goes last —
   after preconditions, `before:`, the up-to-date check and `deps:` — so a
   `show:` command can put the diff or the target cluster on the screen first,
@@ -445,7 +451,7 @@ task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 up-to-date checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
 `text/template` plus one function, `default`.
 
-chore-only, on top of that: `args:`, `confirm:`, `chore_min_version:`, the nine hooks,
+chore-only, on top of that: `args:`, `cache:`, `confirm:`, `chore_min_version:`, the nine hooks,
 `child_hooks:`, `timeout:`/`on_timeout:`, and `verbose:`.
 
 Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,

@@ -77,10 +77,22 @@ type checkStackKey struct{}
 // never change the runner's shared writers. Capture commands through their
 // existing exports path where needed; otherwise consume their output quietly.
 func (r *Runner) output(ctx context.Context) io.Writer {
-	if quiet, _ := ctx.Value(checkOutputKey{}).(bool); quiet {
+	if outputDiscarded(ctx) {
 		return io.Discard
 	}
+	// A task under `cache:` is recorded through its context, so only what runs
+	// inside it reaches its recording. See cache.go.
+	if w, ok := ctx.Value(recordKey{}).(io.Writer); ok {
+		return w
+	}
 	return r.Out
+}
+
+// outputDiscarded reports whether this context's stdout is thrown away, as a
+// named precondition check's is unless -v asks for it.
+func outputDiscarded(ctx context.Context) bool {
+	quiet, _ := ctx.Value(checkOutputKey{}).(bool)
+	return quiet
 }
 
 func (r *Runner) errorOutput(ctx context.Context) io.Writer {

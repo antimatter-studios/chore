@@ -138,7 +138,7 @@ func (r capturerRunner) Run(ctx context.Context, script string) error {
 // chore:manual up-to-date
 // title: Skipping work that is done
 // summary: sources, generates, status, and --force
-// aliases: sources, generates, status, force, cache
+// aliases: sources, generates, status, force
 // order: 10
 //
 // # Skipping work that is done
