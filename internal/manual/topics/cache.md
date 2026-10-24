@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/run/cache.go:60 -->
+<!-- sources: internal/run/cache.go:61 -->
 ---
 title: Replaying an answer
 summary: cache: — a task's output, replayed for a lifetime instead of run again
@@ -28,9 +28,9 @@ prints the recording and exits 0.
   recorded with it and are not run on a replay either. A task running
   alongside it is never recorded into its replay.
 - **Different arguments are different answers.** The replay is kept per
-  chorefile, task, arguments and declared variables, and per the text of
-  its `cmds:`, `deps:` and `before:` — editing the task makes the old
-  replays unreachable.
+  chorefile, task, arguments — what follows `--` included — the directory
+  chore was run from, declared variables, and the text of its `cmds:`,
+  `deps:` and `before:`. Editing the task makes the old replays unreachable.
 - **The environment is not part of it.** Variables that differ from one
   shell to the next must not make every call miss, so the process
   environment is left out. A task whose answer depends on an environment

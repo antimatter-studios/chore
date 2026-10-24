@@ -944,18 +944,24 @@ func indentScript(script string) string {
 // something earlier, and it is all resolved here — there is no second, earlier
 // evaluation point of the kind that made Task's dotenv see stale values.
 func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, callVars map[string]string) (*tmpl.Scope, error) {
-	base := tmpl.New(os.Environ())
-	base.Set("ROOT_DIR", r.rootDir(t))
-	base.Set("TASK", t.Name)
-	base.Set("CLI_ARGS", r.CLIArgs)
-	base.Set("CHORE_EXE", r.ChoreExe)
-	base.Set("CHORE_VERSION", r.ChoreVersion)
+	// chore's own variables are a layer of their own directly above the process
+	// environment: the same precedence as writing them into it, but distinct
+	// from it, so Scope.Declared — the key `cache:` replays by — sees CLI_ARGS
+	// and USER_WORKING_DIR while still ignoring whatever the shell carried.
+	builtins := map[string]string{
+		"ROOT_DIR":      r.rootDir(t),
+		"TASK":          t.Name,
+		"CLI_ARGS":      r.CLIArgs,
+		"CHORE_EXE":     r.ChoreExe,
+		"CHORE_VERSION": r.ChoreVersion,
+	}
 	if wd, err := os.Getwd(); err == nil {
-		base.Set("USER_WORKING_DIR", wd)
+		builtins["USER_WORKING_DIR"] = wd
 	}
 	if t.File != nil {
-		base.Set("TASKFILE_DIR", t.File.Dir)
+		builtins["TASKFILE_DIR"] = t.File.Dir
 	}
+	base := tmpl.New(os.Environ()).Push(builtins)
 
 	// Arguments bind before dotenv is resolved, so a dotenv path may reference
 	// them: dotenv: ['config/{{.CONFIG}}/config.env'].
