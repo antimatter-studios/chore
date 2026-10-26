@@ -297,15 +297,81 @@ type Include struct {
 	Vars     map[string]Var `yaml:"vars"`
 }
 
-// Var is a variable value: either a literal or a shell command to capture.
+// Var is a variable value: a literal, a shell command to capture, or a
+// collection of literals for `for:` to iterate.
 //
-// YAML accepts both forms:
+// YAML accepts four forms:
 //
-//	FOO: bar
-//	FOO: {sh: git rev-parse HEAD}
+//	FOO:   bar
+//	FOO:   {sh: git rev-parse HEAD}
+//	HOSTS: [web1, web2]
+//	PORTS: {map: {web: 80, db: 5432}}
+//
+// A map needs the `map:` key because a bare mapping is already the `{sh: …}`
+// form. go-task requires the same key, so one file means the same thing to
+// both.
 type Var struct {
 	Value string
 	Sh    string
+	// Kind is VarList or VarMap for the collection forms. It is what tells
+	// `NAME: []`, an empty list, from `NAME: ""`, an empty string.
+	Kind VarKind
+	// List holds a list's elements and Map a map's entries, in the order they
+	// are written. Each list item and map value is a template, rendered like
+	// Value; map keys are taken as written.
+	List []string
+	Map  []MapEntry
+}
+
+// VarKind says which form a Var was written in.
+type VarKind int
+
+// Variable forms. The zero value is the scalar one, a literal or `sh:`.
+const (
+	VarScalar VarKind = iota
+	VarList
+	VarMap
+)
+
+// MapEntry is one key and value of a `{map: …}` variable.
+type MapEntry struct {
+	Key   string
+	Value string
+}
+
+// JoinList is a list's string form: its elements separated by spaces. That is
+// what `{{.HOSTS}}` renders and what `$HOSTS` holds, chosen so the existing
+// shell idiom `for h in {{.HOSTS}}` keeps working when a string becomes a list —
+// go-task prints Go's `[web1 web2]`, which no shell can use. A string passed on
+// is split on whitespace again by `for:`, so the round trip is exact for
+// elements without spaces.
+func JoinList(items []string) string { return strings.Join(items, " ") }
+
+// JoinMap is a map's string form: `key=value` pairs, space separated, in order.
+func JoinMap(keys, values []string) string {
+	pairs := make([]string, len(keys))
+	for i, k := range keys {
+		pairs[i] = k + "=" + values[i]
+	}
+	return strings.Join(pairs, " ")
+}
+
+// Literal returns the value a var holds without rendering or running anything:
+// the text of a scalar, or the string form of a collection. Empty for `sh:`,
+// whose value is not known until something runs it.
+func (v Var) Literal() string {
+	switch v.Kind {
+	case VarList:
+		return JoinList(v.List)
+	case VarMap:
+		keys := make([]string, len(v.Map))
+		values := make([]string, len(v.Map))
+		for i, e := range v.Map {
+			keys[i], values[i] = e.Key, e.Value
+		}
+		return JoinMap(keys, values)
+	}
+	return v.Value
 }
 
 // Task is one runnable unit.
@@ -594,6 +660,38 @@ type Cmd struct {
 	// finishes — in reverse order, and whether or not the task succeeded. It is
 	// how a task that brings a topology up guarantees it comes back down.
 	Defer bool `yaml:"-"`
+	// For repeats the step once per item, so a loop over hosts or drivers is a
+	// list chore walks rather than a bash `for` it cannot see into. nil for the
+	// ordinary step. See `chore help loops`.
+	For *For `yaml:"-"`
+}
+
+// For is a step's loop:
+//
+//	for: [api, worker]                    # a literal list
+//	for: {var: HOSTS}                     # a list, map or string variable
+//	for: {var: CSV, split: ',', as: NAME} # a string split on ','; item in NAME
+//
+// The spelling is go-task's, so a file using it means the same to both.
+type For struct {
+	// Items is the literal list. Each item is a template.
+	Items []string
+	// Var names the variable to iterate. Empty for a literal list.
+	Var string
+	// Split separates the items of a STRING variable. Empty means any run of
+	// whitespace, so `{sh: ls}` output and `NAMES: a b c` both work unchanged.
+	// A list or map variable is never split: its items are already apart.
+	Split string
+	// As names the variable that holds the item. Empty means ITEM.
+	As string
+}
+
+// ItemName is the variable each iteration's item is bound to.
+func (f *For) ItemName() string {
+	if f.As != "" {
+		return f.As
+	}
+	return "ITEM"
 }
 
 // Args is a task's parameter list.
@@ -708,11 +806,11 @@ func (as Args) Find(name string) (Arg, bool) {
 func (t *Task) DefaultFor(name string) (string, bool) {
 	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
 		if v, ok := t.Vars[spelling]; ok && v.Sh == "" {
-			return v.Value, true
+			return v.Literal(), true
 		}
 		if t.File != nil {
 			if v, ok := t.File.Vars[spelling]; ok && v.Sh == "" {
-				return v.Value, true
+				return v.Literal(), true
 			}
 		}
 	}

@@ -206,10 +206,16 @@ func describeParam(s string) string {
 	return quoteForError(s)
 }
 
-// UnmarshalYAML accepts either form a variable can take:
+// UnmarshalYAML accepts every form a variable can take:
 //
-//	FOO: bar
-//	FOO: {sh: git rev-parse HEAD}
+//	FOO:   bar
+//	FOO:   {sh: git rev-parse HEAD}
+//	HOSTS: [web1, web2]
+//	PORTS: {map: {web: 80, db: 5432}}
+//
+// Collections hold plain values only. A list of lists has no string form a
+// shell could use and nothing in chore that would iterate it, so it is refused
+// where it is written rather than flattened into something nobody meant.
 func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 	switch n.Kind {
 	case yaml.ScalarNode:
@@ -219,24 +225,142 @@ func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 		}
 		v.Value = s
 		return nil
+	case yaml.SequenceNode:
+		items, err := plainValues(n, "a list variable")
+		if err != nil {
+			return err
+		}
+		v.Kind, v.List = VarList, items
+		return nil
 	case yaml.MappingNode:
-		if err := knownFields(n, "a variable", "sh"); err != nil {
+		if err := knownFields(n, "a variable", "sh", "map"); err != nil {
 			return err
 		}
 		var m struct {
-			Sh *string `yaml:"sh"`
+			Sh  *string   `yaml:"sh"`
+			Map yaml.Node `yaml:"map"`
 		}
 		if err := n.Decode(&m); err != nil {
-			return fmt.Errorf("line %d: a variable mapping accepts only `sh`: %w", n.Line, err)
+			return fmt.Errorf("line %d: a variable mapping accepts only `sh` or `map`: %w", n.Line, err)
 		}
-		if m.Sh == nil {
-			return fmt.Errorf("line %d: a variable mapping must set `sh`", n.Line)
+		switch {
+		case m.Sh != nil && m.Map.Kind != 0:
+			return fmt.Errorf("line %d: a variable sets either `sh` or `map`, not both", n.Line)
+		case m.Sh != nil:
+			v.Sh = *m.Sh
+			return nil
+		case m.Map.Kind != 0:
+			entries, err := mapEntries(&m.Map)
+			if err != nil {
+				return err
+			}
+			v.Kind, v.Map = VarMap, entries
+			return nil
 		}
-		v.Sh = *m.Sh
-		return nil
+		return fmt.Errorf("line %d: a variable mapping must set `sh` or `map`", n.Line)
 	default:
-		return fmt.Errorf("line %d: a variable must be a value or a mapping with `sh`", n.Line)
+		return fmt.Errorf("line %d: a variable must be a value, a list, or a mapping with `sh` or `map`", n.Line)
 	}
+}
+
+// plainValues reads a sequence whose every element is a plain value.
+func plainValues(n *yaml.Node, what string) ([]string, error) {
+	if err := checkNoNullElements(n, what); err != nil {
+		return nil, err
+	}
+	items := make([]string, 0, len(n.Content))
+	for _, el := range n.Content {
+		if el.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("line %d: every item of %s is a plain value", el.Line, what)
+		}
+		s, err := scalarString(el)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, s)
+	}
+	return items, nil
+}
+
+// mapEntries reads the body of a `{map: …}` variable, keeping the order the
+// entries are written in. A Go map would forget it, and the order is the one
+// `for:` walks: a loop over services that starts a different one first each run
+// is a loop nobody can reason about.
+func mapEntries(n *yaml.Node) ([]MapEntry, error) {
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("line %d: `map` holds a mapping, as in `map: {web: 80, db: 5432}`", n.Line)
+	}
+	entries := make([]MapEntry, 0, len(n.Content)/2)
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, val := n.Content[i], n.Content[i+1]
+		if k.Kind != yaml.ScalarNode || val.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("line %d: every key and value of a map variable is a plain value", k.Line)
+		}
+		key, err := scalarString(k)
+		if err != nil {
+			return nil, err
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("line %d: map key %s appears twice", k.Line, quoteForError(key))
+		}
+		seen[key] = true
+		value, err := scalarString(val)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, MapEntry{Key: key, Value: value})
+	}
+	return entries, nil
+}
+
+// UnmarshalYAML reads a step's `for:`, as a literal list or a mapping naming a
+// variable:
+//
+//	for: [api, worker]
+//	for: {var: HOSTS, split: ',', as: HOST}
+func (f *For) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.SequenceNode:
+		items, err := plainValues(n, "a `for:` list")
+		if err != nil {
+			return err
+		}
+		f.Items = items
+		return nil
+	case yaml.MappingNode:
+		if err := knownFields(n, "a `for:`", "var", "split", "as"); err != nil {
+			return err
+		}
+		var r struct {
+			Var   string `yaml:"var"`
+			Split string `yaml:"split"`
+			As    string `yaml:"as"`
+		}
+		if err := n.Decode(&r); err != nil {
+			return fmt.Errorf("line %d: %w", n.Line, err)
+		}
+		if r.Var == "" {
+			return fmt.Errorf("line %d: a `for:` mapping needs `var`, the variable to loop over", n.Line)
+		}
+		if !IsName(r.Var) {
+			return fmt.Errorf("line %d: `for:` var %s is not a variable name — write the name, as in `var: HOSTS`,"+
+				" not a template", n.Line, quoteForError(r.Var))
+		}
+		f.Var, f.Split, f.As = r.Var, r.Split, r.As
+	case yaml.ScalarNode:
+		// go-task's `for: sources` and `for: generates`. Refused by name rather
+		// than read as a one-item list, which would loop once over the word.
+		return fmt.Errorf("line %d: `for:` takes a list, as in `for: [a, b]`, or a variable, as in `for: {var: NAMES}`",
+			n.Line)
+	default:
+		return fmt.Errorf("line %d: `for:` takes a list or a mapping", n.Line)
+	}
+	if f.As != "" && (!IsName(f.As) || f.As == "KEY") {
+		return fmt.Errorf("line %d: `for:` as %s cannot hold the item — it must be a variable name other than KEY,"+
+			" which a map loop sets to the key", n.Line, quoteForError(f.As))
+	}
+	return nil
 }
 
 // UnmarshalYAML reads a duration the way Go writes one: 20m, 90s, 1h30m.
@@ -305,7 +429,7 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 		}
 		return nil
 	case yaml.MappingNode:
-		if err := knownFields(n, "a command", "cmd", "task", "vars", "silent", "ignore_error", "defer"); err != nil {
+		if err := knownFields(n, "a command", "cmd", "task", "vars", "silent", "ignore_error", "defer", "for"); err != nil {
 			return err
 		}
 		type raw struct {
@@ -319,6 +443,7 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 			// Defer nests a whole command: `- defer: { task: e2e:down }` or
 			// `- defer: docker rm -f box`.
 			Defer *Cmd `yaml:"defer"`
+			For   *For `yaml:"for"`
 		}
 		var r raw
 		if err := n.Decode(&r); err != nil {
@@ -338,6 +463,13 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 			if hasCmd || r.Task != "" {
 				return fmt.Errorf("line %d: `defer` is a command of its own; do not combine it with `cmd` or `task`", n.Line)
 			}
+			if r.For != nil {
+				// Two readings, both plausible: defer one loop, or loop over
+				// registering defers. The first is the useful one and it has a
+				// spelling that says so.
+				return fmt.Errorf("line %d: put `for:` inside the deferred command, as in"+
+					" `- defer: {for: [a, b], cmd: …}`", n.Line)
+			}
 			*c = *r.Defer
 			c.Defer = true
 			return nil
@@ -349,7 +481,7 @@ func (c *Cmd) UnmarshalYAML(n *yaml.Node) error {
 			return fmt.Errorf("line %d: a command needs `cmd`, `task` or `defer`", n.Line)
 		}
 		c.Cmd, c.Argv, c.Task, c.Vars = body.Cmd, body.Argv, r.Task, r.Vars
-		c.Silent, c.IgnoreError = r.Silent, r.IgnoreError
+		c.Silent, c.IgnoreError, c.For = r.Silent, r.IgnoreError, r.For
 		return nil
 	default:
 		return fmt.Errorf("line %d: a command must be a string, an argv list, or a mapping", n.Line)

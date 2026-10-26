@@ -185,6 +185,12 @@ real shell — with real `pipefail` — possible.
 - **A config with no environment is an error.** A partial miss (no `secrets.env`)
   is reported and continues; `?` on a path silences it.
 - **Includes see only the variables mapped to them.** Nothing bleeds.
+- **`for:` loops a step, so the loop is chore's, not bash's.** `- for: {var:
+  DRIVERS}` with `task: build` runs one ordinary task call per item of a list,
+  a `{map: …}` (in written order, with `{{.KEY}}`) or a whitespace-split string.
+  Items run in order, the first failure stops the loop and names the item, and
+  a misspelt variable is an error rather than a loop that does nothing.
+  `chore help loops`.
 - **`cache:` replays an answer instead of asking again.** `cache: 5m` on a task
   that reads something remote records what a successful run printed and, for
   five minutes, prints that instead of running it — deps and hooks included.
@@ -444,7 +450,8 @@ byte differs.
 
 The feature set was measured against a real 3,131-line Taskfile rather than
 guessed: `desc`, `cmds` (strings, `- task:` references, multi-line blocks),
-`vars` (including `sh:`), `deps` (concurrent), `env`, `dotenv` (per file OR per
+`vars` (including `sh:`, lists, and `{map: …}`), `for:` on a step (a list, or a
+variable with `split:`/`as:`), `deps` (concurrent), `env`, `dotenv` (per file OR per
 task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 `silent`, `internal`, `interactive`, `dir`,
 `run: once`, `defer`, `preconditions`, `status`, `sources`/`generates` (content-hash
@@ -454,7 +461,7 @@ up-to-date checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templati
 chore-only, on top of that: `args:`, `cache:`, `confirm:`, `chore_min_version:`, the nine hooks,
 `child_hooks:`, `timeout:`/`on_timeout:`, and `verbose:`.
 
-Not supported, on purpose: remote includes, `watch`, `for:`/matrix, `prompt`,
+Not supported, on purpose: remote includes, `watch`, `for: sources`/matrix, `prompt`,
 `interactive`, output styles (go-task's group/prefixed task output), v2 schema, Windows. See [SPEC.md](SPEC.md).
 
 ## Build
