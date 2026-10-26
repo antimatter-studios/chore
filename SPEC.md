@@ -130,8 +130,21 @@ its handler. Specified under [`timeout:` — for a task that never
 ends](#timeout--for-a-task-that-never-ends), next to the hooks it is deliberately
 not one of.
 
-**Explicitly not supported**: remote/git includes, `watch`, `for:`/matrix
-expansion, `prompt`, `interactive`, output styles (group/prefixed),
+**Loops**: `for:` on a step, in go-task's spelling — a literal list, or `{var:
+NAME}` over a list, a `{map: …}` (`{{.KEY}}`/`{{.ITEM}}`, in written order) or a
+string split on whitespace or `split:`, with `as:` to rename the item. Items run
+in order and the first failure stops the loop; `ignore_error:` carries on. A
+list's string form is its items joined by spaces, a map's is `key=value` pairs,
+where go-task prints Go's `[a b]` and `map[a:1]` — no shell can use those.
+Two differences from go-task, both because its answer is a silent wrong one: a
+`for:` naming an unset variable is an error, where go-task loops zero times; and
+items split out of a string are trimmed and empty ones skipped, so `a, b,` on
+`split: ','` is `a` and `b`, where go-task yields `a`, ` b` and an empty item. A
+map is walked in written order; go-task's order is Go's map order, which is
+random. Specified in `chore help loops`.
+
+**Explicitly not supported**: remote/git includes, `watch`, `for: sources`,
+`for:` matrix expansion, `for:` in `deps:`, `ref:`, `prompt`, `interactive`, output styles (group/prefixed),
 `set`/`shopt`, v2 schema, shell completions, Windows.
 
 ## Preconditions

@@ -121,8 +121,26 @@ type Capturer interface {
 //
 // The receiver is not modified: values land in a child scope and are returned as
 // a map for the caller to Push as its own layer.
+//
+// A list or map var comes back as its string form. ResolveValues keeps it whole.
 func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap Capturer) (map[string]string, error) {
-	out := make(map[string]string, len(vars))
+	values, err := s.ResolveValues(ctx, vars, cap)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v.String()
+	}
+	return out, nil
+}
+
+// ResolveValues is Resolve for a block whose lists and maps must survive into the
+// scope — a file's or a task's own `vars:`, which is where a `for:` finds them.
+// Each list item and map value is rendered on its own, against the same scope a
+// string var would be.
+func (s *Scope) ResolveValues(ctx context.Context, vars map[string]chorefile.Var, cap Capturer) (map[string]Value, error) {
+	out := make(map[string]Value, len(vars))
 	if len(vars) == 0 {
 		return out, nil
 	}
@@ -135,8 +153,7 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 	g := graph.New()
 	for _, name := range graph.Sorted(vars) {
 		g.Describe("var:"+name, name)
-		text, _ := source(vars[name])
-		refs, err := references(text)
+		refs, err := varReferences(vars[name])
 		if err != nil {
 			return nil, fmt.Errorf("var %s: %w", name, err)
 		}
@@ -165,9 +182,7 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 	for len(pending) > 0 {
 		progressed := false
 		for _, name := range slices.Sorted(maps.Keys(pending)) {
-			text, isSh := source(vars[name])
-
-			refs, err := references(text)
+			refs, err := varReferences(vars[name])
 			if err != nil {
 				return nil, fmt.Errorf("var %s: %w", name, err)
 			}
@@ -175,26 +190,12 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 				continue
 			}
 
-			val, err := cur.Render(text)
+			val, err := cur.resolveOne(ctx, vars[name], cap)
 			if err != nil {
 				return nil, fmt.Errorf("var %s: %w", name, err)
 			}
-			if isSh {
-				if cap == nil {
-					return nil, fmt.Errorf("var %s: sh: %q needs a shell but none was provided", name, val)
-				}
-				stdout, err := cap.Capture(ctx, val)
-				if err != nil {
-					return nil, fmt.Errorf("var %s: sh: %q: %w", name, val, err)
-				}
-				// Trim again even though Capturer is documented to trim: a
-				// variable holding a stray newline poisons every command it is
-				// interpolated into, and that is not worth trusting to an
-				// implementation detail.
-				val = strings.TrimSpace(stdout)
-			}
 
-			cur.Set(name, val)
+			cur.SetValue(name, val)
 			out[name] = val
 			delete(pending, name)
 			progressed = true
@@ -205,6 +206,90 @@ func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap 
 			// not take the program down.
 			return nil, fmt.Errorf("variable dependency cycle among %s", strings.Join(slices.Sorted(maps.Keys(pending)), ", "))
 		}
+	}
+	return out, nil
+}
+
+// resolveOne renders one var against s: each element of a collection, or the
+// var's text — running it, for `sh:`.
+func (s *Scope) resolveOne(ctx context.Context, v chorefile.Var, cap Capturer) (Value, error) {
+	switch v.Kind {
+	case chorefile.VarList:
+		items, err := s.renderEach(v.List)
+		if err != nil {
+			return Value{}, err
+		}
+		return ListValue(items), nil
+	case chorefile.VarMap:
+		keys := make([]string, len(v.Map))
+		texts := make([]string, len(v.Map))
+		for i, e := range v.Map {
+			keys[i], texts[i] = e.Key, e.Value
+		}
+		values, err := s.renderEach(texts)
+		if err != nil {
+			return Value{}, err
+		}
+		return MapValue(keys, values), nil
+	}
+
+	text, isSh := source(v)
+	val, err := s.Render(text)
+	if err != nil {
+		return Value{}, err
+	}
+	if isSh {
+		if cap == nil {
+			return Value{}, fmt.Errorf("sh: %q needs a shell but none was provided", val)
+		}
+		stdout, err := cap.Capture(ctx, val)
+		if err != nil {
+			return Value{}, fmt.Errorf("sh: %q: %w", val, err)
+		}
+		// Trim again even though Capturer is documented to trim: a
+		// variable holding a stray newline poisons every command it is
+		// interpolated into, and that is not worth trusting to an
+		// implementation detail.
+		val = strings.TrimSpace(stdout)
+	}
+	return StringValue(val), nil
+}
+
+// renderEach renders every text against s, in order.
+func (s *Scope) renderEach(texts []string) ([]string, error) {
+	out := make([]string, len(texts))
+	for i, text := range texts {
+		r, err := s.Render(text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = r
+	}
+	return out, nil
+}
+
+// varReferences returns the variable names a var reads, across every element of
+// a collection.
+func varReferences(v chorefile.Var) ([]string, error) {
+	var texts []string
+	switch v.Kind {
+	case chorefile.VarList:
+		texts = v.List
+	case chorefile.VarMap:
+		for _, e := range v.Map {
+			texts = append(texts, e.Value)
+		}
+	default:
+		text, _ := source(v)
+		texts = []string{text}
+	}
+	var out []string
+	for _, text := range texts {
+		refs, err := references(text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, refs...)
 	}
 	return out, nil
 }

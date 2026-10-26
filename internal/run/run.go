@@ -759,6 +759,9 @@ func (r *Runner) deps(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope)
 // command runs one step: a call to another task, or a script — here, or at the
 // far end of rem when the task has a `route:`.
 func (r *Runner) command(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope, sh shell.Shell, rem *remote, c chorefile.Cmd) error {
+	if c.For != nil {
+		return r.loop(ctx, t, scope, sh, rem, c)
+	}
 	if c.Task != "" {
 		name, err := scope.Render(c.Task)
 		if err != nil {
@@ -907,13 +910,20 @@ func indentScript(script string) string {
 // that step rather than guessing: a task that brings up two servers by passing
 // each its own name must not have both collapsed into one by a global.
 //
-// ## Two forms
+// ## Four forms
 //
 // ```yaml
 // vars:
-//   NAME: literal
-//   SHA:  {sh: git rev-parse HEAD}      # captured from a shell command
+//   NAME:  literal
+//   SHA:   {sh: git rev-parse HEAD}      # captured from a shell command
+//   HOSTS: [web1, web2]                  # a list
+//   PORTS: {map: {web: 80, db: 5432}}    # a map, kept in written order
 // ```
+//
+// A list or map is for `for:` to walk — see `chore help loops`. Everywhere
+// else it reads as a string: `{{.HOSTS}}` and `$HOSTS` are `web1 web2`, and
+// `{{.PORTS}}` is `web=80 db=5432`. That includes `range`: a template cannot
+// iterate a list, because all it is ever given is the string.
 //
 // ## Provided by chore
 //
@@ -1061,12 +1071,12 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// silently read every variable above it, which is the bleed this format is
 	// known for and which rest-mail's own comments warn about: two includes of one
 	// file then differ by whatever their parents happened to define.
-	fileVars := map[string]string{}
-	effective := map[string]string{}
+	fileVars := map[string]tmpl.Value{}
+	effective := map[string]tmpl.Value{}
 	for _, f := range fileChain(t.File) { // root first, the task's file last
-		mapped := map[string]string{}
+		mapped := map[string]tmpl.Value{}
 		if len(f.IncludeVars) > 0 {
-			mapped, err = outside.Push(effective).Resolve(ctx, f.IncludeVars, sh)
+			mapped, err = outside.PushValues(effective).ResolveValues(ctx, f.IncludeVars, sh)
 			if err != nil {
 				return nil, fmt.Errorf("include vars for %s: %w", f.Path, err)
 			}
@@ -1075,16 +1085,16 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 		visible := mapped
 		if f.Inherit {
 			// Opt-in: the including file's values, with the mapping on top.
-			visible = mergeStrings(effective, mapped)
+			visible = merged(effective, mapped)
 		}
-		own, err := outside.Push(visible).Resolve(ctx, f.Vars, sh)
+		own, err := outside.PushValues(visible).ResolveValues(ctx, f.Vars, sh)
 		if err != nil {
 			return nil, fmt.Errorf("file vars: %w", err)
 		}
 		// The mapping outranks the file's own value: the file states what it needs
 		// by default, the include states what it is being handed. An inherited
 		// value sits below both — a file always wins on a name it defines itself.
-		fileVars = mergeStrings(mergeStrings(visible, own), mapped)
+		fileVars = merged(merged(visible, own), mapped)
 		effective = fileVars
 	}
 
@@ -1112,12 +1122,12 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// Above fileVars: where a file sets the same name in both, `env:` is what the
 	// shell would see under go-task, and a template disagreeing with the shell
 	// about one name is worse than either answer.
-	scope := base.Push(dotenvVars).Push(fileVars).Push(fileEnv).Push(paramDefaults)
-	taskVars, err := scope.Push(argVars).Push(callVars).Resolve(ctx, t.Vars, sh)
+	scope := base.Push(dotenvVars).PushValues(fileVars).Push(fileEnv).Push(paramDefaults)
+	taskVars, err := scope.Push(argVars).Push(callVars).ResolveValues(ctx, t.Vars, sh)
 	if err != nil {
 		return nil, fmt.Errorf("task vars: %w", err)
 	}
-	taskEnv, err := scope.Push(taskVars).Push(argVars).Push(callVars).Resolve(ctx, t.Env, sh)
+	taskEnv, err := scope.PushValues(taskVars).Push(argVars).Push(callVars).Resolve(ctx, t.Env, sh)
 	if err != nil {
 		return nil, fmt.Errorf("task env: %w", err)
 	}
@@ -1125,7 +1135,7 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	// (`chore up VERBOSE=1`) is the reason these values are variable at all.
 	// Typed values above everything the file says, and above the task's own vars:
 	// a `vars:` block is a default, not a veto on the command line.
-	final := scope.Push(taskVars).Push(taskEnv).Push(r.CLIVars).Push(callVars).Push(argVars)
+	final := scope.PushValues(taskVars).Push(taskEnv).Push(r.CLIVars).Push(callVars).Push(argVars)
 
 	// Boolean parameters are normalised HERE, not only where their default is
 	// resolved: the task's own vars are pushed on top afterwards and would
@@ -1827,12 +1837,12 @@ func fileChain(f *chorefile.File) []*chorefile.File {
 	return up
 }
 
-// mergeStrings returns a copy of a with b's entries on top.
-func mergeStrings(a, b map[string]string) map[string]string {
+// merged returns a copy of a with b's entries on top.
+func merged[V any](a, b map[string]V) map[string]V {
 	if len(b) == 0 {
 		return a
 	}
-	out := make(map[string]string, len(a)+len(b))
+	out := make(map[string]V, len(a)+len(b))
 	maps.Copy(out, a)
 	maps.Copy(out, b)
 	return out

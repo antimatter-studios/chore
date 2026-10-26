@@ -111,10 +111,17 @@ var cases = map[string][]run{
 		{"a task that asks for its own", []string{"deploy"}},
 		{"a failing step names itself", []string{"breaks"}},
 	},
+	"01-for.yml": {
+		{"a list: one task call per item", []string{"build:all"}},
+		{"a map: the key and the value, in written order", []string{"ports"}},
+		{"a string splits on whitespace", []string{"unload"}},
+		{"the command line replaces the list", []string{"build:all", "DRIVERS=btrfs squashfs"}},
+		{"the first failure stops the loop", []string{"build:all", "DRIVERS=ext4 broken xfs"}},
+	},
 }
 
 func TestExamples(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("hooks", "*.yml"))
+	files, err := filepath.Glob(filepath.Join("*", "*.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}

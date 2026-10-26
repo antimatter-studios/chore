@@ -128,9 +128,51 @@ func TestDecodeVar(t *testing.T) {
 			wantErr: []string{"must set `sh`"},
 		},
 		{
-			name:    "sequence is not a variable",
-			value:   "[a, b]",
-			wantErr: []string{"a variable must be a value or a mapping with `sh`"},
+			name:  "a sequence is a list",
+			value: "[a, '{{.X}}', 3]",
+			want:  Var{Kind: VarList, List: []string{"a", "{{.X}}", "3"}},
+		},
+		{
+			name:  "an empty sequence is still a list",
+			value: "[]",
+			want:  Var{Kind: VarList, List: []string{}},
+		},
+		{
+			name:    "a list holds plain values",
+			value:   "[a, [b]]",
+			wantErr: []string{"every item of a list variable is a plain value"},
+		},
+		{
+			name:    "a list has no empty entries",
+			value:   "[a, ~]",
+			wantErr: []string{"entry 2 is empty"},
+		},
+		{
+			name:  "map keeps written order",
+			value: "{map: {web: 80, db: 5432, api: '{{.P}}'}}",
+			want: Var{Kind: VarMap, Map: []MapEntry{
+				{Key: "web", Value: "80"}, {Key: "db", Value: "5432"}, {Key: "api", Value: "{{.P}}"},
+			}},
+		},
+		{
+			name:    "map and sh together",
+			value:   "{map: {a: 1}, sh: date}",
+			wantErr: []string{"either `sh` or `map`"},
+		},
+		{
+			name:    "map of a list",
+			value:   "{map: [a]}",
+			wantErr: []string{"`map` holds a mapping"},
+		},
+		{
+			name:    "map values are plain",
+			value:   "{map: {a: [1]}}",
+			wantErr: []string{"every key and value of a map variable is a plain value"},
+		},
+		{
+			name:    "map key twice",
+			value:   "{map: {a: 1, a: 2}}",
+			wantErr: []string{"map key \"a\" appears twice"},
 		},
 	}
 
@@ -144,7 +186,7 @@ func TestDecodeVar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Decode: %v", err)
 			}
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("Var = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -451,11 +493,17 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 			wantErr: []string{"internal", `unknown field "internal" in an include`},
 		},
 		{
-			// Unsupported by design (see the spec's "explicitly not supported"
-			// list); it must fail loudly rather than be dropped.
-			name:    "for-expansion is rejected, not ignored",
-			yaml:    "version: '3'\ntasks:\n  build:\n    cmds:\n      - for: [a, b]\n        cmd: echo {{.ITEM}}\n",
-			wantErr: []string{"unknown field", `"for"`},
+			// `for:` over a list or a variable is supported; go-task's matrix
+			// form is not (see the spec's "explicitly not supported" list), and it
+			// must fail loudly rather than be dropped.
+			name:    "for-matrix is rejected, not ignored",
+			yaml:    "version: '3'\ntasks:\n  build:\n    cmds:\n      - for: {matrix: {OS: [linux]}}\n        cmd: echo {{.ITEM}}\n",
+			wantErr: []string{"unknown field", `"matrix"`},
+		},
+		{
+			name:    "for-sources is rejected, not read as one item",
+			yaml:    "version: '3'\ntasks:\n  build:\n    cmds:\n      - for: sources\n        cmd: echo {{.ITEM}}\n",
+			wantErr: []string{"`for:` takes a list"},
 		},
 	}
 
@@ -1185,5 +1233,113 @@ tasks:
 	}
 	if !f.Silent || !f.Tasks["loud"].Verbose {
 		t.Error("both settings must survive; the runner resolves them, not the decoder")
+	}
+}
+
+func TestDecodeFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		item    string
+		want    Cmd
+		wantErr []string
+	}{
+		{
+			name: "literal list on a shell step",
+			item: "{for: [a, '{{.B}}'], cmd: 'echo {{.ITEM}}'}",
+			want: Cmd{Cmd: "echo {{.ITEM}}", For: &For{Items: []string{"a", "{{.B}}"}}},
+		},
+		{
+			name: "variable on a task call",
+			item: "{for: {var: HOSTS, split: ',', as: HOST}, task: ping, vars: {H: '{{.HOST}}'}}",
+			want: Cmd{Task: "ping", Vars: map[string]Var{"H": {Value: "{{.HOST}}"}},
+				For: &For{Var: "HOSTS", Split: ",", As: "HOST"}},
+		},
+		{
+			name: "inside a defer",
+			item: "{defer: {for: [a], cmd: 'rm {{.ITEM}}'}}",
+			want: Cmd{Cmd: "rm {{.ITEM}}", Defer: true, For: &For{Items: []string{"a"}}},
+		},
+		{
+			name:    "beside a defer",
+			item:    "{for: [a], defer: rm x}",
+			wantErr: []string{"put `for:` inside the deferred command"},
+		},
+		{
+			name:    "a mapping needs var",
+			item:    "{for: {split: ','}, cmd: x}",
+			wantErr: []string{"needs `var`"},
+		},
+		{
+			name:    "var is a name, not a template",
+			item:    "{for: {var: '{{.X}}'}, cmd: x}",
+			wantErr: []string{"is not a variable name"},
+		},
+		{
+			name:    "as cannot be KEY",
+			item:    "{for: {var: M, as: KEY}, cmd: x}",
+			wantErr: []string{"other than KEY"},
+		},
+		{
+			name:    "as must be a name",
+			item:    "{for: {var: M, as: 'a-b'}, cmd: x}",
+			wantErr: []string{"cannot hold the item"},
+		},
+		{
+			name:    "unknown key",
+			item:    "{for: {var: M, spilt: ','}, cmd: x}",
+			wantErr: []string{"unknown field", `"spilt"`},
+		},
+		{
+			name:    "items are plain values",
+			item:    "{for: [[a]], cmd: x}",
+			wantErr: []string{"every item of a `for:` list is a plain value"},
+		},
+		{
+			name:    "for alone is not a step",
+			item:    "{for: [a]}",
+			wantErr: []string{"needs `cmd`, `task` or `defer`"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeCmd(t, tc.item)
+			if len(tc.wantErr) > 0 {
+				checkErr(t, err, tc.wantErr)
+				return
+			}
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Cmd = %+v (for %+v), want %+v (for %+v)", got, got.For, tc.want, tc.want.For)
+			}
+		})
+	}
+}
+
+func TestVarLiteral(t *testing.T) {
+	cases := []struct {
+		v    Var
+		want string
+	}{
+		{Var{Value: "x"}, "x"},
+		{Var{Sh: "date"}, ""},
+		{Var{Kind: VarList, List: []string{"a", "b"}}, "a b"},
+		{Var{Kind: VarList, List: []string{}}, ""},
+		{Var{Kind: VarMap, Map: []MapEntry{{"web", "80"}, {"db", "5432"}}}, "web=80 db=5432"},
+	}
+	for _, tc := range cases {
+		if got := tc.v.Literal(); got != tc.want {
+			t.Errorf("%+v.Literal() = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
+func TestForItemName(t *testing.T) {
+	if got := (&For{}).ItemName(); got != "ITEM" {
+		t.Errorf("default item name = %q, want ITEM", got)
+	}
+	if got := (&For{As: "HOST"}).ItemName(); got != "HOST" {
+		t.Errorf("item name with as = %q, want HOST", got)
 	}
 }

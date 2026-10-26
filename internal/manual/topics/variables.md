@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/run/run.go:877 -->
+<!-- sources: internal/run/run.go:880 -->
 ---
 title: Variables
 summary: where a value can come from, and which one wins
@@ -33,13 +33,20 @@ EXPLICITLY to a child, because a file naming a value for one step is describing
 that step rather than guessing: a task that brings up two servers by passing
 each its own name must not have both collapsed into one by a global.
 
-## Two forms
+## Four forms
 
 ```yaml
 vars:
-  NAME: literal
-  SHA:  {sh: git rev-parse HEAD}      # captured from a shell command
+  NAME:  literal
+  SHA:   {sh: git rev-parse HEAD}      # captured from a shell command
+  HOSTS: [web1, web2]                  # a list
+  PORTS: {map: {web: 80, db: 5432}}    # a map, kept in written order
 ```
+
+A list or map is for `for:` to walk — see `chore help loops`. Everywhere
+else it reads as a string: `{{.HOSTS}}` and `$HOSTS` are `web1 web2`, and
+`{{.PORTS}}` is `web=80 db=5432`. That includes `range`: a template cannot
+iterate a list, because all it is ever given is the string.
 
 ## Provided by chore
 

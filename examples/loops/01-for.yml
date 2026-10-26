@@ -1,0 +1,35 @@
+# for: — one step per item, walked by chore instead of a bash `for` loop.
+#
+# Each item is an ordinary step: a `- task:` call sees only the vars passed to
+# it, `requires:` checks every call, and the first failing item stops the loop
+# and names itself, exactly as a failing step in `cmds:` does.
+version: '3'
+
+vars:
+  DRIVERS: [ext4, ntfs, xfs]                  # a list
+  PORTS:   {map: {worker: 9090, api: 8080}}   # a map, walked in written order
+
+tasks:
+  build:all:
+    cmds:
+      - for: {var: DRIVERS}
+        task: build
+        vars: {DRIVER: '{{.ITEM}}'}
+
+  build:
+    requires: [DRIVER]
+    cmds:
+      - echo "building lib{{.DRIVER}}.a"
+      - test {{.DRIVER}} != broken
+
+  ports:
+    cmds:
+      - for: {var: PORTS}
+        cmd: echo "{{.KEY}} listens on {{.ITEM}}"
+
+  unload:
+    vars:
+      LABELS: tick analyst auditor            # a string splits on whitespace
+    cmds:
+      - for: {var: LABELS, as: LABEL}
+        cmd: echo "unload com.roguetrader.$LABEL.plist"

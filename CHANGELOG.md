@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.19.0
+
+- **Loops: `for:` on a step.** `- for: [a, b]`, or `- for: {var: NAME}`, runs a
+  shell line or a `- task:` call once per item, with the item in `{{.ITEM}}` and
+  `$ITEM` (`as:` renames it). Items run in order; the first failure stops the
+  loop and names the item, and `ignore_error: true` reports it and carries on.
+  It works in `cmds:`, `defer:` and hooks. A `for:` naming an unset variable is
+  an error rather than a loop that does nothing. See `chore help loops`.
+- **List and map variables.** `HOSTS: [web1, web2]` is a list and
+  `PORTS: {map: {web: 80, db: 5432}}` a map, kept in written order, with the key
+  in `{{.KEY}}`. Templates and the environment see a string form — `web1 web2`,
+  `web=80 db=5432` — so `for h in {{.HOSTS}}` keeps working. A string variable
+  is split on whitespace, or on `split:`, so `{sh: ls}` output and a value typed
+  on the command line loop too: `chore build:all DRIVERS="ext4 xfs"` replaces
+  the file's list.
+
 ## v0.18.1
 
 - **`cache:` keys on what follows `--` and on the directory chore was run
