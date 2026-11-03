@@ -226,7 +226,7 @@ directly above it, then dotenv, file, task and call vars and arguments) and the
 JSON of its `cmds`, `deps` and `before`.
 The process environment is deliberately excluded — it differs from shell to
 shell — so a task whose output depends on an environment variable must declare
-it. Entries live at `$XDG_CACHE_HOME/chore/replay/<chorefile>/<key>.replay`
+it. Entries live at `$XDG_CACHE_HOME/chore/cache/<chorefile>/<key>.cache`
 (`$HOME/.cache` when `XDG_CACHE_HOME` is unset or relative; never
 `~/Library/Caches`), one file each: a JSON line (`task`, `created`, `expires`,
 `chore`) and then the recorded bytes, written to a temporary file and renamed.

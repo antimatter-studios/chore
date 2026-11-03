@@ -121,7 +121,7 @@ type Runner struct {
 	exported map[string]string
 
 	// CacheDir is the user's cache directory, under which `cache:` keeps its
-	// replays (chore/replay/). Empty means there is nowhere to keep one, and a
+	// entries (chore/cache/). Empty means there is nowhere to keep one, and a
 	// task that declares a cache simply runs. See cache.go.
 	CacheDir string
 	// Now is the clock `cache:` reads; nil is time.Now. A test moves its own.

@@ -1228,11 +1228,11 @@ func projectDefines(name, file string) bool {
 	return ok
 }
 
-// cacheDir is where `cache:` keeps its replays: $XDG_CACHE_HOME when it is an
+// cacheDir is where `cache:` keeps its entries: $XDG_CACHE_HOME when it is an
 // absolute path, as the XDG base directory specification requires, otherwise
 // $HOME/.cache. Not os.UserCacheDir, which answers ~/Library/Caches on macOS:
 // one rule on every platform, so whoever needs to find or clear the cache can.
-// Empty when neither is known, and then no task is replayed.
+// Empty when neither is known, and then no task is cached.
 func cacheDir() string {
 	if d := os.Getenv("XDG_CACHE_HOME"); filepath.IsAbs(d) {
 		return d
