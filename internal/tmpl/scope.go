@@ -50,6 +50,10 @@ type Value struct {
 	// Keys is a map's keys, parallel to Items. nil for anything else.
 	Keys []string
 	str  string
+	// tree is a `json_file:` or `yaml_file:` variable's parsed file, an Object
+	// or an Array, which templates read in place of the string form. nil for
+	// every other value.
+	tree any
 }
 
 // StringValue wraps a plain string.
@@ -66,8 +70,12 @@ func MapValue(keys, values []string) Value {
 	return Value{Kind: Map, Keys: keys, Items: values, str: chorefile.JoinMap(keys, values)}
 }
 
-// String is the value as templates and the environment see it.
+// String is the value as the environment sees it, and as templates see every
+// value except a file variable's tree.
 func (v Value) String() string { return v.str }
+
+// Tree is a file variable's parsed file (an Object or an Array), or nil.
+func (v Value) Tree() any { return v.tree }
 
 // Scope is a stack of variable layers. Later layers have higher priority.
 type Scope struct {
@@ -170,6 +178,42 @@ func (s *Scope) All() map[string]string {
 		}
 	}
 	return out
+}
+
+// data is what a template is executed against. With no file variable in scope
+// it is All(), strings only, exactly as before. With one, it is a map[string]any
+// holding every other variable as its string and each file variable as its
+// tree; refs, the root names the template reads, are filled with "" when unset,
+// so a missing variable still renders empty rather than "<no value>".
+func (s *Scope) data(refs []string) (any, bool) {
+	trees := false
+	for _, l := range s.layers {
+		for _, v := range l {
+			if v.tree != nil {
+				trees = true
+				break
+			}
+		}
+	}
+	if !trees {
+		return s.All(), false
+	}
+	out := map[string]any{}
+	for _, l := range s.layers {
+		for k, v := range l {
+			if v.tree != nil {
+				out[k] = v.tree
+			} else {
+				out[k] = v.String()
+			}
+		}
+	}
+	for _, r := range refs {
+		if _, ok := out[r]; !ok {
+			out[r] = ""
+		}
+	}
+	return out, true
 }
 
 // Declared flattens every layer above the process environment: the values the

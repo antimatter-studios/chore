@@ -910,20 +910,47 @@ func indentScript(script string) string {
 // that step rather than guessing: a task that brings up two servers by passing
 // each its own name must not have both collapsed into one by a global.
 //
-// ## Four forms
+// ## Six forms
 //
 // ```yaml
 // vars:
-//   NAME:  literal
-//   SHA:   {sh: git rev-parse HEAD}      # captured from a shell command
-//   HOSTS: [web1, web2]                  # a list
-//   PORTS: {map: {web: 80, db: 5432}}    # a map, kept in written order
+//   NAME:     literal
+//   SHA:      {sh: git rev-parse HEAD}      # captured from a shell command
+//   HOSTS:    [web1, web2]                  # a list
+//   PORTS:    {map: {web: 80, db: 5432}}    # a map, kept in written order
+//   PROFILES: {json_file: '{{.TASKFILE_DIR}}/../profiles.json'}   # a config file
+//   HOMELAB:  {yaml_file: '?{{.TASKFILE_DIR}}/../homelab.yaml'}   # optional
 // ```
 //
 // A list or map is for `for:` to walk — see `chore help loops`. Everywhere
 // else it reads as a string: `{{.HOSTS}}` and `$HOSTS` are `web1 web2`, and
 // `{{.PORTS}}` is `web=80 db=5432`. That includes `range`: a template cannot
 // iterate a list, because all it is ever given is the string.
+//
+// ## Config files: `json_file:` and `yaml_file:`
+//
+// Code and config apart: a chore file that is the same on every machine reads
+// what differs per machine from a file beside it. chore parses the file itself,
+// and the two forms give the same result — the format is never guessed from the
+// extension, so a YAML file named in `json_file:` is an error.
+//
+// - **Templates get the tree.** `{{.PROFILES.work.directory}}`, `{{range
+//   .PROFILES.hosts}}`, `{{index .PROFILES "a-key"}}`. Numbers print as they
+//   are written (`0.50` stays `0.50`). An object or array printed whole is
+//   compact JSON.
+// - **A key the file does not have is an error**, naming it — a typo must not
+//   render as an empty host. Probe an optional key with `index`, which gives
+//   nothing rather than failing: `{{with index .HOMELAB "lan"}}…{{end}}`.
+// - **The environment gets compact JSON**, in the file's own order:
+//   `printf '%s' "$PROFILES" | jq …` still works.
+// - **`for:` walks the top level**: an object's keys in written order (each value
+//   in `{{.ITEM}}`, as text or compact JSON), or an array's items.
+// - **A missing file is an error** that names the variable and the path. `?`
+//   before the path makes a missing file an empty object instead; a file that
+//   exists but does not parse is always an error, `?` or not. The path is a
+//   template, and a relative one is taken from the chorefile's directory.
+// - The top of the file is an object or an array. Duplicate keys, YAML merge
+//   keys (`<<`) and more than one YAML document are refused.
 //
 // ## Provided by chore
 //

@@ -233,19 +233,38 @@ func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 		v.Kind, v.List = VarList, items
 		return nil
 	case yaml.MappingNode:
-		if err := knownFields(n, "a variable", "sh", "map"); err != nil {
+		if err := knownFields(n, "a variable", "sh", "map", "json_file", "yaml_file"); err != nil {
 			return err
 		}
 		var m struct {
-			Sh  *string   `yaml:"sh"`
-			Map yaml.Node `yaml:"map"`
+			Sh       *string   `yaml:"sh"`
+			Map      yaml.Node `yaml:"map"`
+			JSONFile *string   `yaml:"json_file"`
+			YAMLFile *string   `yaml:"yaml_file"`
 		}
 		if err := n.Decode(&m); err != nil {
-			return fmt.Errorf("line %d: a variable mapping accepts only `sh` or `map`: %w", n.Line, err)
+			return fmt.Errorf("line %d: a variable mapping accepts only `sh`, `map`, `json_file` or `yaml_file`: %w", n.Line, err)
+		}
+		set := 0
+		for _, ok := range []bool{m.Sh != nil, m.Map.Kind != 0, m.JSONFile != nil, m.YAMLFile != nil} {
+			if ok {
+				set++
+			}
+		}
+		if set > 1 {
+			return fmt.Errorf("line %d: a variable sets one of `sh`, `map`, `json_file` or `yaml_file`, not several", n.Line)
 		}
 		switch {
-		case m.Sh != nil && m.Map.Kind != 0:
-			return fmt.Errorf("line %d: a variable sets either `sh` or `map`, not both", n.Line)
+		case m.JSONFile != nil || m.YAMLFile != nil:
+			path, format := m.JSONFile, "json"
+			if m.YAMLFile != nil {
+				path, format = m.YAMLFile, "yaml"
+			}
+			if strings.TrimPrefix(strings.TrimSpace(*path), "?") == "" {
+				return fmt.Errorf("line %d: `%s_file:` needs the path of the file to read", n.Line, format)
+			}
+			v.File, v.FileFormat = *path, format
+			return nil
 		case m.Sh != nil:
 			v.Sh = *m.Sh
 			return nil
@@ -257,9 +276,9 @@ func (v *Var) UnmarshalYAML(n *yaml.Node) error {
 			v.Kind, v.Map = VarMap, entries
 			return nil
 		}
-		return fmt.Errorf("line %d: a variable mapping must set `sh` or `map`", n.Line)
+		return fmt.Errorf("line %d: a variable mapping must set `sh`, `map`, `json_file` or `yaml_file`", n.Line)
 	default:
-		return fmt.Errorf("line %d: a variable must be a value, a list, or a mapping with `sh` or `map`", n.Line)
+		return fmt.Errorf("line %d: a variable must be a value, a list, or a mapping with `sh`, `map`, `json_file` or `yaml_file`", n.Line)
 	}
 }
 

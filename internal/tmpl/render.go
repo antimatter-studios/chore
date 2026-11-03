@@ -74,11 +74,41 @@ func (s *Scope) Render(text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	data, trees := s.data(rootNames(t))
+	if trees {
+		// A file variable is in scope, so the data is a map[string]any. Every
+		// root name the template reads is present (data fills the unset ones
+		// with ""), so the only key that can still be missing is one inside a
+		// file — and a key the file does not have is an error naming it, not an
+		// empty string: a typo in `{{.HOMELAB.lan.hots}}` must not ssh to "".
+		// `index` still probes an optional key without failing.
+		t = t.Option("missingkey=error")
+	}
 	var b strings.Builder
-	if err := t.Execute(&b, s.All()); err != nil {
+	if err := t.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("rendering template %q: %w", text, err)
 	}
 	return b.String(), nil
+}
+
+// rootNames is every top-level variable a parsed template reads: {{.X}},
+// {{.X.y}} and {{$.X}}. A name read inside `range` or `with` is included too,
+// which only ever adds an unused empty entry.
+func rootNames(t *template.Template) []string {
+	var names []string
+	walk(t.Tree.Root, func(n parse.Node) {
+		switch n := n.(type) {
+		case *parse.FieldNode:
+			if len(n.Ident) > 0 {
+				names = append(names, n.Ident[0])
+			}
+		case *parse.VariableNode:
+			if len(n.Ident) > 1 && n.Ident[0] == "$" {
+				names = append(names, n.Ident[1])
+			}
+		}
+	})
+	return names
 }
 
 // parseTemplate parses with the one function set and the one missing-key policy,
@@ -213,6 +243,14 @@ func (s *Scope) ResolveValues(ctx context.Context, vars map[string]chorefile.Var
 // resolveOne renders one var against s: each element of a collection, or the
 // var's text — running it, for `sh:`.
 func (s *Scope) resolveOne(ctx context.Context, v chorefile.Var, cap Capturer) (Value, error) {
+	if v.File != "" {
+		path, err := s.Render(v.File)
+		if err != nil {
+			return Value{}, err
+		}
+		dir, _ := s.Get("TASKFILE_DIR")
+		return FileValue(path, v.FileFormat, dir)
+	}
 	switch v.Kind {
 	case chorefile.VarList:
 		items, err := s.renderEach(v.List)
@@ -296,6 +334,9 @@ func varReferences(v chorefile.Var) ([]string, error) {
 
 // source returns the template to render for a var, and whether it is a script.
 func source(v chorefile.Var) (text string, isSh bool) {
+	if v.File != "" {
+		return v.File, false
+	}
 	if v.Sh != "" {
 		return v.Sh, true
 	}

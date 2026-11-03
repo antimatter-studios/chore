@@ -157,7 +157,37 @@ func TestDecodeVar(t *testing.T) {
 		{
 			name:    "map and sh together",
 			value:   "{map: {a: 1}, sh: date}",
-			wantErr: []string{"either `sh` or `map`"},
+			wantErr: []string{"one of `sh`, `map`, `json_file` or `yaml_file`, not several"},
+		},
+		{
+			name:  "json_file keeps its path template",
+			value: "{json_file: '{{.TASKFILE_DIR}}/../profiles.json'}",
+			want:  Var{File: "{{.TASKFILE_DIR}}/../profiles.json", FileFormat: "json"},
+		},
+		{
+			name:  "yaml_file, optional",
+			value: "{yaml_file: '?homelab.yaml'}",
+			want:  Var{File: "?homelab.yaml", FileFormat: "yaml"},
+		},
+		{
+			name:    "json_file and yaml_file together",
+			value:   "{json_file: a.json, yaml_file: a.yaml}",
+			wantErr: []string{"not several"},
+		},
+		{
+			name:    "json_file and sh together",
+			value:   "{json_file: a.json, sh: date}",
+			wantErr: []string{"not several"},
+		},
+		{
+			name:    "json_file needs a path",
+			value:   "{json_file: '?'}",
+			wantErr: []string{"`json_file:` needs the path of the file to read"},
+		},
+		{
+			name:    "a misspelt file key is refused",
+			value:   "{jsonfile: a.json}",
+			wantErr: []string{"jsonfile"},
 		},
 		{
 			name:    "map of a list",

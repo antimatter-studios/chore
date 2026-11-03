@@ -297,15 +297,17 @@ type Include struct {
 	Vars     map[string]Var `yaml:"vars"`
 }
 
-// Var is a variable value: a literal, a shell command to capture, or a
-// collection of literals for `for:` to iterate.
+// Var is a variable value: a literal, a shell command to capture, a
+// collection of literals for `for:` to iterate, or a config file to read.
 //
-// YAML accepts four forms:
+// YAML accepts six forms:
 //
-//	FOO:   bar
-//	FOO:   {sh: git rev-parse HEAD}
-//	HOSTS: [web1, web2]
-//	PORTS: {map: {web: 80, db: 5432}}
+//	FOO:      bar
+//	FOO:      {sh: git rev-parse HEAD}
+//	HOSTS:    [web1, web2]
+//	PORTS:    {map: {web: 80, db: 5432}}
+//	PROFILES: {json_file: '{{.TASKFILE_DIR}}/../profiles.json'}
+//	HOMELAB:  {yaml_file: '?{{.TASKFILE_DIR}}/../homelab.yaml'}
 //
 // A map needs the `map:` key because a bare mapping is already the `{sh: …}`
 // form. go-task requires the same key, so one file means the same thing to
@@ -321,6 +323,11 @@ type Var struct {
 	// Value; map keys are taken as written.
 	List []string
 	Map  []MapEntry
+	// File is the path template of a `json_file:` or `yaml_file:` variable, and
+	// FileFormat which of the two ("json" or "yaml"). A leading "?" on the
+	// rendered path makes a missing file an empty map instead of an error.
+	File       string
+	FileFormat string
 }
 
 // VarKind says which form a Var was written in.
@@ -358,8 +365,12 @@ func JoinMap(keys, values []string) string {
 
 // Literal returns the value a var holds without rendering or running anything:
 // the text of a scalar, or the string form of a collection. Empty for `sh:`,
-// whose value is not known until something runs it.
+// whose value is not known until something runs it, and for a file variable,
+// whose value is not known until the file is read.
 func (v Var) Literal() string {
+	if v.File != "" {
+		return ""
+	}
 	switch v.Kind {
 	case VarList:
 		return JoinList(v.List)
@@ -805,11 +816,11 @@ func (as Args) Find(name string) (Arg, bool) {
 // for this purpose: its value is not known until something runs it.
 func (t *Task) DefaultFor(name string) (string, bool) {
 	for _, spelling := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
-		if v, ok := t.Vars[spelling]; ok && v.Sh == "" {
+		if v, ok := t.Vars[spelling]; ok && v.Sh == "" && v.File == "" {
 			return v.Literal(), true
 		}
 		if t.File != nil {
-			if v, ok := t.File.Vars[spelling]; ok && v.Sh == "" {
+			if v, ok := t.File.Vars[spelling]; ok && v.Sh == "" && v.File == "" {
 				return v.Literal(), true
 			}
 		}
