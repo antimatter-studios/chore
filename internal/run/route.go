@@ -143,7 +143,7 @@ func (r *Runner) resolveRoute(ctx context.Context, from *chorefile.File, ref str
 		}
 		display := routeName(from, ns, name)
 		if !route.Conditional() {
-			hops, err := global.PrepareHops(display, route.Hops, scope.Get)
+			hops, err := global.PrepareHops(display, route.Hops, scope.Render, scope.Get)
 			if err != nil {
 				return global.Resolved{}, err
 			}
@@ -268,7 +268,7 @@ func (r *Runner) printRoute(w io.Writer, from *chorefile.File, ref, indent strin
 	seen[ns+"|"+name] = true
 	if !route.Conditional() {
 		fmt.Fprintf(w, "%sroute %s:\n", indent, display)
-		hops, err := global.PrepareHops(display, route.Hops, scope.Get)
+		hops, err := global.PrepareHops(display, route.Hops, scope.Render, scope.Get)
 		if err != nil {
 			fmt.Fprintf(w, "%s  %v\n", indent, err)
 			hops = route.Hops

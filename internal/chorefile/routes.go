@@ -6,6 +6,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,6 +71,24 @@ import (
 // environment, and an unset one is an error rather than an empty string. `$$` is
 // a literal `$`. The same rule applies to hop hosts and users and to `forward:`
 // addresses.
+//
+// ## Hops from config
+//
+// A hop's `host:`, `user:` and `port:` may also be templates, rendered when the
+// route is used, in the scope of the task using it. With a config file
+// variable, the hosts live in config and the route stays code:
+//
+// ```yaml
+// vars:
+//   LAB: {yaml_file: '{{.TASKFILE_DIR}}/../homelab.yaml'}
+// routes:
+//   lan:
+//     - {host: '{{.LAB.lan.host}}', port: '{{.LAB.lan.port}}', user: '{{.LAB.user}}'}
+// ```
+//
+// A port that renders to anything but a port, a host that renders empty, and a
+// key the config file does not have are errors naming the route and the hop,
+// before anything is dialled.
 //
 // ## Each hop is resolved FROM THE PREVIOUS HOP
 //
@@ -230,12 +249,51 @@ func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 }
 
 // Hop is one machine on the way.
+//
+// Host, User and a templated port are rendered when the route is used, in the
+// scope of the task using it, so a hop can come from config:
+//
+//   - {host: '{{.HOMELAB.lan.host}}', port: '{{.HOMELAB.lan.port}}', user: '{{.HOMELAB.user}}'}
 type Hop struct {
 	Host string `yaml:"host"`
 	// Port defaults to 22, as ssh does.
 	Port int `yaml:"port"`
+	// PortText is a port written as a template or a `$VAR`, rendered and
+	// checked when the route is used; Port is then filled from it.
+	PortText string `yaml:"-"`
 	// User defaults to the local username, as ssh does.
 	User string `yaml:"user"`
+}
+
+// UnmarshalYAML reads a hop. Its port is a number, or a template or `$VAR`
+// left for the route's user to render.
+func (h *Hop) UnmarshalYAML(n *yaml.Node) error {
+	var raw struct {
+		Host string    `yaml:"host"`
+		Port yaml.Node `yaml:"port"`
+		User string    `yaml:"user"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	h.Host, h.User = raw.Host, raw.User
+	if raw.Port.Kind == 0 {
+		return nil
+	}
+	if raw.Port.Kind != yaml.ScalarNode {
+		return fmt.Errorf("line %d: a hop's port is a number or a template", raw.Port.Line)
+	}
+	text := raw.Port.Value
+	if strings.Contains(text, "{{") || strings.Contains(text, "$") {
+		h.PortText = text
+		return nil
+	}
+	p, err := strconv.Atoi(text)
+	if err != nil {
+		return fmt.Errorf("line %d: port %q is not a number", raw.Port.Line, text)
+	}
+	h.Port = p
+	return nil
 }
 
 // Addr is the hop's dial address — resolved by whoever is dialling, which for

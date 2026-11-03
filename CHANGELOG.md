@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Route hops can be templates.** A hop's `host:`, `user:` and `port:` are
+  rendered when the route is used, in the task's scope, so a route can read its
+  hosts from a `json_file:`/`yaml_file:` variable:
+  `{host: '{{.LAB.lan.host}}', port: '{{.LAB.lan.port}}'}`. A port that renders to
+  anything but a port, an empty host and a missing config key are errors naming
+  the route and the hop, before anything is dialled. See `chore help routes`.
+
 - **Config files as variables: `json_file:` and `yaml_file:`.**
   `PROFILES: {json_file: '{{.TASKFILE_DIR}}/../profiles.json'}` reads a file
   chore parses itself, so a task stops shelling out to jq to read its config.

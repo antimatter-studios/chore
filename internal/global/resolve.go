@@ -72,11 +72,14 @@ func (r Resolved) Env() []string {
 	}
 }
 
-// PrepareHops expands `$VAR` in each hop's host and user and fills in what ssh
-// would: port 22, and this user's name. Done before a hop is dialled or printed,
-// so an error and a dry run name the address a connection will actually use
-// rather than the blanks the file left.
-func PrepareHops(route string, hops []chorefile.Hop, lookup Lookup) ([]chorefile.Hop, error) {
+// Render renders a template in the scope of the task using a route.
+type Render func(text string) (string, error)
+
+// PrepareHops renders each hop's host, user and templated port, expands `$VAR`
+// in them, and fills in what ssh would: port 22, and this user's name. Done
+// before a hop is dialled or printed, so an error and a dry run name the address
+// a connection will actually use rather than the blanks the file left.
+func PrepareHops(route string, hops []chorefile.Hop, render Render, lookup Lookup) ([]chorefile.Hop, error) {
 	me := ""
 	if u, err := user.Current(); err == nil {
 		me = u.Username
@@ -84,12 +87,36 @@ func PrepareHops(route string, hops []chorefile.Hop, lookup Lookup) ([]chorefile
 	out := make([]chorefile.Hop, len(hops))
 	for i, h := range hops {
 		where := fmt.Sprintf("route %s, hop %d", route, i+1)
+		field := func(name, text string) (string, error) {
+			if render != nil && strings.Contains(text, "{{") {
+				r, err := render(text)
+				if err != nil {
+					return "", fmt.Errorf("%s: %s: %w", where, name, err)
+				}
+				text = r
+			}
+			return Expand(where, text, lookup)
+		}
 		var err error
-		if h.Host, err = Expand(where, h.Host, lookup); err != nil {
+		if h.Host, err = field("host", h.Host); err != nil {
 			return nil, err
 		}
-		if h.User, err = Expand(where, h.User, lookup); err != nil {
+		if h.Host == "" {
+			return nil, fmt.Errorf("%s: host rendered empty", where)
+		}
+		if h.User, err = field("user", h.User); err != nil {
 			return nil, err
+		}
+		if h.PortText != "" {
+			text, err := field("port", h.PortText)
+			if err != nil {
+				return nil, err
+			}
+			p, err := strconv.Atoi(strings.TrimSpace(text))
+			if err != nil || p < 1 || p > 65535 {
+				return nil, fmt.Errorf("%s: port %q is not a port", where, text)
+			}
+			h.Port, h.PortText = p, ""
 		}
 		if h.Port == 0 {
 			h.Port = DefaultPort

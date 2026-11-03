@@ -24,6 +24,8 @@ func TestDecodeRefusesARouteTaskThatCannotWork(t *testing.T) {
 		{"no routes at all", "tasks:\n  t: {route: q, cmd: a}\n", "declares no routes"},
 		{"a hop with no host", "routes:\n  r: [{user: me}]\n", "needs a `host:`"},
 		{"a port out of range", "routes:\n  r: [{host: h, port: 70000}]\n", "not a port"},
+		{"a port that is a word", "routes:\n  r: [{host: h, port: ssh}]\n", `port "ssh" is not a number`},
+		{"a port that is a list", "routes:\n  r: [{host: h, port: [22]}]\n", "a number or a template"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Decode([]byte(tc.body))
@@ -82,5 +84,24 @@ func TestReferencesReadTheSameEverywhere(t *testing.T) {
 		if ns, name := RouteRef(tc.f, tc.ref); ns != tc.ns || name != tc.name {
 			t.Errorf("RouteRef(%q, %q) = %q %q, want %q %q", tc.f.Namespace, tc.ref, ns, name, tc.ns, tc.name)
 		}
+	}
+}
+
+// A hop's port may be a template or a `$VAR`, kept as text until the route is
+// used; a plain number, quoted or not, is read as the port at once.
+func TestHopPortTemplateIsKeptForLater(t *testing.T) {
+	f, err := Decode([]byte("routes:\n  r:\n    - {host: '{{.LAB.host}}', port: '{{.LAB.port}}'}\n    - {host: h, port: '2222'}\n    - {host: h, port: $PORT}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hops := f.Routes["r"].Hops
+	if hops[0].Host != "{{.LAB.host}}" || hops[0].PortText != "{{.LAB.port}}" || hops[0].Port != 0 {
+		t.Errorf("hop 1 = %+v", hops[0])
+	}
+	if hops[1].Port != 2222 || hops[1].PortText != "" {
+		t.Errorf("hop 2 = %+v", hops[1])
+	}
+	if hops[2].PortText != "$PORT" {
+		t.Errorf("hop 3 = %+v", hops[2])
 	}
 }
