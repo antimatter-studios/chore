@@ -1,6 +1,7 @@
 package global
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,14 +166,14 @@ func TestDirHonoursXDGAndFallsBack(t *testing.T) {
 func TestPrepareHopsFillsDefaultsAndExpands(t *testing.T) {
 	env := map[string]string{"HOMELAB": "h.example.com"}
 	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
-	hops, err := PrepareHops("pi", []chorefile.Hop{{Host: "$HOMELAB"}}, lookup)
+	hops, err := PrepareHops("pi", []chorefile.Hop{{Host: "$HOMELAB"}}, nil, lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if hops[0].Host != "h.example.com" || hops[0].Port != 22 || hops[0].User == "" {
 		t.Errorf("hop = %+v", hops[0])
 	}
-	if _, err := PrepareHops("pi", []chorefile.Hop{{Host: "$NOPE"}}, lookup); err == nil || !strings.Contains(err.Error(), "$NOPE is not set") {
+	if _, err := PrepareHops("pi", []chorefile.Hop{{Host: "$NOPE"}}, nil, lookup); err == nil || !strings.Contains(err.Error(), "$NOPE is not set") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -191,5 +192,34 @@ func TestExpand(t *testing.T) {
 		if got, err := Expand("t", in, lookup); err != nil || got != want {
 			t.Errorf("Expand(%q) = %q, %v; want %q", in, got, err, want)
 		}
+	}
+}
+
+// A hop's host, user and port can be templates, rendered in the task's scope —
+// which is how a route reads its hosts from a config file variable. A port that
+// renders to something other than a port is an error naming the hop.
+func TestPrepareHopsRendersTemplates(t *testing.T) {
+	vals := map[string]string{"{{.LAB.host}}": "192.0.2.7", "{{.LAB.user}}": "chris", "{{.LAB.port}}": "2222", "{{.BAD}}": "http"}
+	render := func(s string) (string, error) {
+		if v, ok := vals[s]; ok {
+			return v, nil
+		}
+		return "", fmt.Errorf("no key in %s", s)
+	}
+	lookup := func(string) (string, bool) { return "", false }
+	hops, err := PrepareHops("lan", []chorefile.Hop{{Host: "{{.LAB.host}}", User: "{{.LAB.user}}", PortText: "{{.LAB.port}}"}}, render, lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := hops[0]; h.Host != "192.0.2.7" || h.User != "chris" || h.Port != 2222 || h.PortText != "" {
+		t.Errorf("hop = %+v", h)
+	}
+	_, err = PrepareHops("lan", []chorefile.Hop{{Host: "x", PortText: "{{.BAD}}"}}, render, lookup)
+	if err == nil || !strings.Contains(err.Error(), "route lan, hop 1") || !strings.Contains(err.Error(), `port "http" is not a port`) {
+		t.Errorf("bad port err = %v", err)
+	}
+	_, err = PrepareHops("lan", []chorefile.Hop{{Host: "{{.LAB.missing}}"}}, render, lookup)
+	if err == nil || !strings.Contains(err.Error(), "route lan, hop 1: host") {
+		t.Errorf("render err = %v", err)
 	}
 }

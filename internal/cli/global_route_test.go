@@ -163,3 +163,53 @@ func TestADependencyCycleIsRefusedAtLoad(t *testing.T) {
 	checkCode(t, got, 1)
 	checkContains(t, got, "stderr", got.stderr, "cycle", "task a", "task b")
 }
+
+// A route can read its hop from a config file variable: the code says where the
+// host comes from, the file says what it is, and the task reaches it.
+func TestARouteReadsItsHopFromAConfigFile(t *testing.T) {
+	sock, pub := sshtest.Agent(t)
+	server := sshtest.NewServer(t, pub)
+	old := dialerOverride
+	dialerOverride = &global.Dialer{AgentSock: sock, KnownHosts: sshtest.KnownHosts(t, server)}
+	t.Cleanup(func() { dialerOverride = old })
+	hop := sshtest.Hop(t, server)
+
+	dir := writeTree(t, map[string]string{
+		"lab.json": fmt.Sprintf(`{"lan": {"host": %q, "port": %d}, "user": %q}`, hop.Host, hop.Port, hop.User),
+		"chores.yml": `
+vars:
+  LAB: {json_file: lab.json}
+routes:
+  r: [ { host: '{{.LAB.lan.host}}', port: '{{.LAB.lan.port}}', user: '{{.LAB.user}}' } ]
+tasks:
+  there: { route: r, cmd: [hostname] }
+`,
+	})
+	got := runMain(t, dir, "there")
+	checkCode(t, got, 0)
+	if n := len(server.Commands()); n != 1 {
+		t.Fatalf("the far end ran %d commands, want 1 (stderr: %s)", n, got.stderr)
+	}
+}
+
+// A route whose config file lacks the key it reads fails before dialling,
+// naming the route, the hop and the key.
+func TestARouteWithAMissingConfigKeyFailsBeforeDialling(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"lab.json": `{"lan": {"host": "192.0.2.1"}}`,
+		"chores.yml": `
+vars:
+  LAB: {json_file: lab.json}
+routes:
+  r: [ { host: '{{.LAB.lan.host}}', port: '{{.LAB.lan.port}}' } ]
+tasks:
+  there: { route: r, cmd: [hostname] }
+`,
+	})
+	got := runMain(t, dir, "there")
+	if got.code == 0 {
+		t.Fatal("a route with a missing port key ran")
+	}
+	checkContains(t, got, "stderr", got.stderr, "route r, hop 1: port")
+	checkContains(t, got, "stderr", got.stderr, "port")
+}

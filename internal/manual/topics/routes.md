@@ -1,5 +1,5 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
-<!-- sources: internal/chorefile/routes.go:13 -->
+<!-- sources: internal/chorefile/routes.go:14 -->
 ---
 title: Routes
 summary: running a task's steps over ssh, forwarding a port, and choosing a route
@@ -60,6 +60,24 @@ In an argv step, `$VAR` is expanded here, from the task's variables and chore's
 environment, and an unset one is an error rather than an empty string. `$$` is
 a literal `$`. The same rule applies to hop hosts and users and to `forward:`
 addresses.
+
+## Hops from config
+
+A hop's `host:`, `user:` and `port:` may also be templates, rendered when the
+route is used, in the scope of the task using it. With a config file
+variable, the hosts live in config and the route stays code:
+
+```yaml
+vars:
+  LAB: {yaml_file: '{{.TASKFILE_DIR}}/../homelab.yaml'}
+routes:
+  lan:
+    - {host: '{{.LAB.lan.host}}', port: '{{.LAB.lan.port}}', user: '{{.LAB.user}}'}
+```
+
+A port that renders to anything but a port, a host that renders empty, and a
+key the config file does not have are errors naming the route and the hop,
+before anything is dialled.
 
 ## Each hop is resolved FROM THE PREVIOUS HOP
 
