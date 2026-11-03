@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Config files as variables: `json_file:` and `yaml_file:`.**
+  `PROFILES: {json_file: '{{.TASKFILE_DIR}}/../profiles.json'}` reads a file
+  chore parses itself, so a task stops shelling out to jq to read its config.
+  Templates get the tree (`{{.PROFILES.work.directory}}`, `range`, `index`), the
+  environment gets compact JSON in the file's own order, and `for:` walks the
+  top level. A key the file lacks is an error naming it; `index` probes an
+  optional one. A missing file is an error naming the variable and path, and
+  `?` before the path makes it an empty object instead. Templates with no file
+  variable in scope behave exactly as before. See `chore help variables`.
+
 ## v0.19.0
 
 - **Loops: `for:` on a step.** `- for: [a, b]`, or `- for: {var: NAME}`, runs a

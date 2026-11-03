@@ -130,6 +130,18 @@ its handler. Specified under [`timeout:` — for a task that never
 ends](#timeout--for-a-task-that-never-ends), next to the hooks it is deliberately
 not one of.
 
+**chore-only extension — config files**: `{json_file: PATH}` and `{yaml_file:
+PATH}` variables read a file, parsed by chore, into a tree. Templates read the
+tree (`{{.P.a.b}}`, `range`, `index`); with a file variable in scope the
+template data is `map[string]any`, every root name the template reads is
+present (`""` when unset, so missing variables still render empty), and a key
+missing inside a file is an error. Without one, templates see strings exactly as
+before. The environment gets the file as compact JSON in written order; `for:`
+walks its top-level keys or items. The path is a template, relative to the
+chorefile's directory; a missing file is an error unless the path starts with
+`?`, which gives an empty object. A file that does not parse is always an
+error. The two keys never guess the format from the extension.
+
 **Loops**: `for:` on a step, in go-task's spelling — a literal list, or `{var:
 NAME}` over a list, a `{map: …}` (`{{.KEY}}`/`{{.ITEM}}`, in written order) or a
 string split on whitespace or `split:`, with `as:` to rename the item. Items run

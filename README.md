@@ -191,6 +191,11 @@ real shell — with real `pipefail` — possible.
   Items run in order, the first failure stops the loop and names the item, and
   a misspelt variable is an error rather than a loop that does nothing.
   `chore help loops`.
+- **Config files are variables.** `PROFILES: {json_file: profiles.json}` (or
+  `yaml_file:`) reads a file chore parses itself: templates walk it
+  (`{{.PROFILES.work.directory}}`), the environment gets it as JSON, and `for:`
+  walks its top level. A missing file is an error naming it; `?` before the
+  path makes it optional. `chore help variables`.
 - **`cache:` replays an answer instead of asking again.** `cache: 5m` on a task
   that reads something remote records what a successful run printed and, for
   five minutes, prints that instead of running it — deps and hooks included.
