@@ -10,7 +10,7 @@ import (
 	"github.com/antimatter-studios/chore/internal/chorefile"
 )
 
-// cacheFixture is a fixture whose runner keeps replays under a directory of its
+// cacheFixture is a fixture whose runner keeps cache entries under a directory of its
 // own and reads a clock the test moves.
 func cacheFixture(t *testing.T, tasks map[string]*chorefile.Task) (*fixture, *time.Time) {
 	t.Helper()
@@ -35,7 +35,7 @@ func (f *fixture) since(mark int) string {
 	return f.out.String()[mark:]
 }
 
-// entries counts the replay files under the cache directory.
+// entries counts the cache entries under the cache directory.
 func entries(t *testing.T, dir string) int {
 	t.Helper()
 	n := 0
@@ -58,6 +58,26 @@ func entries(t *testing.T, dir string) int {
 }
 
 const minute = chorefile.Duration(time.Minute)
+
+// Entries live in chore/cache/<chorefile>/<key>.cache, named for what they are.
+// The folder was chore/replay/ until v0.19.0; nothing reads or writes it now.
+func TestCacheEntriesLiveInChoreCache(t *testing.T) {
+	f, _ := cacheFixture(t, map[string]*chorefile.Task{
+		"queue": {Cache: 5 * minute, Cmds: steps("echo the answer")},
+	})
+	f.mustRun("queue", nil, nil)
+
+	found, err := filepath.Glob(filepath.Join(f.r.CacheDir, "chore", "cache", "*", "*.cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Errorf("entries under chore/cache/*/*.cache = %v, want exactly one", found)
+	}
+	if old, _ := filepath.Glob(filepath.Join(f.r.CacheDir, "chore", "replay")); len(old) != 0 {
+		t.Errorf("an entry was written under the old chore/replay folder: %v", old)
+	}
+}
 
 func TestCacheReplaysWithinItsLifetime(t *testing.T) {
 	f, _ := cacheFixture(t, map[string]*chorefile.Task{

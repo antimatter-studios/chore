@@ -191,11 +191,11 @@ real shell — with real `pipefail` — possible.
   Items run in order, the first failure stops the loop and names the item, and
   a misspelt variable is an error rather than a loop that does nothing.
   `chore help loops`.
-- **`cache:` replays an answer instead of asking again.** `cache: 5m` on a task
+- **`cache:` reuses an answer instead of asking again.** `cache: 5m` on a task
   that reads something remote records what a successful run printed and, for
   five minutes, prints that instead of running it — deps and hooks included.
   A failure is never kept, different arguments are different answers, and
-  `--force` runs it anyway. Replays live in `~/.cache/chore/replay`.
+  `--force` runs it anyway. Entries live in `~/.cache/chore/cache`.
   `chore help cache`.
 - **`confirm:` asks a person before the work starts.** The question goes last —
   after preconditions, `before:`, the up-to-date check and `deps:` — so a

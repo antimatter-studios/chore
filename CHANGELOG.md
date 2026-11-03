@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`cache:` entries live in `~/.cache/chore/cache`, not `chore/replay`.**
+  The folder is named for what it is. Entries are now
+  `$XDG_CACHE_HOME/chore/cache/<chorefile>/<key>.cache` (or under
+  `~/.cache`). The old `chore/replay` folder is no longer read or written; an
+  entry lives only minutes, so nothing is migrated, and the old folder can be
+  deleted.
+
 ## v0.19.0
 
 - **Loops: `for:` on a step.** `- for: [a, b]`, or `- for: {var: NAME}`, runs a

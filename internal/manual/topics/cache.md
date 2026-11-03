@@ -1,12 +1,12 @@
 <!-- Generated from `chore:manual` comments. Do not edit; run `chore manual`. -->
 <!-- sources: internal/run/cache.go:61 -->
 ---
-title: Replaying an answer
-summary: cache: — a task's output, replayed for a lifetime instead of run again
+title: Caching an answer
+summary: cache: — a task's output, kept for a lifetime instead of run again
 aliases: replay replays ttl lifetime
 ---
 
-# Replaying an answer
+# Caching an answer
 
 ```yaml
 queue:list:
@@ -22,28 +22,28 @@ stdout is recorded. For the next five minutes the task is not run: chore
 prints the recording and exits 0.
 
 - **Only a success is kept.** A run that fails records nothing, so the next
-  call runs the task again rather than replaying a network error as the
+  call runs the task again rather than serving a network error as the
   answer for five minutes.
-- **The whole task is replayed.** Its `deps:`, hooks and `- task:` steps are
-  recorded with it and are not run on a replay either. A task running
-  alongside it is never recorded into its replay.
-- **Different arguments are different answers.** The replay is kept per
+- **The whole task is cached.** Its `deps:`, hooks and `- task:` steps are
+  recorded with it and are not run when the answer comes from the cache
+  either. A task running alongside it is never recorded into its entry.
+- **Different arguments are different answers.** An entry is kept per
   chorefile, task, arguments — what follows `--` included — the directory
   chore was run from, declared variables, and the text of its `cmds:`,
-  `deps:` and `before:`. Editing the task makes the old replays unreachable.
+  `deps:` and `before:`. Editing the task makes the old entries unreachable.
 - **The environment is not part of it.** Variables that differ from one
   shell to the next must not make every call miss, so the process
   environment is left out. A task whose answer depends on an environment
-  variable should declare it in `vars:`, where the replay can see it.
-- **stderr is not replayed.** Warnings belong to the run that printed them.
+  variable should declare it in `vars:`, where the cache key can see it.
+- **stderr is not cached.** Warnings belong to the run that printed them.
 
 `--force` runs the task anyway and replaces the recording; `--dry` runs
-nothing and keeps nothing. A replay is for tasks that read: a task whose
+nothing and keeps nothing. `cache:` is for tasks that read: a task whose
 point is a side effect must not declare one. `cache:` with `interactive:` or
 `confirm:` is refused when the file loads — there is no terminal session to
 play back, and a replayed question is a question not asked.
 
-Replays live in the user's cache directory — `$XDG_CACHE_HOME/chore/replay`,
-or `~/.cache/chore/replay` — one file each, written whole or not at all, and
-a project's expired replays are removed whenever it writes a new one. With
+Entries live in the user's cache directory — `$XDG_CACHE_HOME/chore/cache`,
+or `~/.cache/chore/cache` — one file each, written whole or not at all, and
+a project's expired entries are removed whenever it writes a new one. With
 neither directory known, the task simply runs.

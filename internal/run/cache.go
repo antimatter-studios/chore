@@ -1,23 +1,23 @@
 package run
 
-// cache.go — `cache:`, a task's recorded stdout replayed for its lifetime.
+// cache.go — `cache:`, a task's recorded stdout kept and reused for its lifetime.
 //
 // chore is a single-shot command, so what one run learns has to be on disk for
 // the next to find. A task that declares `cache: 5m` is run as it always is,
 // its stdout streaming live, while everything it writes there is copied aside.
 // A run that succeeds is kept; for the next five minutes the task is not run
 // at all, and chore prints the copy instead. A run that fails keeps nothing,
-// so a failure is never replayed as an answer.
+// so a failure is never served as an answer.
 //
 // WHERE. One file per entry, under the user's cache directory:
 //
-//	$XDG_CACHE_HOME/chore/replay/<chorefile>/<key>.replay
+//	$XDG_CACHE_HOME/chore/cache/<chorefile>/<key>.cache
 //
 // <chorefile> is a hash of the chorefile's path, so two projects' `queue:list`
 // never meet. <key> is a hash of the task's name, its declared variables and
 // arguments and chore's own (CLI_ARGS, USER_WORKING_DIR, ...: Scope.Declared —
 // never the process environment, which differs from one shell to the next) and
-// the steps a replay stands in for: its cmds, deps and before. Editing any of
+// the steps a cached answer stands in for: its cmds, deps and before. Editing any of
 // those makes the old entries unreachable.
 //
 // The file is one JSON line — task, created, expires, chore version — and then
@@ -59,12 +59,12 @@ import (
 )
 
 // chore:manual cache
-// title: Replaying an answer
-// summary: cache: — a task's output, replayed for a lifetime instead of run again
+// title: Caching an answer
+// summary: cache: — a task's output, kept for a lifetime instead of run again
 // aliases: replay replays ttl lifetime
 // order: 10
 //
-// # Replaying an answer
+// # Caching an answer
 //
 // ```yaml
 // queue:list:
@@ -80,37 +80,37 @@ import (
 // prints the recording and exits 0.
 //
 // - **Only a success is kept.** A run that fails records nothing, so the next
-//   call runs the task again rather than replaying a network error as the
+//   call runs the task again rather than serving a network error as the
 //   answer for five minutes.
-// - **The whole task is replayed.** Its `deps:`, hooks and `- task:` steps are
-//   recorded with it and are not run on a replay either. A task running
-//   alongside it is never recorded into its replay.
-// - **Different arguments are different answers.** The replay is kept per
+// - **The whole task is cached.** Its `deps:`, hooks and `- task:` steps are
+//   recorded with it and are not run when the answer comes from the cache
+//   either. A task running alongside it is never recorded into its entry.
+// - **Different arguments are different answers.** An entry is kept per
 //   chorefile, task, arguments — what follows `--` included — the directory
 //   chore was run from, declared variables, and the text of its `cmds:`,
-//   `deps:` and `before:`. Editing the task makes the old replays unreachable.
+//   `deps:` and `before:`. Editing the task makes the old entries unreachable.
 // - **The environment is not part of it.** Variables that differ from one
 //   shell to the next must not make every call miss, so the process
 //   environment is left out. A task whose answer depends on an environment
-//   variable should declare it in `vars:`, where the replay can see it.
-// - **stderr is not replayed.** Warnings belong to the run that printed them.
+//   variable should declare it in `vars:`, where the cache key can see it.
+// - **stderr is not cached.** Warnings belong to the run that printed them.
 //
 // `--force` runs the task anyway and replaces the recording; `--dry` runs
-// nothing and keeps nothing. A replay is for tasks that read: a task whose
+// nothing and keeps nothing. `cache:` is for tasks that read: a task whose
 // point is a side effect must not declare one. `cache:` with `interactive:` or
 // `confirm:` is refused when the file loads — there is no terminal session to
 // play back, and a replayed question is a question not asked.
 //
-// Replays live in the user's cache directory — `$XDG_CACHE_HOME/chore/replay`,
-// or `~/.cache/chore/replay` — one file each, written whole or not at all, and
-// a project's expired replays are removed whenever it writes a new one. With
+// Entries live in the user's cache directory — `$XDG_CACHE_HOME/chore/cache`,
+// or `~/.cache/chore/cache` — one file each, written whole or not at all, and
+// a project's expired entries are removed whenever it writes a new one. With
 // neither directory known, the task simply runs.
 
 // recordKey carries, in a context, the writer a cached task's output goes to.
 type recordKey struct{}
 
-// replayMeta is the first line of an entry.
-type replayMeta struct {
+// cacheMeta is the first line of an entry.
+type cacheMeta struct {
 	Task    string    `json:"task"`
 	Created time.Time `json:"created"`
 	Expires time.Time `json:"expires"`
@@ -146,17 +146,17 @@ func (r *Runner) now() time.Time {
 	return time.Now()
 }
 
-// cached runs t through its replay: the recording when one is fresh, otherwise
+// cached runs t through its cache entry: the recording when one is fresh, otherwise
 // the task, recorded.
 func (r *Runner) cached(ctx context.Context, t *chorefile.Task, scope *tmpl.Scope) error {
 	if r.CacheDir == "" || r.DryRun || outputDiscarded(ctx) {
 		return r.runTaskBody(ctx, t, scope)
 	}
-	dir := filepath.Join(r.CacheDir, "chore", "replay", hashOf(t.File.Path))
-	entry := filepath.Join(dir, replayKey(t, scope)+".replay")
+	dir := filepath.Join(r.CacheDir, "chore", "cache", hashOf(t.File.Path))
+	entry := filepath.Join(dir, entryKey(t, scope)+".cache")
 
 	if !r.Force {
-		if body, ok := r.readReplay(entry); ok {
+		if body, ok := r.readEntry(entry); ok {
 			_, err := r.output(ctx).Write(body)
 			return err
 		}
@@ -177,15 +177,15 @@ func (r *Runner) cached(ctx context.Context, t *chorefile.Task, scope *tmpl.Scop
 		rec.failed = true
 	}
 	if runErr == nil && !rec.failed {
-		r.keepReplay(dir, entry, tmp.Name(), t)
+		r.keepEntry(dir, entry, tmp.Name(), t)
 	}
 	return runErr
 }
 
-// readReplay returns an entry's recorded bytes when it exists and is fresh.
+// readEntry returns an entry's recorded bytes when it exists and is fresh.
 // Anything else — missing, unreadable, malformed, expired, or written in what
 // is now the future by a clock that moved — is no entry.
-func (r *Runner) readReplay(entry string) ([]byte, bool) {
+func (r *Runner) readEntry(entry string) ([]byte, bool) {
 	data, err := os.ReadFile(entry)
 	if err != nil {
 		return nil, false
@@ -194,7 +194,7 @@ func (r *Runner) readReplay(entry string) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	var meta replayMeta
+	var meta cacheMeta
 	if json.Unmarshal(head, &meta) != nil {
 		return nil, false
 	}
@@ -205,13 +205,13 @@ func (r *Runner) readReplay(entry string) ([]byte, bool) {
 	return body, true
 }
 
-// keepReplay writes the entry — its metadata line, then the recording — and
+// keepEntry writes the entry — its metadata line, then the recording — and
 // renames it into place, then removes the chorefile's expired entries. Every
 // failure here is silent: the task has already run and answered, and an entry
 // that could not be kept is only a run that will happen again.
-func (r *Runner) keepReplay(dir, entry, recording string, t *chorefile.Task) {
+func (r *Runner) keepEntry(dir, entry, recording string, t *chorefile.Task) {
 	now := r.now()
-	head, err := json.Marshal(replayMeta{
+	head, err := json.Marshal(cacheMeta{
 		Task:    t.Name,
 		Created: now,
 		Expires: now.Add(time.Duration(t.Cache)),
@@ -239,28 +239,28 @@ func (r *Runner) keepReplay(dir, entry, recording string, t *chorefile.Task) {
 	if os.Rename(out.Name(), entry) != nil {
 		return
 	}
-	r.pruneReplays(dir, entry)
+	r.pruneEntries(dir, entry)
 }
 
-// pruneReplays removes the expired entries in dir, except the one just written.
-func (r *Runner) pruneReplays(dir, keep string) {
+// pruneEntries removes the expired entries in dir, except the one just written.
+func (r *Runner) pruneEntries(dir, keep string) {
 	names, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, n := range names {
 		path := filepath.Join(dir, n.Name())
-		if n.IsDir() || path == keep || !strings.HasSuffix(n.Name(), ".replay") {
+		if n.IsDir() || path == keep || !strings.HasSuffix(n.Name(), ".cache") {
 			continue
 		}
-		if _, fresh := r.readReplay(path); !fresh {
+		if _, fresh := r.readEntry(path); !fresh {
 			os.Remove(path)
 		}
 	}
 }
 
-// replayKey is the hash of what makes two runs of t the same question.
-func replayKey(t *chorefile.Task, scope *tmpl.Scope) string {
+// entryKey is the hash of what makes two runs of t the same question.
+func entryKey(t *chorefile.Task, scope *tmpl.Scope) string {
 	vars := scope.Declared()
 	names := make([]string, 0, len(vars))
 	for k := range vars {
