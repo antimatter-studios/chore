@@ -174,6 +174,11 @@ real shell — with real `pipefail` — possible.
   Required-ness follows from the declaration — no default means required, a default
   in `vars:` means optional, and `vars: {x: ""}` means optional with empty being
   meaningful. No marker syntax: the default says it.
+- **`passthrough: true` on a task** makes it a wrapper, read the way `sudo` reads
+  its command: `chore pulumi up --yes -c key=value` hands every word after the
+  task name to `{{.CLI_ARGS}}` with no `--`, `--help` included. Declared `args:`
+  fill from the first words. Opt-in, because for every other task the strict
+  reading is what stops a typo or a dropped word passing silently.
 - **`chore_min_version:` on the file** states the oldest chore that may run it.
   Optional; absent means no restriction. For a file whose safety depends on the
   runner — chore < 0.4.0 rebound a mistyped flag onto another one — it is the

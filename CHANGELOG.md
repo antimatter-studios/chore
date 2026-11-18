@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.20.0
+
+- **Wrapper tasks: `passthrough: true`.** A task that exists to wrap one
+  command can take its words without `--`: chore stops reading at the task
+  name, as `sudo` does, so `chore pulumi up --yes -c key=value` hands
+  `up --yes -c key=value` to `{{.CLI_ARGS}}` whole. Declared `args:` fill from
+  the first words, positionally. In such a task `NAME=value` is not a chore
+  variable, `--param` binds nothing, and `--help` belongs to the wrapped
+  command; `chore --help <task>` still describes it. A `--` where CLI_ARGS would
+  begin is dropped as before, so `chore pulumi -- up` keeps working, and one
+  further along is passed on. Every other task keeps the strict reading. See
+  `chore help invocation`.
+- **Upgrading:** an older chore refuses `passthrough:` as an unknown field, so
+  a file using it should also set `chore_min_version: 0.20.0`.
+
 ## v0.19.0
 
 - **Loops: `for:` on a step.** `- for: [a, b]`, or `- for: {var: NAME}`, runs a

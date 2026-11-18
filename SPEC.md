@@ -954,6 +954,12 @@ chore [flags] <task> [args...] [-- extra]
 Everything after `--` becomes `.CLI_ARGS`. Unknown task → error listing near
 matches. No task → `--list`.
 
+A task with `passthrough: true` reads its words like `sudo`: they fill its
+declared `args:` positionally and the rest become `.CLI_ARGS` as typed, with no
+`--` needed. No `NAME=value`, `--param` or `--help` is read from them; `chore
+--help <task>` still describes the task. A `--` at or before where `.CLI_ARGS`
+begins is dropped; one later is kept.
+
 ## Acceptance
 
 The binary must run rest-mail's Taskfile **unmodified**. These are the criteria
