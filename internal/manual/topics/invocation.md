@@ -28,3 +28,32 @@ With no task named, `chore` lists what is available — the same answer as
 `chore <task> --help` describes that task and **runs nothing**. It works in
 either position: `chore --help up` and `chore up --help` are the same
 question.
+
+## Wrapping a command: `passthrough: true`
+
+`--` is what keeps a task's words apart from chore's. Without it chore reads
+`key=value` as one of its own variables and answers `--help` itself, and a
+task that never reads CLI_ARGS would drop the words silently, so it is the
+rule everywhere. A task that exists to wrap one command can opt out:
+
+```yaml
+pulumi:
+  passthrough: true
+  cmds: ['pulumi {{.CLI_ARGS}}']
+```
+
+Chore then stops reading at the task name, the way `sudo` and `env` stop at
+the command they run:
+
+    chore pulumi up --yes -c key=value     # CLI_ARGS: up --yes -c key=value
+    chore pulumi up --help                 # pulumi's help, not chore's
+    chore --help pulumi                    # chore's description of the task
+
+Declared `args:` fill from the first words, positionally — `--param` and
+`NAME=value` are not read — and CLI_ARGS is everything after them. A `--`
+where CLI_ARGS would begin is still chore's separator and is dropped, so
+`chore pulumi -- up --yes` means the same; one further along is passed on,
+so `chore pulumi config set -- key -1` reaches pulumi with its `--`.
+
+CLI_ARGS stays one string joined with spaces, as it is after `--`: a quoted
+word with a space in it does not survive as one word.

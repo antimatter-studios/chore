@@ -65,6 +65,35 @@ var BuildDate = ""
 // `chore <task> --help` describes that task and **runs nothing**. It works in
 // either position: `chore --help up` and `chore up --help` are the same
 // question.
+//
+// ## Wrapping a command: `passthrough: true`
+//
+// `--` is what keeps a task's words apart from chore's. Without it chore reads
+// `key=value` as one of its own variables and answers `--help` itself, and a
+// task that never reads CLI_ARGS would drop the words silently, so it is the
+// rule everywhere. A task that exists to wrap one command can opt out:
+//
+// ```yaml
+// pulumi:
+//   passthrough: true
+//   cmds: ['pulumi {{.CLI_ARGS}}']
+// ```
+//
+// Chore then stops reading at the task name, the way `sudo` and `env` stop at
+// the command they run:
+//
+//     chore pulumi up --yes -c key=value     # CLI_ARGS: up --yes -c key=value
+//     chore pulumi up --help                 # pulumi's help, not chore's
+//     chore --help pulumi                    # chore's description of the task
+//
+// Declared `args:` fill from the first words, positionally — `--param` and
+// `NAME=value` are not read — and CLI_ARGS is everything after them. A `--`
+// where CLI_ARGS would begin is still chore's separator and is dropped, so
+// `chore pulumi -- up --yes` means the same; one further along is passed on,
+// so `chore pulumi config set -- key -1` reaches pulumi with its `--`.
+//
+// CLI_ARGS stays one string joined with spaces, as it is after `--`: a quoted
+// word with a space in it does not survive as one word.
 
 // chore:manual flags
 // title: Flags
@@ -316,7 +345,13 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 	// positional argument and `chore instance:up --help` STARTED a stack. A flag
 	// that reads as "tell me about this" must never do anything. Text after `--` is
 	// left alone, so a task that genuinely needs to pass --help along still can.
-	if opts.help || wantsHelp(rest[1:]) {
+	//
+	// A `passthrough:` task is the exception to all of it: the words after its
+	// name are the wrapped command's, `--help` included, so only `chore --help
+	// <task>` describes it.
+	task, known := project.Tasks[rest[0]]
+	passthrough := known && task.Passthrough
+	if opts.help || (!passthrough && wantsHelp(rest[1:])) {
 		taskHelp(out, project, rest[0])
 		return 0
 	}
@@ -329,10 +364,17 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 		return 1
 	}
 
-	args, callVars, err := splitArgs(rest[1:], declaredParams(project, rest[0]))
-	if err != nil {
-		errUI.Errorf("%v", err)
-		return 2
+	var args []string
+	var callVars map[string]string
+	if passthrough {
+		args, r.CLIArgs = passthroughWords(task, rest[1:], opts)
+	} else {
+		var err error
+		args, callVars, err = splitArgs(rest[1:], declaredParams(project, rest[0]))
+		if err != nil {
+			errUI.Errorf("%v", err)
+			return 2
+		}
 	}
 
 	// The same NAME=value pairs are ALSO global for the run, so they survive into
@@ -466,6 +508,10 @@ type options struct {
 	list, dry, force, verbose, help, version, noColor, noLifecycle bool
 	yes                                                            bool
 	cliArgs                                                        []string
+	// dashDash records that `--` was typed at all. cliArgs alone cannot say:
+	// `chore t --` and `chore t` both leave it empty, and a passthrough task has
+	// to know where the `--` stood to decide whose it was.
+	dashDash bool
 }
 
 // parseFlags reads flags up to the first non-flag word, which is the task name.
@@ -479,7 +525,7 @@ func parseFlags(args []string) (options, []string, error) {
 	for ; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			o.cliArgs = args[i+1:]
+			o.cliArgs, o.dashDash = args[i+1:], true
 			return o, rest, nil
 		}
 		if !strings.HasPrefix(a, "-") {
@@ -534,12 +580,34 @@ func parseFlags(args []string) (options, []string, error) {
 
 	for ; i < len(args); i++ {
 		if args[i] == "--" {
-			o.cliArgs = args[i+1:]
+			o.cliArgs, o.dashDash = args[i+1:], true
 			break
 		}
 		rest = append(rest, args[i])
 	}
 	return o, rest, nil
+}
+
+// passthroughWords reads the words after a `passthrough:` task's name the way
+// `sudo` reads its command: the first fill the task's declared parameters
+// positionally, and the rest are CLI_ARGS exactly as typed.
+//
+// parseFlags has already split the line at the first `--`, so this decides
+// whose that `--` was. Where CLI_ARGS would begin, or before, it is chore's
+// separator as for any task and is dropped, so the spelling every other task
+// needs — `chore pulumi -- up --yes` — keeps working. Further along it is the
+// wrapped command's own: `chore pulumi config set -- key -1` must reach pulumi
+// with its `--`.
+func passthroughWords(t *chorefile.Task, words []string, opts options) ([]string, string) {
+	all := append([]string(nil), words...)
+	if opts.dashDash {
+		if len(all) > len(t.Args) {
+			all = append(all, "--")
+		}
+		all = append(all, opts.cliArgs...)
+	}
+	n := min(len(t.Args), len(all))
+	return all[:n], strings.Join(all[n:], " ")
 }
 
 // choreYes reads CHORE_YES, the environment spelling of --yes.
@@ -1091,6 +1159,10 @@ func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
 	if t.Desc != "" {
 		u.Dim("%s", "  "+t.Desc)
 	}
+	if t.Passthrough {
+		passthroughHelp(u, t, name)
+		return
+	}
 	if len(t.Args) == 0 {
 		u.Dim("\n  takes no arguments")
 		return
@@ -1155,6 +1227,32 @@ func taskHelp(u *ui.UI, p *chorefile.Project, name string) {
 	u.Raw("\n")
 	u.Dim("  called as:")
 	u.Detail(forms)
+}
+
+// passthroughHelp describes a `passthrough:` task. The other help would teach
+// --param and NAME=value forms this task does not read, so it has its own: the
+// parameters it fills positionally, then the words it hands on.
+func passthroughHelp(u *ui.UI, t *chorefile.Task, name string) {
+	usage := "chore " + name
+	if len(t.Args) > 0 {
+		rows := make([][2]string, 0, len(t.Args))
+		for _, a := range t.Args {
+			desc := a.Desc
+			if desc == "" {
+				desc = "(no description)"
+			}
+			usage += " <" + a.Name + ">"
+			rows = append(rows, [2]string{a.Name, "positional — " + desc})
+		}
+		u.Raw("\n")
+		u.Dim("  arguments:")
+		u.Detail(rows)
+	}
+	u.Raw("\n")
+	u.Dim("  passes every further word to {{.CLI_ARGS}} as typed, --help included")
+	u.Raw("\n")
+	u.Dim("  called as:")
+	u.Detail([][2]string{{"passthrough", usage + " <words for {{.CLI_ARGS}}>"}})
 }
 
 // manualHelp answers `chore help [topic]`: the topic list, or one page.

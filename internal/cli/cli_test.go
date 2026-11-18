@@ -170,9 +170,10 @@ func TestParseFlagsBeforeTheTaskName(t *testing.T) {
 		},
 
 		// Everything after -- is the task's, wherever -- appears.
-		{name: "dashdash before any task", args: []string{"--", "-v", "x"}, want: options{cliArgs: []string{"-v", "x"}}},
-		{name: "dashdash after the task", args: []string{"deploy", "--", "-v", "x"}, want: options{cliArgs: []string{"-v", "x"}}, rest: []string{"deploy"}},
-		{name: "dashdash with nothing after it", args: []string{"deploy", "--"}, want: options{cliArgs: []string{}}, rest: []string{"deploy"}},
+		{name: "dashdash before any task", args: []string{"--", "-v", "x"}, want: options{cliArgs: []string{"-v", "x"}, dashDash: true}},
+		{name: "dashdash after the task", args: []string{"deploy", "--", "-v", "x"}, want: options{cliArgs: []string{"-v", "x"}, dashDash: true}, rest: []string{"deploy"}},
+		// dashDash is what tells this apart from no `--` at all.
+		{name: "dashdash with nothing after it", args: []string{"deploy", "--"}, want: options{cliArgs: []string{}, dashDash: true}, rest: []string{"deploy"}},
 
 		{name: "unknown flag", args: []string{"--bogus"}, wantErr: `unknown flag "--bogus"`},
 		{name: "unknown flag before a task", args: []string{"--bogus", "up"}, wantErr: `unknown flag "--bogus"`},
@@ -969,6 +970,82 @@ tasks:
 		got := runMain(t, writeTree(t, files), "logs", "api", "--", "--tail", "10")
 		checkCode(t, got, 0)
 		checkContains(t, got, "stdout", got.stdout, "service=[api] cli=[--tail 10]")
+	})
+}
+
+// TestPassthroughTask: `passthrough: true` makes a task read its command line
+// the way `sudo` does — everything after the name is the wrapped command's, with
+// no `--` needed — while every other task keeps the strict reading.
+func TestPassthroughTask(t *testing.T) {
+	files := map[string]string{
+		"chores.yml": `version: '3'
+tasks:
+  pulumi:
+    desc: wraps a command
+    passthrough: true
+    cmds: ['echo "cli=[{{.CLI_ARGS}}]"']
+  wrap:
+    passthrough: true
+    args: [command]
+    cmds: ['echo "command=[{{.COMMAND}}] cli=[{{.CLI_ARGS}}]"']
+  plain:
+    cmds: ['echo "cli=[{{.CLI_ARGS}}]"']
+`,
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"words after the name are CLI_ARGS", []string{"pulumi", "up", "--yes"}, "cli=[up --yes]"},
+		// Any other task would keep key=value as a chore variable.
+		{"NAME=value is not a chore variable", []string{"pulumi", "up", "-c", "key=value"}, "cli=[up -c key=value]"},
+		// Any other task would answer --help itself and run nothing.
+		{"--help belongs to the wrapped command", []string{"pulumi", "up", "--help"}, "cli=[up --help]"},
+		{"a leading -- is chore's and dropped", []string{"pulumi", "--", "up", "--yes"}, "cli=[up --yes]"},
+		{"a later -- is the wrapped command's", []string{"pulumi", "config", "set", "--", "key", "-1"}, "cli=[config set -- key -1]"},
+		{"nothing after the name", []string{"pulumi"}, "cli=[]"},
+		{"declared args fill first", []string{"wrap", "stack", "ls", "--json"}, "command=[stack] cli=[ls --json]"},
+		{"declared args fill from after a leading --", []string{"wrap", "--", "up", "--yes"}, "command=[up] cli=[--yes]"},
+		{"-- where CLI_ARGS begins is dropped", []string{"wrap", "up", "--", "--yes"}, "command=[up] cli=[--yes]"},
+		{"-- inside CLI_ARGS is kept", []string{"wrap", "up", "x", "--", "y"}, "command=[up] cli=[x -- y]"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := runMain(t, writeTree(t, files), c.args...)
+			checkCode(t, got, 0)
+			checkContains(t, got, "stdout", got.stdout, c.want)
+		})
+	}
+
+	t.Run("a declared argument is still required", func(t *testing.T) {
+		got := runMain(t, writeTree(t, files), "wrap")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "needs argument(s) command")
+	})
+
+	t.Run("chore --help <task> describes it and runs nothing", func(t *testing.T) {
+		got := runMain(t, writeTree(t, files), "--help", "wrap")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout,
+			"positional — (no description)",
+			"passes every further word to {{.CLI_ARGS}}",
+			"chore wrap <command> <words for {{.CLI_ARGS}}>")
+		checkNotContains(t, got, "stdout", got.stdout, "command=[", "--command <value>", "COMMAND=<value>")
+	})
+
+	t.Run("other tasks still refuse undeclared words", func(t *testing.T) {
+		got := runMain(t, writeTree(t, files), "plain", "up", "--yes")
+		checkCode(t, got, 1)
+		checkContains(t, got, "stderr", got.stderr, "takes no arguments")
+	})
+
+	t.Run("other tasks still answer --help themselves", func(t *testing.T) {
+		got := runMain(t, writeTree(t, files), "plain", "--help")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "takes no arguments")
+		checkNotContains(t, got, "stdout", got.stdout, "cli=[")
 	})
 }
 

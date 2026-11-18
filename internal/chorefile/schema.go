@@ -462,6 +462,24 @@ type Task struct {
 	// programs can be run against the same file and diffed.
 	Args Args `yaml:"args"`
 
+	// Passthrough makes the task a wrapper, in the way `sudo` and `env` are: chore
+	// stops reading the command line at the task name. The first words fill any
+	// declared `args:` positionally, and every word after them reaches
+	// {{.CLI_ARGS}} as typed — no NAME=value variables, no --param binding, and
+	// no `--help` answered for it — so
+	//
+	//	chore pulumi up --yes -c key=value
+	//
+	// hands `up --yes -c key=value` over whole, where any other task needs
+	// `chore pulumi -- up --yes -c key=value` and would otherwise keep
+	// `key=value` as a chore variable and answer `--help` itself.
+	//
+	// Opt-in per task, because for every other task those refusals are the
+	// point: a task that does not read CLI_ARGS would drop the words silently.
+	// It governs only how the command line is read; a `- task:` call is
+	// unaffected. See `chore help invocation`.
+	Passthrough bool `yaml:"passthrough"`
+
 	Deps Deps `yaml:"deps"`
 	Cmds Cmds `yaml:"cmds"`
 
