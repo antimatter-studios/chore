@@ -278,3 +278,33 @@ func TestDryRunDoesNotDoubleItsOutputPerSelector(t *testing.T) {
 		t.Errorf("--dry printed %d bytes for 18 chained selectors", len(got.stdout))
 	}
 }
+
+func TestDottedGlobalAddress(t *testing.T) {
+	installGlobal(t, map[string]string{
+		"agents.yaml":      "tasks:\n  next:\n    cmd: echo ready\n  work:next:\n    cmd: echo nested\n",
+		"agents.work.yaml": "tasks:\n  next:\n    cmd: echo dotted\n",
+	})
+	dir := t.TempDir()
+	got := runMain(t, dir, "global.agents.next")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "ready")
+
+	got = runMain(t, dir, "global.agents.work.")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "next")
+
+	got = runMain(t, dir, "global.agents.work.next")
+	checkCode(t, got, 1)
+	checkContains(t, got, "stderr", got.stderr, "ambiguous global address", "global:agents:work:next", "global:agents.work:next")
+
+	got = runMain(t, dir, "global:agents.work:next")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "dotted")
+
+	project := writeTree(t, map[string]string{
+		"chores.yml": "tasks:\n  global.agents.next:\n    cmd: echo project\n",
+	})
+	got = runMain(t, project, "global.agents.next")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "project")
+}
