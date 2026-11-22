@@ -40,7 +40,12 @@ import (
 // chore global:                       the files installed here
 // chore global:ssh:                   the tasks in global.d/ssh.yaml
 // chore global:ssh:unlock             run one
+// chore global.ssh.unlock             run one with dots
 // ```
+//
+// Dotted shortcuts also work for listings, for example `chore global.ssh.`.
+// If a shortcut matches several addresses, chore prints the colon spellings.
+// An exact project task name takes precedence over a dotted shortcut.
 //
 // **A global file is an ordinary taskfile.** Same schema, same arguments, same
 // everything: `args:`, `vars:`, `cmds:`, hooks, `--help`, `--dry`, `--` all mean
