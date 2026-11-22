@@ -2,6 +2,7 @@ package cli
 
 import (
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/antimatter-studios/chore/internal/chorefile"
@@ -30,6 +31,26 @@ func loadGlobals() (*global.Set, error) {
 	return global.Load(dir)
 }
 
+func dottedGlobalAddresses(set *global.Set, input string) []string {
+	if input == "global." {
+		return []string{chorefile.GlobalPrefix}
+	}
+	var matches []string
+	for namespace, project := range set.Namespaces {
+		listAddress := chorefile.GlobalPrefix + namespace + ":"
+		if strings.ReplaceAll(listAddress, ":", ".") == input {
+			matches = append(matches, listAddress)
+		}
+		for address := range project.Tasks {
+			if strings.ReplaceAll(address, ":", ".") == input {
+				matches = append(matches, address)
+			}
+		}
+	}
+	slices.Sort(matches)
+	return matches
+}
+
 // globalMain answers everything under `global:`. The prefix only says which
 // file a task is in; once that file is found the task runs exactly as a
 // project's does, through runProject — arguments, flags, --help, --dry, `--`.
@@ -37,11 +58,14 @@ func loadGlobals() (*global.Set, error) {
 //	chore global:                   the files installed here
 //	chore global:homelab:           the tasks in one
 //	chore global:homelab:k3s:pods   run one
-func globalMain(stdout, stderr io.Writer, out, errUI *ui.UI, rest []string, opts options) int {
-	set, err := loadGlobals()
-	if err != nil {
-		errUI.Errorf("%v", err)
-		return 1
+func globalMain(stdout, stderr io.Writer, out, errUI *ui.UI, rest []string, opts options, set *global.Set) int {
+	if set == nil {
+		var err error
+		set, err = loadGlobals()
+		if err != nil {
+			errUI.Errorf("%v", err)
+			return 1
+		}
 	}
 	address := strings.TrimPrefix(rest[0], chorefile.GlobalPrefix)
 	ns, task, _ := strings.Cut(address, ":")

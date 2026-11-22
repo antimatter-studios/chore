@@ -23,6 +23,7 @@ import (
 
 	"github.com/antimatter-studios/chore/internal/buildinfo"
 	"github.com/antimatter-studios/chore/internal/chorefile"
+	"github.com/antimatter-studios/chore/internal/global"
 	"github.com/antimatter-studios/chore/internal/loader"
 	"github.com/antimatter-studios/chore/internal/manual"
 	"github.com/antimatter-studios/chore/internal/run"
@@ -190,6 +191,7 @@ machine-wide:
   chore global:                  the files in ~/.config/chore/global.d
   chore global:<file>:           the tasks in one
   chore global:<file>:<task>     run one from any directory, like any task
+  chore global.<file>.<task>     dotted shortcut
 
 arguments:
   A task declares its parameters and receives them positionally:
@@ -274,7 +276,26 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// machine, and it means a project that happens to define a `homelab:`
 	// namespace cannot shadow one silently.
 	if len(rest) > 0 && strings.HasPrefix(rest[0], chorefile.GlobalPrefix) {
-		return globalMain(stdout, stderr, out, errUI, rest, opts)
+		return globalMain(stdout, stderr, out, errUI, rest, opts, nil)
+	}
+
+	var globals *global.Set
+	if len(rest) > 0 && strings.HasPrefix(rest[0], "global.") {
+		var err error
+		globals, err = loadGlobals()
+		if err != nil {
+			errUI.Errorf("%v", err)
+			return 1
+		}
+		matches := dottedGlobalAddresses(globals, rest[0])
+		if len(matches) > 0 && !projectDefines(rest[0], opts.file) {
+			if len(matches) > 1 {
+				errUI.Errorf("ambiguous global address %q; use one of: %s", rest[0], strings.Join(matches, ", "))
+				return 1
+			}
+			rest[0] = matches[0]
+			return globalMain(stdout, stderr, out, errUI, rest, opts, globals)
+		}
 	}
 
 	path, err := findTaskfile(opts.file)
@@ -294,7 +315,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	// Every global file, on every run: a project task can depend on
 	// `global:ssh:unlock` or travel `route: global:homelab:pi`.
-	globals, err := loadGlobals()
+	if globals == nil {
+		globals, err = loadGlobals()
+	}
 	if err == nil {
 		err = globals.Attach(project)
 	}

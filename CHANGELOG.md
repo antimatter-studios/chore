@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.21.0
+
+- **Dotted global task addresses.** Run `chore global.agents.next` or list a
+  namespace with `chore global.agents.`. If several global addresses match,
+  chore prints the explicit colon spellings. Exact project task names take
+  precedence over dotted shortcuts.
+
 ## v0.20.0
 
 - **Wrapper tasks: `passthrough: true`.** A task that exists to wrap one
