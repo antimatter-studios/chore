@@ -281,7 +281,7 @@ func TestDryRunDoesNotDoubleItsOutputPerSelector(t *testing.T) {
 
 func TestDottedGlobalAddress(t *testing.T) {
 	installGlobal(t, map[string]string{
-		"agents.yaml":      "tasks:\n  next:\n    cmd: echo ready\n  work:next:\n    cmd: echo nested\n",
+		"agents.yaml":      "tasks:\n  next:\n    cmd: echo ready\n  work:next:\n    cmd: echo nested\n  work.next:\n    cmd: echo literal\n  work:more.last:\n    cmd: echo left\n  work.more:last:\n    cmd: echo right\n",
 		"agents.work.yaml": "tasks:\n  next:\n    cmd: echo dotted\n",
 	})
 	dir := t.TempDir()
@@ -294,8 +294,16 @@ func TestDottedGlobalAddress(t *testing.T) {
 	checkContains(t, got, "stdout", got.stdout, "next")
 
 	got = runMain(t, dir, "global.agents.work.next")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "nested")
+
+	got = runMain(t, dir, "global:agents:work.next")
+	checkCode(t, got, 0)
+	checkContains(t, got, "stdout", got.stdout, "literal")
+
+	got = runMain(t, dir, "global.agents.work.more.last")
 	checkCode(t, got, 1)
-	checkContains(t, got, "stderr", got.stderr, "ambiguous global address", "global:agents:work:next", "global:agents.work:next")
+	checkContains(t, got, "stderr", got.stderr, "ambiguous global address", "global:agents:work:more.last", "global:agents:work.more:last")
 
 	got = runMain(t, dir, "global:agents.work:next")
 	checkCode(t, got, 0)

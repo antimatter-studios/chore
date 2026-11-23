@@ -36,15 +36,25 @@ func dottedGlobalAddresses(set *global.Set, input string) []string {
 		return []string{chorefile.GlobalPrefix}
 	}
 	var matches []string
-	for namespace, project := range set.Namespaces {
-		listAddress := chorefile.GlobalPrefix + namespace + ":"
-		if strings.ReplaceAll(listAddress, ":", ".") == input {
-			matches = append(matches, listAddress)
+	bestDepth := 0
+	addMatch := func(address string) {
+		if strings.ReplaceAll(address, ":", ".") != input {
+			return
 		}
+		depth := strings.Count(address, ":")
+		if depth < bestDepth {
+			return
+		}
+		if depth > bestDepth {
+			matches = matches[:0]
+			bestDepth = depth
+		}
+		matches = append(matches, address)
+	}
+	for namespace, project := range set.Namespaces {
+		addMatch(chorefile.GlobalPrefix + namespace + ":")
 		for address := range project.Tasks {
-			if strings.ReplaceAll(address, ":", ".") == input {
-				matches = append(matches, address)
-			}
+			addMatch(address)
 		}
 	}
 	slices.Sort(matches)

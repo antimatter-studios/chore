@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.22.0
+
+- When dotted global addresses overlap, the address with the most namespace
+  separators wins. Explicit colon addresses still reach task names containing
+  literal dots. Ties still show the matching colon addresses.
+
 ## v0.21.0
 
 - **Dotted global task addresses.** Run `chore global.agents.next` or list a

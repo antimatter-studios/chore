@@ -44,7 +44,9 @@ import (
 // ```
 //
 // Dotted shortcuts also work for listings, for example `chore global.ssh.`.
-// If a shortcut matches several addresses, chore prints the colon spellings.
+// When several addresses match, the one with the most colon separators wins.
+// If addresses tie, chore prints their explicit colon spellings. Use an explicit
+// colon address to call a task with literal dots even when a namespace wins.
 // An exact project task name takes precedence over a dotted shortcut.
 //
 // **A global file is an ordinary taskfile.** Same schema, same arguments, same

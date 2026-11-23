@@ -34,9 +34,9 @@ Binary: `chore`. macOS and Linux.
 Use the install action rather than spelling the release asset name yourself:
 
 ```yaml
-- uses: antimatter-studios/chore/.github/actions/install@v0.21.0
+- uses: antimatter-studios/chore/.github/actions/install@v0.22.0
   with:
-    version: "0.21.0"
+    version: "0.22.0"
 ```
 
 It downloads `chore-{version}-{os}-{arch}.tar.gz` for the runner, verifies it
@@ -290,7 +290,8 @@ real shell — with real `pipefail` — possible.
 
     Run it as `chore global:homelab:status kube-system` or
     `chore global.homelab.status kube-system`. If several global addresses match
-    the dotted spelling, use the colon address printed by the CLI. An exact
+    the dotted spelling, the address with the most colon separators wins.
+    If they tie, use a colon address printed by the CLI. An exact
     project task name takes precedence over a dotted shortcut. Same schema, same
     arguments, flags, `--help` and `--dry` as a project task — the prefix says
     where the task lives and nothing else. Every global file is loaded on every
