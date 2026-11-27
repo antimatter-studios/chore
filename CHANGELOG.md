@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.23.0
 
 - **`quote`, a template function: a value as one shell word.** A value spliced
   into a command is split again by the shell that runs it, so a word with a
