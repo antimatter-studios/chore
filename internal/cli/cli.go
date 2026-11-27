@@ -93,8 +93,11 @@ var BuildDate = ""
 // `chore pulumi -- up --yes` means the same; one further along is passed on,
 // so `chore pulumi config set -- key -1` reaches pulumi with its `--`.
 //
-// CLI_ARGS stays one string joined with spaces, as it is after `--`: a quoted
-// word with a space in it does not survive as one word.
+// `{{.CLI_ARGS}}` is the words joined with spaces, and the shell running the
+// script splits that again, so a word with a space, quotes or brackets in it
+// does not arrive as typed. To forward the words exactly, quote them:
+// `pulumi {{quote .CLI_ARGS}}` — each word becomes one shell word. See
+// `chore help variables`.
 
 // chore:manual flags
 // title: Flags
@@ -355,7 +358,7 @@ func runProject(project *chorefile.Project, rest []string, opts options, stdout,
 	r.ChoreExe, r.ChoreVersion = choreExe(), buildinfo.Get(Version, BuildDate).Version
 	r.NoLifecycle = opts.noLifecycle
 	r.Yes = opts.yes || choreYes()
-	r.CLIArgs = strings.Join(opts.cliArgs, " ")
+	r.CLIArgs = opts.cliArgs
 	r.CacheDir = cacheDir()
 
 	// Words after the task name are its positional arguments, except NAME=value
@@ -621,7 +624,7 @@ func parseFlags(args []string) (options, []string, error) {
 // needs — `chore pulumi -- up --yes` — keeps working. Further along it is the
 // wrapped command's own: `chore pulumi config set -- key -1` must reach pulumi
 // with its `--`.
-func passthroughWords(t *chorefile.Task, words []string, opts options) ([]string, string) {
+func passthroughWords(t *chorefile.Task, words []string, opts options) ([]string, []string) {
 	all := append([]string(nil), words...)
 	if opts.dashDash {
 		if len(all) > len(t.Args) {
@@ -630,7 +633,7 @@ func passthroughWords(t *chorefile.Task, words []string, opts options) ([]string
 		all = append(all, opts.cliArgs...)
 	}
 	n := min(len(t.Args), len(all))
-	return all[:n], strings.Join(all[n:], " ")
+	return all[:n], all[n:]
 }
 
 // choreYes reads CHORE_YES, the environment spelling of --yes.

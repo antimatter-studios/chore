@@ -953,11 +953,65 @@ tasks:
 	})
 
 	t.Run("CLI_ARGS is a single string joined with spaces", func(t *testing.T) {
-		// A quoted word does not survive as one word — CLI_ARGS is text spliced
-		// into a script, not an argv. Pinned so nobody assumes otherwise.
+		// A quoted word does not survive as one word through {{.CLI_ARGS}} — that
+		// is the string form, spliced into a script. {{quote .CLI_ARGS}} is the
+		// argv form, tested below. Pinned so nobody assumes otherwise.
 		got := runMain(t, writeTree(t, files), "echoargs", "--", "a", "b c")
 		checkCode(t, got, 0)
 		checkContains(t, got, "stdout", got.stdout, "cli=[a b c]")
+	})
+
+	// What `quote` is for: the shell that runs the script splits the words back
+	// into exactly the argv chore was given.
+	quoted := map[string]string{"chores.yml": `version: '3'
+tasks:
+  argv:
+    cmds:
+      - "printf '<%s>\\n' {{quote .CLI_ARGS}}"
+  count:
+    cmds:
+      - 'set -- {{quote .CLI_ARGS}}; echo "n=$#"'
+  pulumi:
+    passthrough: true
+    cmds: ["printf '<%s>\\n' {{.CLI_ARGS | quote}}"]
+  each:
+    cmds:
+      - for: {var: CLI_ARGS}
+        cmd: "echo 'item=[{{.ITEM}}]'"
+  csv:
+    cmds:
+      - for: {var: CLI_ARGS, split: ','}
+        cmd: "echo 'item=[{{.ITEM}}]'"
+`}
+
+	t.Run("quote keeps every word as typed", func(t *testing.T) {
+		got := runMain(t, writeTree(t, quoted), "argv", "--", "a", "b c", `x["y-z"].t`, "it's", "$HOME", "*", "")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "<a>\n<b c>\n<x[\"y-z\"].t>\n<it's>\n<$HOME>\n<*>\n<>\n")
+	})
+
+	t.Run("quote of no words passes no arguments", func(t *testing.T) {
+		got := runMain(t, writeTree(t, quoted), "count")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "n=0")
+	})
+
+	t.Run("quote keeps the pulumi --path case through a passthrough task", func(t *testing.T) {
+		got := runMain(t, writeTree(t, quoted), "pulumi", "config", "get", "--path", `runners["rest-mail"].token`)
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "<config>\n<get>\n<--path>\n<runners[\"rest-mail\"].token>\n")
+	})
+
+	t.Run("for: walks CLI_ARGS word by word, spaces kept", func(t *testing.T) {
+		got := runMain(t, writeTree(t, quoted), "each", "--", "a", "b c")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "item=[a]\nitem=[b c]\n")
+	})
+
+	t.Run("for: with split: still cuts CLI_ARGS' string form", func(t *testing.T) {
+		got := runMain(t, writeTree(t, quoted), "csv", "--", "a,b", "c")
+		checkCode(t, got, 0)
+		checkContains(t, got, "stdout", got.stdout, "item=[a]\nitem=[b c]\n")
 	})
 
 	t.Run("empty when there is no --", func(t *testing.T) {

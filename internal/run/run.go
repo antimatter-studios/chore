@@ -52,7 +52,7 @@ type Runner struct {
 	// ONLY thing that does: with no terminal and no Yes, a task that asks is
 	// refused rather than assumed to be approved. See confirm.go.
 	Yes     bool
-	CLIArgs string // everything after `--`
+	CLIArgs []string // everything after `--`, word by word
 
 	// Stdin is what an `interactive: true` task reads from. Defaulted to
 	// os.Stdin by New; a test supplies its own.
@@ -885,8 +885,36 @@ func indentScript(script string) string {
 //
 // # Variables
 //
-// Templating is Go `text/template` with `if`/`else`/`range` and exactly one added
-// function, `default`. No sprig.
+// Templating is Go `text/template` with `if`/`else`/`range` and two added
+// functions, `default` and `quote`. No sprig.
+//
+// ## Quoting a value for the shell: `quote`
+//
+// A value spliced into a command is split and interpreted again by the shell
+// that runs it, so a space, a quote, a bracket or a `$` in it does not reach the
+// program as written. `{{quote .X}}` makes it one single-quoted word that does:
+//
+// ```yaml
+// vars:
+//   KEY: 'runners["rest-mail"].token'
+// cmds:
+//   - echo "reading {{.KEY}}"                 # inside quoted text: no quote
+//   - pulumi config get --path {{quote .KEY}} # an argument: quote
+// ```
+//
+// A list variable is quoted item by item, so each item is one word — which is
+// what a wrapper wants from CLI_ARGS, itself a list of the words as typed:
+//
+// ```yaml
+// pulumi:
+//   passthrough: true
+//   cmds: ['pulumi {{quote .CLI_ARGS}}']   # or {{.CLI_ARGS | quote}}
+// ```
+//
+// That item-by-item reading applies when `quote` is given the variable itself.
+// Given an expression — `{{quote (print .HOSTS)}}` — it quotes the one string
+// the expression produced. An empty list quotes to no words at all; an empty
+// string to one empty word, `''`.
 //
 // ## Precedence, lowest first
 //
@@ -961,7 +989,6 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 	builtins := map[string]string{
 		"ROOT_DIR":      r.rootDir(t),
 		"TASK":          t.Name,
-		"CLI_ARGS":      r.CLIArgs,
 		"CHORE_EXE":     r.ChoreExe,
 		"CHORE_VERSION": r.ChoreVersion,
 	}
@@ -972,6 +999,10 @@ func (r *Runner) scope(ctx context.Context, t *chorefile.Task, args []string, ca
 		builtins["TASKFILE_DIR"] = t.File.Dir
 	}
 	base := tmpl.New(os.Environ()).Push(builtins)
+	// A list, so `{{quote .CLI_ARGS}}` quotes word by word and `for:` walks the
+	// words as typed. Its string form — what `{{.CLI_ARGS}}` and $CLI_ARGS read —
+	// is the words joined with spaces, exactly as before.
+	base = base.PushValues(map[string]tmpl.Value{"CLI_ARGS": tmpl.ListValue(r.CLIArgs)})
 
 	// Arguments bind before dotenv is resolved, so a dotenv path may reference
 	// them: dotenv: ['config/{{.CONFIG}}/config.env'].

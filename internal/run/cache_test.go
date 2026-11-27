@@ -308,11 +308,11 @@ func TestCacheKeysOnWhatFollowsTheDoubleDash(t *testing.T) {
 	})
 
 	f.mustRun("queue", nil, nil)
-	f.r.CLIArgs = "--tsv"
+	f.r.CLIArgs = []string{"--tsv"}
 	mark := len(f.out.String())
 	f.mustRun("queue", nil, nil)
 	got := f.since(mark)
-	f.r.CLIArgs = ""
+	f.r.CLIArgs = nil
 	f.mustRun("queue", nil, nil)
 
 	if got != "answer to [--tsv]\n" {

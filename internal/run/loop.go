@@ -202,14 +202,16 @@ func loopItems(scope *tmpl.Scope, f *chorefile.For) ([]loopItem, error) {
 	if !ok {
 		return nil, fmt.Errorf("variable %s is not set — a loop over nothing would succeed by doing nothing", f.Var)
 	}
-	switch v.Kind {
-	case tmpl.List:
+	switch {
+	// A `split:` asks for the string form cut on that separator, which is what it
+	// did when CLI_ARGS was a string; a list without one walks its items.
+	case v.Kind == tmpl.List && f.Split == "":
 		out := make([]loopItem, 0, len(v.Items))
 		for _, item := range v.Items {
 			out = append(out, loopItem{value: item})
 		}
 		return out, nil
-	case tmpl.Map:
+	case v.Kind == tmpl.Map:
 		out := make([]loopItem, 0, len(v.Items))
 		for i, item := range v.Items {
 			out = append(out, loopItem{key: v.Keys[i], value: item, isMap: true})
