@@ -722,3 +722,69 @@ func TestACycleIsReportedBeforeAnyShellRuns(t *testing.T) {
 		t.Errorf("a shell ran before the cycle was reported: %q", cap.scripts)
 	}
 }
+
+// TestQuote: `quote` makes a value one shell word, and a list variable one word
+// per item, so the shell that runs the script hands the program exactly what
+// the variable holds.
+func TestQuote(t *testing.T) {
+	t.Parallel()
+
+	scope := New(nil).PushValues(map[string]Value{
+		"KEY":   StringValue(`runners["rest-mail"].token`),
+		"EMPTY": StringValue(""),
+		"ODD":   StringValue(`it's $HOME`),
+		"WORDS": ListValue([]string{"config", "get", "--path", `runners["rest-mail"].token`, "b c", ""}),
+		"NONE":  ListValue(nil),
+	})
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"a string is one word", "x {{quote .KEY}}", `x 'runners["rest-mail"].token'`},
+		{"an empty string is one empty word", "x {{quote .EMPTY}}", "x ''"},
+		{"a single quote is escaped", "{{quote .ODD}}", `'it'\''s $HOME'`},
+		{"a literal", `{{quote "a b"}}`, "'a b'"},
+		{"a missing variable is one empty word", "{{quote .UNSET}}", "''"},
+		{"a list is one word per item", "pulumi {{quote .WORDS}}", `pulumi 'config' 'get' '--path' 'runners["rest-mail"].token' 'b c' ''`},
+		{"a list piped into quote", "pulumi {{.WORDS | quote}}", `pulumi 'config' 'get' '--path' 'runners["rest-mail"].token' 'b c' ''`},
+		{"an empty list is no words", "pulumi {{quote .NONE}}end", "pulumi end"},
+		{"inside if", "{{if .WORDS}}{{quote .WORDS}}{{end}}", `'config' 'get' '--path' 'runners["rest-mail"].token' 'b c' ''`},
+		{"inside else", "{{if .UNSET}}no{{else}}{{.WORDS | quote}}{{end}}", `'config' 'get' '--path' 'runners["rest-mail"].token' 'b c' ''`},
+		{"in a parenthesised argument", `{{printf "%s!" (quote .WORDS)}}`, `'config' 'get' '--path' 'runners["rest-mail"].token' 'b c' ''!`},
+		// Unchanged: a list read without quote is still its string form.
+		{"a list without quote is its string form", "{{.WORDS}}", `config get --path runners["rest-mail"].token b c `},
+		// An expression is a value, not a variable, so it is one word.
+		{"an expression over a list is one word", "{{quote (print .WORDS)}}", `'config get --path runners["rest-mail"].token b c '`},
+		{"quote then another function", "{{.KEY | quote | printf \"<%s>\"}}", `<'runners["rest-mail"].token'>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := scope.Render(tt.text)
+			if err != nil {
+				t.Fatalf("Render(%q): %v", tt.text, err)
+			}
+			if got != tt.want {
+				t.Errorf("Render(%q)\n got: %s\nwant: %s", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestQuoteDoesNotLeakBetweenRenders: the rewrite happens on a freshly parsed
+// template each time, so a list in one scope cannot affect the next render.
+func TestQuoteDoesNotLeakBetweenRenders(t *testing.T) {
+	t.Parallel()
+	list := New(nil).PushValues(map[string]Value{"X": ListValue([]string{"a b", "c"})})
+	str := New(nil).PushValues(map[string]Value{"X": StringValue("a b c")})
+	for i := 0; i < 2; i++ {
+		if got, _ := list.Render("{{quote .X}}"); got != "'a b' 'c'" {
+			t.Fatalf("list render %d: %q", i, got)
+		}
+		if got, _ := str.Render("{{quote .X}}"); got != "'a b c'" {
+			t.Fatalf("string render %d: %q", i, got)
+		}
+	}
+}

@@ -55,5 +55,8 @@ where CLI_ARGS would begin is still chore's separator and is dropped, so
 `chore pulumi -- up --yes` means the same; one further along is passed on,
 so `chore pulumi config set -- key -1` reaches pulumi with its `--`.
 
-CLI_ARGS stays one string joined with spaces, as it is after `--`: a quoted
-word with a space in it does not survive as one word.
+`{{.CLI_ARGS}}` is the words joined with spaces, and the shell running the
+script splits that again, so a word with a space, quotes or brackets in it
+does not arrive as typed. To forward the words exactly, quote them:
+`pulumi {{quote .CLI_ARGS}}` — each word becomes one shell word. See
+`chore help variables`.

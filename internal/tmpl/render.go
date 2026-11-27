@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -14,12 +15,41 @@ import (
 	"github.com/antimatter-studios/chore/internal/graph"
 )
 
-// funcs is the whole function set: Go's builtins plus `default`.
+// funcs is the whole function set: Go's builtins plus `default` and `quote`.
 //
 // rest-mail's Taskfiles call `default` 216 times and no other function, so there
 // is no sprig here, no seam for it to creep in later, and no third-party
-// function semantics to stay compatible with.
-var funcs = template.FuncMap{"default": defaultFn}
+// function semantics to stay compatible with. `quote` is chore's own.
+var funcs = template.FuncMap{"default": defaultFn, "quote": quoteFn}
+
+// quoteFn implements `quote v`: v as ONE shell word, single-quoted, so the
+// shell running the script hands it to the program exactly as it is — spaces,
+// quotes, brackets and `$` included.
+//
+// A list is the exception, and it never reaches here as one: templates see every
+// variable as its string form, so `{{quote .HOSTS}}` is rewritten before it
+// runs (see quoteLists) to quote each item on its own. What arrives here is
+// always a single value.
+func quoteFn(v any) string {
+	return shellQuote(fmt.Sprint(v))
+}
+
+// shellQuote single-quotes s for a POSIX shell. Inside single quotes nothing is
+// special except the quote itself, which is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// quoteWords quotes each word on its own and joins them with spaces: what a
+// shell splits back into exactly those words. No words is the empty string —
+// no arguments — rather than a pair of quotes, which would be one empty argument.
+func quoteWords(words []string) string {
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = shellQuote(w)
+	}
+	return strings.Join(quoted, " ")
+}
 
 // defaultFn implements `default d v` — v unless v is empty, in which case d.
 //
@@ -74,6 +104,7 @@ func (s *Scope) Render(text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.quoteLists(t.Tree.Root)
 	var b strings.Builder
 	if err := t.Execute(&b, s.All()); err != nil {
 		return "", fmt.Errorf("rendering template %q: %w", text, err)
@@ -391,4 +422,92 @@ func walkBranch(b *parse.BranchNode, fn func(parse.Node)) {
 	walk(b.Pipe, fn)
 	walk(b.List, fn)
 	walk(b.ElseList, fn)
+}
+
+// quoteLists makes `quote` see a list as its items rather than its string form.
+//
+// Templates get every variable as a string (see Value), so by the time `quote`
+// runs, `{{quote .CLI_ARGS}}` would be handed "a b c" and could not know whether
+// that was one word or three — and a word with a space in it, the case quoting
+// exists for, is exactly the one the joined form loses. So before the template
+// runs, every `quote` applied directly to a list variable — `{{quote .X}}` or
+// `{{.X | quote}}` — is replaced by the already-quoted items, as a string
+// literal. Anything else, a string variable or an expression, is left to quoteFn
+// and becomes one word.
+//
+// Only fields of the top-level dot are rewritten. Inside `range` and `with` the
+// dot is something else, and `.X` there does not name a variable of the scope.
+func (s *Scope) quoteLists(n parse.Node) {
+	switch n := n.(type) {
+	case *parse.ListNode:
+		if n == nil {
+			return
+		}
+		for _, c := range n.Nodes {
+			s.quoteLists(c)
+		}
+	case *parse.ActionNode:
+		s.quotePipe(n.Pipe)
+	case *parse.IfNode:
+		s.quotePipe(n.Pipe)
+		s.quoteLists(n.List)
+		s.quoteLists(n.ElseList)
+	}
+}
+
+// quotePipe rewrites one pipeline, and any parenthesised pipelines inside it.
+func (s *Scope) quotePipe(p *parse.PipeNode) {
+	if p == nil {
+		return
+	}
+	for i, c := range p.Cmds {
+		for _, a := range c.Args {
+			if inner, ok := a.(*parse.PipeNode); ok {
+				s.quotePipe(inner)
+			}
+		}
+		// {{quote .X}}
+		if len(c.Args) == 2 && isQuote(c.Args[0]) {
+			if words, ok := s.listField(c.Args[1]); ok {
+				c.Args = []parse.Node{literal(c.Args[1].Position(), quoteWords(words))}
+			}
+			continue
+		}
+		// {{.X | quote}}: the quote command takes the previous command's value.
+		if i > 0 && len(c.Args) == 1 && isQuote(c.Args[0]) {
+			prev := p.Cmds[i-1]
+			if len(prev.Args) != 1 {
+				continue
+			}
+			if words, ok := s.listField(prev.Args[0]); ok {
+				prev.Args[0] = literal(prev.Args[0].Position(), quoteWords(words))
+				p.Cmds = append(p.Cmds[:i:i], p.Cmds[i+1:]...)
+				return
+			}
+		}
+	}
+}
+
+func isQuote(n parse.Node) bool {
+	id, ok := n.(*parse.IdentifierNode)
+	return ok && id.Ident == "quote"
+}
+
+// listField returns the items of the list variable n names, if n is `.X` and X
+// is a list in this scope.
+func (s *Scope) listField(n parse.Node) ([]string, bool) {
+	f, ok := n.(*parse.FieldNode)
+	if !ok || len(f.Ident) != 1 {
+		return nil, false
+	}
+	v, ok := s.Lookup(f.Ident[0])
+	if !ok || v.Kind != List {
+		return nil, false
+	}
+	return v.Items, true
+}
+
+// literal is a string constant node, as the parser would make for "text".
+func literal(pos parse.Pos, text string) *parse.StringNode {
+	return &parse.StringNode{NodeType: parse.NodeString, Pos: pos, Quoted: strconv.Quote(text), Text: text}
 }

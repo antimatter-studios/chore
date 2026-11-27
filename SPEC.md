@@ -66,7 +66,11 @@ grep rather than believing either column.
 
 Templating: Go `text/template`, with `if`/`else`/`range` (native) and exactly one
 function — `default`, used 216 times in the first survey and 220 in the second.
-No sprig.
+No sprig. chore adds one of its own, `quote`: `{{quote .X}}` is X as one
+single-quoted shell word, and a list variable given directly — `{{quote .X}}` or
+`{{.X | quote}}` — is one word per item. `.CLI_ARGS` is a list of the words as
+typed, so `{{quote .CLI_ARGS}}` hands a wrapped program exactly those words; its
+string form, what `{{.CLI_ARGS}}` and `$CLI_ARGS` read, is unchanged.
 
 Special variables: `.ROOT_DIR` (27 uses), `.CLI_ARGS` (2) — both unchanged
 between the two surveys. Also provided: `.TASK`, `.TASKFILE_DIR`,
@@ -866,7 +870,7 @@ func (s *Scope) Push(vars map[string]string) *Scope // returns a child, never mu
 func (s *Scope) Set(k, v string)
 func (s *Scope) Get(k string) (string, bool)
 func (s *Scope) All() map[string]string
-func (s *Scope) Render(text string) (string, error) // text/template + `default`
+func (s *Scope) Render(text string) (string, error) // text/template + `default`, `quote`
 func (s *Scope) Resolve(ctx context.Context, vars map[string]chorefile.Var, cap Capturer) (map[string]string, error)
 ```
 

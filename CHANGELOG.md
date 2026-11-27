@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.23.0
+
+- **`quote`, a template function: a value as one shell word.** A value spliced
+  into a command is split again by the shell that runs it, so a word with a
+  space, quotes or brackets did not arrive as written. `{{quote .X}}`
+  single-quotes it. A list variable given directly — `{{quote .X}}` or
+  `{{.X | quote}}` — is quoted item by item. `.CLI_ARGS` is now such a list, so
+  a wrapper task forwards its words exactly with `pulumi {{quote .CLI_ARGS}}`:
+  `chore pulumi config get --path 'runners["rest-mail"].token'` used to reach
+  pulumi as `runners[rest-mail].token`. `{{.CLI_ARGS}}` and `$CLI_ARGS` read
+  the same as before.
+- `for: {var: CLI_ARGS}` walks the words as typed, so one with a space in it is
+  one item; with `split:` it still cuts the string form.
+
 ## v0.22.0
 
 - When dotted global addresses overlap, the address with the most namespace

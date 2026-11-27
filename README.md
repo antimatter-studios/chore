@@ -34,9 +34,9 @@ Binary: `chore`. macOS and Linux.
 Use the install action rather than spelling the release asset name yourself:
 
 ```yaml
-- uses: antimatter-studios/chore/.github/actions/install@v0.22.0
+- uses: antimatter-studios/chore/.github/actions/install@v0.23.0
   with:
-    version: "0.22.0"
+    version: "0.23.0"
 ```
 
 It downloads `chore-{version}-{os}-{arch}.tar.gz` for the runner, verifies it
@@ -465,7 +465,8 @@ task), `includes` (`taskfile`/`dir`/`vars`/`optional`/`flatten`/`inherit`),
 `silent`, `internal`, `interactive`, `dir`,
 `run: once`, `defer`, `preconditions`, `status`, `sources`/`generates` (content-hash
 up-to-date checks), `aliases`, `ignore_error`, `requires`, `platforms`. Templating is Go
-`text/template` plus one function, `default`.
+`text/template` plus two functions, `default` and `quote` (one shell word per
+value, one per item for a list: `pulumi {{quote .CLI_ARGS}}`).
 
 chore-only, on top of that: `args:`, `cache:`, `confirm:`, `chore_min_version:`, the nine hooks,
 `child_hooks:`, `timeout:`/`on_timeout:`, and `verbose:`.
